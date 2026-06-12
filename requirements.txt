@@ -1,0 +1,10 @@
+Flask==3.0.3
+flask-cors==4.0.1
+pandas==2.2.2
+numpy==1.26.4
+openpyxl==3.1.5
+python-dateutil==2.9.0.post0
+pytz==2024.1
+Werkzeug==3.0.3
+XlsxWriter==3.2.0
+pytest==8.3.2
