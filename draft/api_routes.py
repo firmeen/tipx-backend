@@ -90,30 +90,6 @@ def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-STANDARD_RESPONSE_KEYS = {"success", "message", "data", "meta", "errors"}
-
-
-def is_standard_api_payload(value: Any) -> bool:
-    return isinstance(value, dict) and STANDARD_RESPONSE_KEYS.issubset(set(value.keys()))
-
-
-def is_service_error_payload(value: Any) -> bool:
-    if not isinstance(value, dict):
-        return False
-
-    if value.get("__service_error__") is True:
-        return True
-
-    if is_standard_api_payload(value) and value.get("success") is False:
-        return True
-
-    meta = value.get("meta")
-    if isinstance(meta, dict) and meta.get("fallback") is True:
-        return True
-
-    return False
-
-
 def success_response(
     data: Optional[Any] = None,
     message: str = "OK",
@@ -132,16 +108,6 @@ def success_response(
         "errors": []
     }
     """
-
-    if is_standard_api_payload(data):
-        payload = dict(data)
-        payload.pop("__service_error__", None)
-
-        response_status = status_code
-        if payload.get("success") is False:
-            response_status = int(payload.get("meta", {}).get("status_code", 500) or 500)
-
-        return jsonify(payload), response_status
 
     payload = {
         "success": True,
@@ -458,29 +424,15 @@ def safe_call(
         return func(*args, **kwargs)
 
     except Exception as exc:
-        status_code = 503 if isinstance(exc, (ImportError, AttributeError, ModuleNotFoundError)) else 500
-
         return {
-            "__service_error__": True,
-            "success": False,
-            "message": (
-                "Service function is not available."
-                if status_code == 503
-                else "Service function failed."
-            ),
-            "data": fallback_data,
-            "meta": {
-                "fallback": True,
-                "module": import_path,
-                "service": function_name,
-                "status_code": status_code,
+            "fallback": True,
+            "service_module": import_path,
+            "service_function": function_name,
+            "error": {
+                "type": exc.__class__.__name__,
+                "message": str(exc),
             },
-            "errors": [
-                {
-                    "type": exc.__class__.__name__,
-                    "message": str(exc),
-                }
-            ],
+            "data": fallback_data,
         }
 
 
@@ -496,10 +448,6 @@ def service_meta(result: Any, service_name: str) -> Dict[str, Any]:
     if isinstance(result, dict):
         if "fallback" in result:
             meta["fallback"] = result.get("fallback")
-
-        result_meta = result.get("meta")
-        if isinstance(result_meta, dict) and "fallback" in result_meta:
-            meta["fallback"] = result_meta.get("fallback")
 
         if "record_count" in result:
             meta["record_count"] = result.get("record_count")
@@ -1684,7 +1632,7 @@ def register_map_graph_routes(app: Flask) -> None:
 
         result = safe_call(
             "map_graph_service",
-            "get_map_flood",
+            "get_flood_map_layer",
             {
                 "type": "FeatureCollection",
                 "features": [],
@@ -1695,7 +1643,7 @@ def register_map_graph_routes(app: Flask) -> None:
         return success_response(
             message="Flood map layer",
             data=unwrap_service_result(result),
-            meta=service_meta(result, "map_graph_service.get_map_flood"),
+            meta=service_meta(result, "map_graph_service.get_flood_map_layer"),
         )
 
     @app.get(f"{API_PREFIX}/map/companies")
@@ -1704,7 +1652,7 @@ def register_map_graph_routes(app: Flask) -> None:
 
         result = safe_call(
             "map_graph_service",
-            "get_map_companies",
+            "get_company_map_layer",
             {
                 "type": "FeatureCollection",
                 "features": [],
@@ -1715,7 +1663,7 @@ def register_map_graph_routes(app: Flask) -> None:
         return success_response(
             message="Company map layer",
             data=unwrap_service_result(result),
-            meta=service_meta(result, "map_graph_service.get_map_companies"),
+            meta=service_meta(result, "map_graph_service.get_company_map_layer"),
         )
 
     @app.get(f"{API_PREFIX}/map/policy-exposure")
@@ -1724,7 +1672,7 @@ def register_map_graph_routes(app: Flask) -> None:
 
         result = safe_call(
             "map_graph_service",
-            "get_map_policy_exposure",
+            "get_policy_exposure_map_layer",
             {
                 "type": "FeatureCollection",
                 "features": [],
@@ -1735,7 +1683,7 @@ def register_map_graph_routes(app: Flask) -> None:
         return success_response(
             message="Policy exposure map layer",
             data=unwrap_service_result(result),
-            meta=service_meta(result, "map_graph_service.get_map_policy_exposure"),
+            meta=service_meta(result, "map_graph_service.get_policy_exposure_map_layer"),
         )
 
     @app.get(f"{API_PREFIX}/map/linkage-lines")
@@ -1744,7 +1692,7 @@ def register_map_graph_routes(app: Flask) -> None:
 
         result = safe_call(
             "map_graph_service",
-            "get_map_linkage_lines",
+            "get_linkage_line_layer",
             {
                 "type": "FeatureCollection",
                 "features": [],
@@ -1755,7 +1703,7 @@ def register_map_graph_routes(app: Flask) -> None:
         return success_response(
             message="Linkage line layer",
             data=unwrap_service_result(result),
-            meta=service_meta(result, "map_graph_service.get_map_linkage_lines"),
+            meta=service_meta(result, "map_graph_service.get_linkage_line_layer"),
         )
 
     @app.get(f"{API_PREFIX}/map/branches")
@@ -1764,7 +1712,7 @@ def register_map_graph_routes(app: Flask) -> None:
 
         result = safe_call(
             "map_graph_service",
-            "get_map_branches",
+            "get_branch_map_layer",
             {
                 "type": "FeatureCollection",
                 "features": [],
@@ -1775,7 +1723,7 @@ def register_map_graph_routes(app: Flask) -> None:
         return success_response(
             message="Branch map layer",
             data=unwrap_service_result(result),
-            meta=service_meta(result, "map_graph_service.get_map_branches"),
+            meta=service_meta(result, "map_graph_service.get_branch_map_layer"),
         )
 
     @app.get(f"{API_PREFIX}/map/heatmap")
@@ -1784,7 +1732,7 @@ def register_map_graph_routes(app: Flask) -> None:
 
         result = safe_call(
             "map_graph_service",
-            "get_map_heatmap",
+            "get_heatmap_layer",
             {
                 "type": "FeatureCollection",
                 "features": [],
@@ -1795,43 +1743,30 @@ def register_map_graph_routes(app: Flask) -> None:
         return success_response(
             message="Heatmap layer",
             data=unwrap_service_result(result),
-            meta=service_meta(result, "map_graph_service.get_map_heatmap"),
+            meta=service_meta(result, "map_graph_service.get_heatmap_layer"),
         )
 
     @app.get(f"{API_PREFIX}/map/selected-context")
     def api_map_selected_context() -> Tuple[Response, int]:
-        context = get_common_query_context()
         feature_id = get_str_arg("feature_id", "")
         feature_type = get_str_arg("feature_type", "")
-        selected_tax_id = get_str_arg("selected_tax_id", "")
-
-        if not selected_tax_id and feature_type in {"company", "company_points"}:
-            selected_tax_id = feature_id
-
-        map_context = {
-            **context,
-            "feature_id": feature_id,
-            "feature_type": feature_type,
-            "selected_tax_id": selected_tax_id,
-            "selected_director_id": get_str_arg("selected_director_id", ""),
-            "selected_province": get_str_arg("selected_province", ""),
-        }
 
         result = safe_call(
             "map_graph_service",
-            "get_selected_context",
+            "get_selected_map_context",
             {
                 "feature_id": feature_id,
                 "feature_type": feature_type,
                 "context": {},
             },
-            context=map_context,
+            feature_id=feature_id,
+            feature_type=feature_type,
         )
 
         return success_response(
             message="Selected map context",
             data=unwrap_service_result(result),
-            meta=service_meta(result, "map_graph_service.get_selected_context"),
+            meta=service_meta(result, "map_graph_service.get_selected_map_context"),
         )
 
     @app.get(f"{API_PREFIX}/charts/summary")
@@ -1839,7 +1774,7 @@ def register_map_graph_routes(app: Flask) -> None:
         context = get_common_query_context()
 
         result = safe_call(
-            "dashboard_package_service",
+            "map_graph_service",
             "get_chart_summary",
             {
                 "charts": {},
@@ -1850,26 +1785,7 @@ def register_map_graph_routes(app: Flask) -> None:
         return success_response(
             message="Chart summary",
             data=unwrap_service_result(result),
-            meta=service_meta(result, "dashboard_package_service.get_chart_summary"),
-        )
-
-    @app.get(f"{API_PREFIX}/charts/dashboard")
-    def api_charts_dashboard() -> Tuple[Response, int]:
-        context = get_common_query_context()
-
-        result = safe_call(
-            "dashboard_package_service",
-            "get_dashboard_charts",
-            {
-                "charts": {},
-            },
-            context=context,
-        )
-
-        return success_response(
-            message="Dashboard charts",
-            data=unwrap_service_result(result),
-            meta=service_meta(result, "dashboard_package_service.get_dashboard_charts"),
+            meta=service_meta(result, "map_graph_service.get_chart_summary"),
         )
 
 
@@ -2107,7 +2023,7 @@ def register_filter_routes(app: Flask) -> None:
     def api_filter_saved_view_detail(view_id: str) -> Tuple[Response, int]:
         result = safe_call(
             "filter_engine",
-            "get_saved_filter_view",
+            "get_saved_filter_view_detail",
             {
                 "view_id": view_id,
                 "view": None,
@@ -2118,7 +2034,7 @@ def register_filter_routes(app: Flask) -> None:
         return success_response(
             message="Saved filter view detail",
             data=unwrap_service_result(result),
-            meta=service_meta(result, "filter_engine.get_saved_filter_view"),
+            meta=service_meta(result, "filter_engine.get_saved_filter_view_detail"),
         )
 
     @app.put(f"{API_PREFIX}/filter/saved-views/<view_id>")
@@ -2282,46 +2198,6 @@ def register_data_quality_routes(app: Flask) -> None:
             meta=service_meta(result, "data_quality.get_linkage_quality"),
         )
 
-    @app.get(f"{API_PREFIX}/data-quality/flood")
-    def api_data_quality_flood() -> Tuple[Response, int]:
-        context = get_common_query_context()
-
-        result = safe_call(
-            "data_quality",
-            "get_flood_quality",
-            {
-                "issues": [],
-                "summary": {},
-            },
-            context=context,
-        )
-
-        return success_response(
-            message="Flood data quality",
-            data=unwrap_service_result(result),
-            meta=service_meta(result, "data_quality.get_flood_quality"),
-        )
-
-    @app.get(f"{API_PREFIX}/data-quality/spatial")
-    def api_data_quality_spatial() -> Tuple[Response, int]:
-        context = get_common_query_context()
-
-        result = safe_call(
-            "data_quality",
-            "get_spatial_join_quality",
-            {
-                "issues": [],
-                "summary": {},
-            },
-            context=context,
-        )
-
-        return success_response(
-            message="Spatial data quality",
-            data=unwrap_service_result(result),
-            meta=service_meta(result, "data_quality.get_spatial_join_quality"),
-        )
-
     @app.get(f"{API_PREFIX}/data-quality/spatial-join")
     def api_data_quality_spatial_join() -> Tuple[Response, int]:
         context = get_common_query_context()
@@ -2360,46 +2236,6 @@ def register_data_quality_routes(app: Flask) -> None:
             message="Policy status conflicts",
             data=unwrap_service_result(result),
             meta=service_meta(result, "data_quality.get_policy_status_conflicts"),
-        )
-
-    @app.get(f"{API_PREFIX}/data-quality/issues")
-    def api_data_quality_issues() -> Tuple[Response, int]:
-        context = get_common_query_context()
-
-        result = safe_call(
-            "data_quality",
-            "get_data_quality_issues",
-            {
-                "issues": [],
-                "total": 0,
-            },
-            context=context,
-        )
-
-        return success_response(
-            message="Data quality issues",
-            data=unwrap_service_result(result),
-            meta=service_meta(result, "data_quality.get_data_quality_issues"),
-        )
-
-    @app.get(f"{API_PREFIX}/data-quality/company-flags")
-    def api_data_quality_company_flags() -> Tuple[Response, int]:
-        context = get_common_query_context()
-
-        result = safe_call(
-            "data_quality",
-            "get_company_quality_flags",
-            {
-                "flags_by_tax_id": {},
-                "summary_by_tax_id": {},
-            },
-            context=context,
-        )
-
-        return success_response(
-            message="Company quality flags",
-            data=unwrap_service_result(result),
-            meta=service_meta(result, "data_quality.get_company_quality_flags"),
         )
 
 
@@ -2513,7 +2349,7 @@ def register_package_routes(app: Flask) -> None:
 
         result = safe_call(
             "dashboard_package_service",
-            "get_package_download_info",
+            "download_package",
             {
                 "package_id": package_id,
                 "download_ready": False,
@@ -2528,7 +2364,7 @@ def register_package_routes(app: Flask) -> None:
         return success_response(
             message="Package download",
             data=unwrap_service_result(result),
-            meta=service_meta(result, "dashboard_package_service.get_package_download_info"),
+            meta=service_meta(result, "dashboard_package_service.download_package"),
         )
 
     @app.post(f"{API_PREFIX}/packages/<package_id>/disable")
@@ -2698,28 +2534,6 @@ def register_public_package_routes(app: Flask) -> None:
             message="Public package tables",
             data=unwrap_service_result(result),
             meta=service_meta(result, "dashboard_package_service.get_public_package_tables"),
-        )
-
-    @app.get(f"{PUBLIC_API_PREFIX}/packages/<package_id>/access-log")
-    def public_package_access_log_read(package_id: str) -> Tuple[Response, int]:
-        context = get_common_query_context()
-
-        result = safe_call(
-            "dashboard_package_service",
-            "get_public_package_access_log",
-            {
-                "package_id": package_id,
-                "access_log": [],
-                "total": 0,
-            },
-            package_id=package_id,
-            context=context,
-        )
-
-        return success_response(
-            message="Public package access log",
-            data=unwrap_service_result(result),
-            meta=service_meta(result, "dashboard_package_service.get_public_package_access_log"),
         )
 
     @app.post(f"{PUBLIC_API_PREFIX}/packages/<package_id>/access-log")

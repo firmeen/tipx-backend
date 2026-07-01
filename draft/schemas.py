@@ -2366,9 +2366,12 @@ def validate_filter_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     errors: List[Dict[str, Any]] = []
     warnings: List[Dict[str, Any]] = []
 
+    if not isinstance(payload, dict):
+        payload = {}
+
     target = payload.get("target", "company")
 
-    if target not in {"company", "policy", "linkage", "flood", "map", "dashboard"}:
+    if target not in {"company", "policy", "linkage", "director", "flood", "spatial", "map", "dashboard", "data_quality"}:
         errors.append(
             {
                 "code": "invalid_filter_target",
@@ -2379,44 +2382,75 @@ def validate_filter_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     advanced = payload.get("advanced", {})
 
     if advanced:
-        logic = advanced.get("logic", "AND")
-
-        if logic not in FILTER_LOGICAL_OPERATORS:
+        if not isinstance(advanced, dict):
             errors.append(
                 {
-                    "code": "invalid_filter_logic",
-                    "message": f"logical operator ไม่ถูกต้อง: {logic}",
+                    "code": "invalid_filter_advanced",
+                    "message": "advanced filter ต้องเป็น object",
                 }
             )
+        else:
+            logic = advanced.get("logic", "AND")
 
-        for condition in advanced.get("conditions", []):
-            field_name = condition.get("field")
-            operator = condition.get("operator")
-
-            if not field_name:
+            if logic not in FILTER_LOGICAL_OPERATORS:
                 errors.append(
                     {
-                        "code": "filter_field_missing",
-                        "message": "filter condition ไม่มี field",
-                    }
-                )
-                continue
-
-            if field_name not in FIELD_DEFINITIONS:
-                warnings.append(
-                    {
-                        "code": "unknown_filter_field",
-                        "message": f"ไม่พบ field ใน dictionary: {field_name}",
+                        "code": "invalid_filter_logic",
+                        "message": f"logical operator ไม่ถูกต้อง: {logic}",
                     }
                 )
 
-            if operator not in FILTER_OPERATORS:
+            conditions = advanced.get("conditions", [])
+
+            if conditions is None:
+                conditions = []
+
+            if not isinstance(conditions, list):
                 errors.append(
                     {
-                        "code": "invalid_filter_operator",
-                        "message": f"operator ไม่ถูกต้อง: {operator}",
+                        "code": "invalid_filter_conditions",
+                        "message": "advanced.conditions ต้องเป็น list",
                     }
                 )
+                conditions = []
+
+            for condition in conditions:
+                if not isinstance(condition, dict):
+                    errors.append(
+                        {
+                            "code": "invalid_filter_condition",
+                            "message": "filter condition ต้องเป็น object",
+                        }
+                    )
+                    continue
+
+                field_name = condition.get("field")
+                operator = condition.get("operator")
+
+                if not field_name:
+                    errors.append(
+                        {
+                            "code": "filter_field_missing",
+                            "message": "filter condition ไม่มี field",
+                        }
+                    )
+                    continue
+
+                if field_name not in FIELD_DEFINITIONS:
+                    warnings.append(
+                        {
+                            "code": "unknown_filter_field",
+                            "message": f"ไม่พบ field ใน dictionary: {field_name}",
+                        }
+                    )
+
+                if operator not in FILTER_OPERATORS:
+                    errors.append(
+                        {
+                            "code": "invalid_filter_operator",
+                            "message": f"operator ไม่ถูกต้อง: {operator}",
+                        }
+                    )
 
     return {
         "valid": len(errors) == 0,

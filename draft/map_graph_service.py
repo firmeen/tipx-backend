@@ -46,8 +46,6 @@ Layer Types:
 """
 
 from __future__ import annotations
-import json
-import math
 try:
     import bootstrap
     BOOTSTRAP_LOADED = True
@@ -56,8 +54,7 @@ except Exception as e:
     BOOTSTRAP_LOADED = False
     BOOTSTRAP_ERROR = str(e)
 from collections import Counter, defaultdict
-from datetime import date, datetime
-from pathlib import Path
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import (
@@ -74,205 +71,25 @@ from config import (
     GRAPH_DEFAULT_MAX_NODES,
 )
 
-try:
-    from utils import (
-        apply_search_sort_pagination,
-        clean_text,
-        clean_text_lower,
-        combine_risk_levels,
-        get_or_build_cache,
-        haversine_km,
-        is_empty_value,
-        make_feature_collection,
-        make_line_feature,
-        make_point_feature,
-        normalize_risk_level,
-        normalize_tax_id,
-        read_cache,
-        to_bool,
-        to_jsonable,
-        to_number,
-        validate_coordinate,
-    )
-    UTILS_LOADED = True
-except Exception as e:
-    UTILS_LOADED = False
-    UTILS_ERROR = str(e)
-
-    def clean_text(value: Any, default: str = "") -> str:
-        if value is None:
-            return default
-        text = str(value).strip()
-        return text if text else default
-
-    def clean_text_lower(value: Any, default: str = "") -> str:
-        return clean_text(value, default=default).lower()
-
-    def is_empty_value(value: Any) -> bool:
-        if value is None:
-            return True
-        if isinstance(value, str) and not value.strip():
-            return True
-        if isinstance(value, float) and math.isnan(value):
-            return True
-        return False
-
-    def to_number(value: Any, default: Any = None) -> Any:
-        if is_empty_value(value):
-            return default
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return default
-        if math.isnan(number) or math.isinf(number):
-            return default
-        return number
-
-    def to_bool(value: Any, default: bool = False) -> bool:
-        if isinstance(value, bool):
-            return value
-        if value is None:
-            return default
-        if isinstance(value, (int, float)):
-            return bool(value)
-        text = clean_text_lower(value)
-        if text in {"1", "true", "yes", "y", "on"}:
-            return True
-        if text in {"0", "false", "no", "n", "off"}:
-            return False
-        return default
-
-    def normalize_tax_id(value: Any) -> str:
-        return "".join(ch for ch in clean_text(value) if ch.isdigit())
-
-    def normalize_risk_level(value: Any) -> str:
-        text = clean_text_lower(value)
-        if text in {"critical", "very_high", "very high", "severe"}:
-            return "Critical"
-        if text in {"high", "สูง"}:
-            return "High"
-        if text in {"medium", "moderate", "กลาง"}:
-            return "Medium"
-        if text in {"low", "ต่ำ"}:
-            return "Low"
-        if text in {"normal", "none"}:
-            return "Normal"
-        return "Unknown"
-
-    def combine_risk_levels(values: List[Any]) -> str:
-        order = ["Unknown", "Normal", "Low", "Medium", "High", "Critical"]
-        best = "Unknown"
-        for value in values:
-            level = normalize_risk_level(value)
-            if order.index(level) > order.index(best):
-                best = level
-        return best
-
-    def validate_coordinate(lat: Any, lon: Any) -> Dict[str, Any]:
-        lat_number = to_number(lat, None)
-        lon_number = to_number(lon, None)
-        if lat_number is None or lon_number is None:
-            return {"valid": False, "lat": None, "lon": None, "issue": "missing coordinate"}
-        if lat_number == 0 and lon_number == 0:
-            return {"valid": False, "lat": lat_number, "lon": lon_number, "issue": "zero coordinate"}
-        if not (5.0 <= lat_number <= 21.5 and 97.0 <= lon_number <= 106.5):
-            return {"valid": False, "lat": lat_number, "lon": lon_number, "issue": "outside Thailand bounds"}
-        return {"valid": True, "lat": lat_number, "lon": lon_number, "issue": ""}
-
-    def make_feature_collection(features: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-        return {"type": "FeatureCollection", "features": list(features or [])}
-
-    def make_point_feature(lon: Any, lat: Any, properties: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        coord = validate_coordinate(lat, lon)
-        if not coord["valid"]:
-            return None
-        return {
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [coord["lon"], coord["lat"]]},
-            "properties": dict(properties or {}),
-        }
-
-    def make_line_feature(coordinates: List[Tuple[Any, Any]], properties: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        clean_coordinates = []
-        for lon, lat in coordinates:
-            coord = validate_coordinate(lat, lon)
-            if not coord["valid"]:
-                return None
-            clean_coordinates.append([coord["lon"], coord["lat"]])
-        if len(clean_coordinates) < 2:
-            return None
-        return {
-            "type": "Feature",
-            "geometry": {"type": "LineString", "coordinates": clean_coordinates},
-            "properties": dict(properties or {}),
-        }
-
-    def haversine_km(lat1: Any, lon1: Any, lat2: Any, lon2: Any) -> Optional[float]:
-        coord1 = validate_coordinate(lat1, lon1)
-        coord2 = validate_coordinate(lat2, lon2)
-        if not coord1["valid"] or not coord2["valid"]:
-            return None
-        radius_km = 6371.0088
-        phi1 = math.radians(coord1["lat"])
-        phi2 = math.radians(coord2["lat"])
-        d_phi = math.radians(coord2["lat"] - coord1["lat"])
-        d_lambda = math.radians(coord2["lon"] - coord1["lon"])
-        a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
-        return round(radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)), 4)
-
-    def to_jsonable(value: Any) -> Any:
-        if value is None or isinstance(value, (str, int, bool)):
-            return value
-        if isinstance(value, float):
-            return None if math.isnan(value) or math.isinf(value) else value
-        if isinstance(value, (datetime, date)):
-            return value.isoformat()
-        if isinstance(value, Path):
-            return str(value)
-        if isinstance(value, dict):
-            return {clean_text(key): to_jsonable(item) for key, item in value.items()}
-        if isinstance(value, (list, tuple, set)):
-            return [to_jsonable(item) for item in value]
-        if hasattr(value, "to_dict"):
-            try:
-                return to_jsonable(value.to_dict(orient="records"))
-            except TypeError:
-                return to_jsonable(value.to_dict())
-        if hasattr(value, "item"):
-            try:
-                return to_jsonable(value.item())
-            except Exception:
-                pass
-        return clean_text(value)
-
-    def read_cache(cache_key: str, default: Any = None) -> Any:
-        if default is None:
-            default = {}
-        cache_path = Path(__file__).resolve().parent.parent / "cache" / f"{cache_key}.json"
-        if not cache_path.exists():
-            return default
-        try:
-            return json.loads(cache_path.read_text(encoding="utf-8"))
-        except Exception:
-            return default
-
-    def get_or_build_cache(
-        cache_key: str,
-        builder: Any,
-        ttl_seconds: int = 0,
-        force_refresh: bool = False,
-        source: str = "",
-    ) -> Dict[str, Any]:
-        return {
-            "data": builder(),
-            "cache_used": False,
-            "source": source,
-            "ttl_seconds": ttl_seconds,
-            "force_refresh": bool(force_refresh),
-        }
-
-    def apply_search_sort_pagination(records: List[Dict[str, Any]], *args: Any, **kwargs: Any) -> Dict[str, Any]:
-        return {"records": records, "meta": {"total": len(records)}}
+from utils import (
+    apply_search_sort_pagination,
+    clean_text,
+    clean_text_lower,
+    combine_risk_levels,
+    get_or_build_cache,
+    haversine_km,
+    is_empty_value,
+    make_feature_collection,
+    make_line_feature,
+    make_point_feature,
+    normalize_risk_level,
+    normalize_tax_id,
+    read_cache,
+    to_bool,
+    to_jsonable,
+    to_number,
+    validate_coordinate,
+)
 
 try:
     from filter_engine import filter_company_records_for_map, filter_company_records_for_graph
@@ -313,13 +130,9 @@ DEFAULT_CONTEXT: Dict[str, Any] = {
     "include_branches": True,
     "include_heatmap": True,
     "include_boundaries": True,
-    "include_province_boundaries": True,
-    "include_basin_boundaries": True,
     "selected_tax_id": "",
     "selected_director_id": "",
     "selected_province": "",
-    "public_mode": False,
-    "package_id": "",
 }
 
 CACHE_KEYS: Dict[str, str] = {
@@ -387,27 +200,14 @@ def normalize_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any
     """
 
     result = dict(DEFAULT_CONTEXT)
-    if isinstance(context, dict):
-        result.update(context)
+    result.update(context or {})
 
-    result["force_refresh"] = bool(to_bool(result.get("force_refresh"), default=False))
-    result["public_mode"] = bool(to_bool(result.get("public_mode"), default=False))
-
-    try:
-        result["page"] = max(1, int(result.get("page", 1) or 1))
-    except (TypeError, ValueError):
-        result["page"] = 1
-
-    try:
-        result["page_size"] = max(1, min(5000, int(result.get("page_size", 500) or 500)))
-    except (TypeError, ValueError):
-        result["page_size"] = 500
-
+    result["force_refresh"] = bool(result.get("force_refresh", False))
+    result["page"] = int(result.get("page", 1) or 1)
+    result["page_size"] = int(result.get("page_size", 500) or 500)
     result["search"] = clean_text(result.get("search", ""))
     result["sort_by"] = clean_text(result.get("sort_by", ""))
     result["sort_dir"] = clean_text_lower(result.get("sort_dir", "asc")) or "asc"
-    if result["sort_dir"] not in {"asc", "desc"}:
-        result["sort_dir"] = "asc"
 
     if not isinstance(result.get("filters"), dict):
         result["filters"] = {}
@@ -420,25 +220,14 @@ def normalize_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any
         "include_branches",
         "include_heatmap",
         "include_boundaries",
-        "include_province_boundaries",
-        "include_basin_boundaries",
     ]:
         result[key] = bool(to_bool(result.get(key, True), default=True))
 
     result["selected_tax_id"] = normalize_tax_id(result.get("selected_tax_id") or result.get("tax_id") or "")
     result["selected_director_id"] = clean_text(result.get("selected_director_id") or result.get("director_id") or "")
     result["selected_province"] = clean_text(result.get("selected_province") or result.get("province") or "")
-    result["package_id"] = clean_text(result.get("package_id", ""))
 
     return result
-
-
-def normalize_map_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    Public normalizer for map payload callers.
-    """
-
-    return normalize_context(context)
 
 
 def get_map_ttl() -> int:
@@ -496,21 +285,6 @@ def load_records_from_cache(cache_key: str) -> List[Dict[str, Any]]:
         if isinstance(data.get("data"), dict) and isinstance(data["data"].get("records"), list):
             return data["data"]["records"]
 
-        if isinstance(data.get("data"), dict) and isinstance(data["data"].get("nodes"), list):
-            return data["data"]["nodes"]
-
-        if isinstance(data.get("data"), dict) and isinstance(data["data"].get("edges"), list):
-            return data["data"]["edges"]
-
-        if isinstance(data.get("nodes"), list):
-            return data["nodes"]
-
-        if isinstance(data.get("edges"), list):
-            return data["edges"]
-
-        if isinstance(data.get("layers"), list):
-            return data["layers"]
-
     return []
 
 
@@ -538,17 +312,6 @@ def load_flood_records() -> List[Dict[str, Any]]:
     return load_records_from_cache("flood_computed_risk")
 
 
-def load_policy_exposure_records() -> List[Dict[str, Any]]:
-    """
-    Load policy exposure records from the available cache variants.
-    """
-
-    records = load_records_from_cache("policy_flood_exposure")
-    if records:
-        return records
-    return load_records_from_cache("province_risk_exposure")
-
-
 def load_branch_records() -> List[Dict[str, Any]]:
     """
     โหลด province_branch_coordinate_master จาก cache
@@ -563,27 +326,6 @@ def load_shared_director_links() -> List[Dict[str, Any]]:
     """
 
     return load_records_from_cache("shared_director_links")
-
-
-def load_linkage_records() -> List[Dict[str, Any]]:
-    """
-    Load linkage line candidate records without rebuilding upstream linkage data.
-    """
-
-    links = load_shared_director_links()
-    if links:
-        return links
-
-    payload = load_linkage_graph_payload()
-    for key in ["edges", "links", "records"]:
-        if isinstance(payload.get(key), list):
-            return payload[key]
-    data = payload.get("data")
-    if isinstance(data, dict):
-        for key in ["edges", "links", "records"]:
-            if isinstance(data.get(key), list):
-                return data[key]
-    return []
 
 
 def load_linkage_graph_payload() -> Dict[str, Any]:
@@ -603,222 +345,8 @@ def load_linkage_graph_payload() -> Dict[str, Any]:
     }
 
 
-def load_boundary_records(boundary_type: str) -> List[Dict[str, Any]]:
-    """
-    Load cached boundary records when flood_spatial_service boundaries are unavailable.
-    """
-
-    if boundary_type == "province":
-        return load_records_from_cache("province_boundaries")
-    if boundary_type == "basin":
-        return load_records_from_cache("basin_boundaries")
-    return []
-
-
 # ============================================================
-# 4) GEOJSON HELPERS
-# ============================================================
-
-COORDINATE_FIELD_PAIRS: List[Tuple[str, str]] = [
-    ("lat", "lon"),
-    ("latitude", "longitude"),
-    ("company_lat", "company_lon"),
-    ("company_latitude", "company_longitude"),
-    ("dam_latitude", "dam_longitude"),
-    ("medium_latitude", "medium_longitude"),
-    ("station_latitude", "station_longitude"),
-]
-
-
-def first_present(record: Dict[str, Any], keys: List[str], default: Any = None) -> Any:
-    """
-    Return the first non-empty value from common cache column aliases.
-    """
-
-    for key in keys:
-        value = record.get(key)
-        if not is_empty_value(value):
-            return value
-    return default
-
-
-def empty_feature_collection() -> Dict[str, Any]:
-    """
-    Return a valid empty GeoJSON FeatureCollection.
-    """
-
-    return {"type": "FeatureCollection", "features": []}
-
-
-def safe_feature_collection(value: Any) -> Dict[str, Any]:
-    """
-    Normalize a raw GeoJSON-like object into a FeatureCollection.
-    """
-
-    if isinstance(value, dict) and value.get("type") == "FeatureCollection" and isinstance(value.get("features"), list):
-        return {"type": "FeatureCollection", "features": value["features"]}
-    if isinstance(value, dict) and isinstance(value.get("features"), list):
-        return {"type": "FeatureCollection", "features": value["features"]}
-    if isinstance(value, list):
-        return {"type": "FeatureCollection", "features": value}
-    return empty_feature_collection()
-
-
-def safe_get_lat_lon(
-    record: Dict[str, Any],
-    preferred_pairs: Optional[List[Tuple[str, str]]] = None,
-) -> Tuple[Optional[float], Optional[float], bool, str]:
-    """
-    Resolve and validate latitude/longitude from common field pairs.
-    """
-
-    pairs = list(preferred_pairs or []) + COORDINATE_FIELD_PAIRS
-    seen = set()
-
-    for lat_key, lon_key in pairs:
-        if (lat_key, lon_key) in seen:
-            continue
-        seen.add((lat_key, lon_key))
-        lat_value = record.get(lat_key)
-        lon_value = record.get(lon_key)
-        if is_empty_value(lat_value) or is_empty_value(lon_value):
-            continue
-        coord = validate_coordinate(lat_value, lon_value)
-        if coord.get("valid"):
-            return coord.get("lat"), coord.get("lon"), True, ""
-        return coord.get("lat"), coord.get("lon"), False, clean_text(coord.get("issue") or coord.get("reason") or "invalid coordinate")
-
-    return None, None, False, "missing coordinate"
-
-
-def safe_point_feature(
-    record: Dict[str, Any],
-    properties: Dict[str, Any],
-    preferred_pairs: Optional[List[Tuple[str, str]]] = None,
-) -> Optional[Dict[str, Any]]:
-    """
-    Create a GeoJSON point with [lon, lat] coordinates or return None.
-    """
-
-    lat, lon, valid, _issue = safe_get_lat_lon(record, preferred_pairs=preferred_pairs)
-    if not valid:
-        return None
-    return {
-        "type": "Feature",
-        "geometry": {
-            "type": "Point",
-            "coordinates": [lon, lat],
-        },
-        "properties": to_jsonable(properties),
-    }
-
-
-def safe_line_feature(
-    source_record: Dict[str, Any],
-    target_record: Dict[str, Any],
-    properties: Dict[str, Any],
-    source_pairs: Optional[List[Tuple[str, str]]] = None,
-    target_pairs: Optional[List[Tuple[str, str]]] = None,
-) -> Optional[Dict[str, Any]]:
-    """
-    Create a GeoJSON LineString with [lon, lat] coordinates or return None.
-    """
-
-    source_lat, source_lon, source_valid, _source_issue = safe_get_lat_lon(source_record, preferred_pairs=source_pairs)
-    target_lat, target_lon, target_valid, _target_issue = safe_get_lat_lon(target_record, preferred_pairs=target_pairs)
-    if not source_valid or not target_valid:
-        return None
-    return {
-        "type": "Feature",
-        "geometry": {
-            "type": "LineString",
-            "coordinates": [
-                [source_lon, source_lat],
-                [target_lon, target_lat],
-            ],
-        },
-        "properties": to_jsonable(properties),
-    }
-
-
-def make_empty_layer(
-    layer_id: str,
-    layer_name: str,
-    layer_type: str,
-    reason: str = "",
-    degraded: bool = False,
-) -> Dict[str, Any]:
-    """
-    Return a valid empty layer payload for degraded or missing-source states.
-    """
-
-    return build_layer_payload(
-        layer_id=layer_id,
-        layer_name=layer_name,
-        layer_type=layer_type,
-        feature_collection=empty_feature_collection(),
-        extra={
-            "degraded": degraded,
-            "reason": reason,
-        },
-    )
-
-
-def make_layer(
-    layer_id: str,
-    layer_name: str,
-    layer_type: str,
-    features: List[Dict[str, Any]],
-    extra: Optional[Dict[str, Any]] = None,
-    visible: Optional[bool] = None,
-    opacity: Optional[float] = None,
-) -> Dict[str, Any]:
-    """
-    Build a standard layer from a list of GeoJSON features.
-    """
-
-    return build_layer_payload(
-        layer_id=layer_id,
-        layer_name=layer_name,
-        layer_type=layer_type,
-        feature_collection=make_feature_collection(features),
-        visible=visible,
-        opacity=opacity,
-        extra=extra,
-    )
-
-
-def boundary_records_to_feature_collection(records: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Preserve cached GeoJSON geometries without inventing polygons.
-    """
-
-    features = []
-    for index, record in enumerate(records):
-        geometry = record.get("geometry") or record.get("geojson")
-        if isinstance(geometry, dict) and geometry.get("type") in {"Polygon", "MultiPolygon"}:
-            properties = {
-                key: value
-                for key, value in record.items()
-                if key not in {"geometry", "geojson"}
-            }
-            features.append(
-                {
-                    "type": "Feature",
-                    "geometry": geometry,
-                    "properties": {
-                        "feature_id": record.get("feature_id") or record.get("id") or f"boundary:{index}",
-                        **properties,
-                    },
-                }
-            )
-        elif record.get("type") == "Feature" and isinstance(record.get("geometry"), dict):
-            features.append(record)
-    return make_feature_collection(features)
-
-
-# ============================================================
-# 5) STYLE HELPERS
+# 4) STYLE HELPERS
 # ============================================================
 
 def get_risk_color(risk_level: Any) -> str:
@@ -1105,12 +633,13 @@ def build_company_feature(company: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     style = company_marker_style(company)
 
-    feature = safe_point_feature(
-        company,
+    feature = make_point_feature(
+        lon=company.get("lon"),
+        lat=company.get("lat"),
         properties={
-            "feature_id": normalize_tax_id(company.get("tax_id_norm") or company.get("tax_id")),
+            "feature_id": company.get("tax_id_norm"),
             "feature_type": "company",
-            "tax_id_norm": normalize_tax_id(company.get("tax_id_norm") or company.get("tax_id")),
+            "tax_id_norm": company.get("tax_id_norm"),
             "company_name": company.get("company_name"),
             "province": company.get("province"),
             "district": company.get("district"),
@@ -1150,12 +679,13 @@ def build_flood_feature(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     style = flood_marker_style(record)
 
-    feature = safe_point_feature(
-        record,
+    feature = make_point_feature(
+        lon=record.get("lon"),
+        lat=record.get("lat"),
         properties={
             "feature_id": record.get("source_key") or f"{record.get('source_type')}:{record.get('source_id')}",
-            "feature_type": "flood_source",
-            "source_type": record.get("source_type") or "unknown",
+            "feature_type": record.get("source_type"),
+            "source_type": record.get("source_type"),
             "source_id": record.get("source_id"),
             "source_name": record.get("source_name"),
             "station_id": record.get("station_id"),
@@ -1168,8 +698,6 @@ def build_flood_feature(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "rainfall_value": record.get("rainfall_value"),
             "waterlevel_value": record.get("waterlevel_value"),
             "storage_percent": record.get("storage_percent"),
-            "value": first_present(record, ["value", "rainfall_value", "waterlevel_value", "storage_percent"]),
-            "unit": record.get("unit"),
             "risk_level": style["risk_level"],
             "risk_score": style["risk_score"],
             "risk_reason": record.get("risk_reason"),
@@ -1186,8 +714,9 @@ def build_branch_feature(branch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     สร้าง GeoJSON Feature ของสาขา / province fallback coordinate
     """
 
-    feature = safe_point_feature(
-        branch,
+    feature = make_point_feature(
+        lon=branch.get("lon"),
+        lat=branch.get("lat"),
         properties={
             "feature_id": branch.get("branch_id"),
             "feature_type": "branch",
@@ -1212,18 +741,12 @@ def build_linkage_line_feature(link: Dict[str, Any]) -> Optional[Dict[str, Any]]
     สร้าง GeoJSON LineString ของ shared director link
     """
 
-    source_record = {
-        "lat": first_present(link, ["source_lat", "from_lat", "company_a_lat"]),
-        "lon": first_present(link, ["source_lon", "from_lon", "company_a_lon"]),
-    }
-    target_record = {
-        "lat": first_present(link, ["target_lat", "to_lat", "company_b_lat"]),
-        "lon": first_present(link, ["target_lon", "to_lon", "company_b_lon"]),
-    }
-    source_lat, source_lon, source_valid, _source_issue = safe_get_lat_lon(source_record)
-    target_lat, target_lon, target_valid, _target_issue = safe_get_lat_lon(target_record)
+    source_lat = to_number(link.get("source_lat"), None)
+    source_lon = to_number(link.get("source_lon"), None)
+    target_lat = to_number(link.get("target_lat"), None)
+    target_lon = to_number(link.get("target_lon"), None)
 
-    if not source_valid or not target_valid:
+    if source_lat is None or source_lon is None or target_lat is None or target_lon is None:
         return None
 
     distance = haversine_km(source_lat, source_lon, target_lat, target_lon)
@@ -1236,24 +759,20 @@ def build_linkage_line_feature(link: Dict[str, Any]) -> Optional[Dict[str, Any]]
         ]
     )
 
-    source_tax_id = normalize_tax_id(first_present(link, ["source_tax_id", "source_tax_id_norm", "company_a_tax_id", "from_tax_id"]))
-    target_tax_id = normalize_tax_id(first_present(link, ["target_tax_id", "target_tax_id_norm", "company_b_tax_id", "to_tax_id"]))
-
-    feature = safe_line_feature(
-        source_record,
-        target_record,
+    feature = make_line_feature(
+        coordinates=[
+            (source_lon, source_lat),
+            (target_lon, target_lat),
+        ],
         properties={
-            "feature_id": link.get("link_id") or f"{source_tax_id}:{target_tax_id}",
+            "feature_id": link.get("link_id"),
             "feature_type": "linkage_line",
             "link_id": link.get("link_id"),
-            "source_tax_id": source_tax_id,
-            "target_tax_id": target_tax_id,
-            "source_company": first_present(link, ["source_company", "source_company_name", "company_a_name"]),
-            "target_company": first_present(link, ["target_company", "target_company_name", "company_b_name"]),
-            "source_company_name": first_present(link, ["source_company_name", "source_company", "company_a_name"]),
-            "target_company_name": first_present(link, ["target_company_name", "target_company", "company_b_name"]),
+            "source_tax_id": link.get("source_tax_id"),
+            "target_tax_id": link.get("target_tax_id"),
+            "source_company_name": link.get("source_company_name"),
+            "target_company_name": link.get("target_company_name"),
             "shared_directors": link.get("shared_directors", []),
-            "shared_director_count": to_number(link.get("shared_director_count"), None) or len(link.get("shared_directors", []) or []),
             "shared_directors_text": link.get("shared_directors_text", ""),
             "weight": link.get("weight", 1),
             "distance_km": distance,
@@ -1275,20 +794,16 @@ def build_heatmap_feature(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
 
     risk_score = get_risk_score(record.get("flood_risk_level"))
-    weight_value = first_present(
-        record,
-        ["total_suminsure", "total_premium", "most_recent_income_val", "registered_capital"],
-        default=1,
-    )
-    weight = max(1.0, to_number(weight_value, 1) or 1)
-    heat_weight = min(1.0, max(0.05, weight / 10_000_000))
-    if risk_score > 0:
-        heat_weight = max(heat_weight, min(1.0, (risk_score + 1) / 5))
+    suminsure = to_number(record.get("total_suminsure"), 0) or 0
 
-    final_weight = round(heat_weight, 4)
+    heat_weight = max(0.05, min(1.0, (risk_score + 1) / 5))
+    exposure_weight = min(1.0, suminsure / 10_000_000) if suminsure > 0 else 0
 
-    feature = safe_point_feature(
-        record,
+    final_weight = round(max(heat_weight, exposure_weight), 4)
+
+    feature = make_point_feature(
+        lon=record.get("lon"),
+        lat=record.get("lat"),
         properties={
             "feature_id": record.get("tax_id_norm"),
             "feature_type": "heatmap",
@@ -1296,10 +811,7 @@ def build_heatmap_feature(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "company_name": record.get("company_name"),
             "province": record.get("province"),
             "flood_risk_level": normalize_risk_level(record.get("flood_risk_level")),
-            "loss_ratio_band": record.get("loss_ratio_band"),
-            "total_suminsure": to_number(record.get("total_suminsure"), 0) or 0,
-            "weight": weight,
-            "metric": "total_suminsure" if not is_empty_value(record.get("total_suminsure")) else "fallback",
+            "total_suminsure": suminsure,
             "heat_weight": final_weight,
         },
     )
@@ -1327,15 +839,9 @@ def build_layer_payload(
 
     defaults = get_layer_default(layer_id)
 
-    collection = safe_feature_collection(feature_collection)
-    features = collection.get("features", [])
-    extra_meta = dict(extra or {})
-    generated_at = now_iso()
-    source = clean_text(extra_meta.pop("source", ""))
-    degraded = bool(to_bool(extra_meta.pop("degraded", False), default=False))
-    skipped_invalid_coordinates = int(to_number(extra_meta.pop("skipped_invalid_coordinates", 0), 0) or 0)
+    features = feature_collection.get("features", []) if isinstance(feature_collection, dict) else []
 
-    payload = {
+    return {
         "layer_id": layer_id,
         "layer_name": layer_name,
         "layer_type": layer_type,
@@ -1343,47 +849,13 @@ def build_layer_payload(
         "opacity": defaults["opacity"] if opacity is None else float(opacity),
         "z_index": defaults["z_index"] if z_index is None else int(z_index),
         "record_count": len(features),
-        "features": collection,
-        "feature_collection": collection,
+        "feature_collection": feature_collection,
         "style": get_layer_style(layer_id),
         "meta": {
-            "record_count": len(features),
-            "skipped_invalid_coordinates": skipped_invalid_coordinates,
-            "degraded": degraded,
-            "source": source,
-            "generated_at": generated_at,
-            "created_at": generated_at,
-            **extra_meta,
+            "created_at": now_iso(),
+            **(extra or {}),
         },
     }
-
-    return to_jsonable(payload)
-
-
-def finalize_cached_payload(cache_result: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Attach cache metadata and ensure public facade payloads are JSON-safe.
-    """
-
-    payload = dict(cache_result.get("data") or {})
-    if "features" not in payload and "feature_collection" in payload:
-        payload["features"] = safe_feature_collection(payload.get("feature_collection"))
-    if "feature_collection" not in payload and "features" in payload:
-        payload["feature_collection"] = safe_feature_collection(payload.get("features"))
-    if "record_count" not in payload and isinstance(payload.get("features"), dict):
-        payload["record_count"] = len(payload["features"].get("features", []))
-    if isinstance(payload.get("features"), dict) and not isinstance(payload.get("meta"), dict):
-        payload["meta"] = {
-            "record_count": payload.get("record_count", 0),
-            "skipped_invalid_coordinates": 0,
-            "degraded": False,
-            "source": "",
-            "generated_at": now_iso(),
-        }
-    payload["cache_used"] = bool(cache_result.get("cache_used", False))
-    if isinstance(payload.get("meta"), dict):
-        payload["meta"]["cache_used"] = payload["cache_used"]
-    return to_jsonable(payload)
 
 
 def build_company_points_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1394,17 +866,21 @@ def build_company_points_layer(context: Optional[Dict[str, Any]] = None) -> Dict
     ctx = normalize_context(context)
 
     companies = load_company_records()
+    companies = [
+        company
+        for company in companies
+        if to_bool(company.get("has_location"), default=False)
+        or validate_coordinate(company.get("lat"), company.get("lon"))["valid"]
+    ]
+
     companies = filter_company_records(companies, ctx)
 
     features = []
-    skipped_invalid_coordinates = 0
 
     for company in companies:
         feature = build_company_feature(company)
         if feature:
             features.append(feature)
-        else:
-            skipped_invalid_coordinates += 1
 
     return build_layer_payload(
         layer_id="company_points",
@@ -1414,9 +890,6 @@ def build_company_points_layer(context: Optional[Dict[str, Any]] = None) -> Dict
         extra={
             "source": "company_unified_master",
             "company_count": len(companies),
-            "skipped_invalid_coordinates": skipped_invalid_coordinates,
-            "degraded": not bool(companies),
-            "reason": "company source missing or empty" if not companies else "",
         },
     )
 
@@ -1446,14 +919,11 @@ def build_flood_points_layer(context: Optional[Dict[str, Any]] = None) -> Dict[s
     flood_records = filter_flood_records(load_flood_records(), ctx)
 
     features = []
-    skipped_invalid_coordinates = 0
 
     for record in flood_records:
         feature = build_flood_feature(record)
         if feature:
             features.append(feature)
-        else:
-            skipped_invalid_coordinates += 1
 
     return build_layer_payload(
         layer_id="flood_points",
@@ -1463,9 +933,6 @@ def build_flood_points_layer(context: Optional[Dict[str, Any]] = None) -> Dict[s
         extra={
             "source": "flood_computed_risk",
             "flood_count": len(flood_records),
-            "skipped_invalid_coordinates": skipped_invalid_coordinates,
-            "degraded": not bool(flood_records),
-            "reason": "flood source missing or empty" if not flood_records else "",
         },
     )
 
@@ -1499,31 +966,18 @@ def build_policy_exposure_layer(context: Optional[Dict[str, Any]] = None) -> Dic
         company
         for company in companies
         if to_bool(company.get("has_policy"), default=False)
+        and validate_coordinate(company.get("lat"), company.get("lon"))["valid"]
     ]
-
-    if not companies:
-        companies = [
-            record
-            for record in load_spatial_records()
-            if to_bool(record.get("has_policy"), default=False)
-            or not is_empty_value(record.get("total_suminsure"))
-            or not is_empty_value(record.get("total_premium"))
-        ]
 
     companies = filter_company_records(companies, ctx)
 
     features = []
-    skipped_invalid_coordinates = 0
 
     for company in companies:
         feature = build_company_feature(company)
         if feature:
             feature["properties"]["feature_type"] = "policy_exposure"
-            feature["properties"]["exposure_size"] = feature["properties"].get("marker_size")
-            feature["properties"]["exposure_color"] = feature["properties"].get("marker_color")
             features.append(feature)
-        else:
-            skipped_invalid_coordinates += 1
 
     return build_layer_payload(
         layer_id="policy_exposure",
@@ -1533,9 +987,6 @@ def build_policy_exposure_layer(context: Optional[Dict[str, Any]] = None) -> Dic
         extra={
             "source": "company_unified_master",
             "company_count": len(companies),
-            "skipped_invalid_coordinates": skipped_invalid_coordinates,
-            "degraded": not bool(features),
-            "reason": "point-level policy exposure source missing or empty" if not features else "",
         },
     )
 
@@ -1547,7 +998,7 @@ def build_linkage_lines_layer(context: Optional[Dict[str, Any]] = None) -> Dict[
 
     ctx = normalize_context(context)
 
-    links = load_linkage_records()
+    links = load_shared_director_links()
 
     if ctx.get("selected_tax_id"):
         tax_id = ctx["selected_tax_id"]
@@ -1567,53 +1018,12 @@ def build_linkage_lines_layer(context: Optional[Dict[str, Any]] = None) -> Dict[
             or clean_text(link.get("target_province")) == province
         ]
 
-    company_lookup = {}
-    for company in load_company_records():
-        tax_id = normalize_tax_id(company.get("tax_id_norm") or company.get("tax_id"))
-        if tax_id:
-            company_lookup[tax_id] = company
-
     features = []
-    skipped_invalid_coordinates = 0
-    seen_pairs = set()
 
     for link in links:
-        source_tax_id = normalize_tax_id(first_present(link, ["source_tax_id", "source_tax_id_norm", "company_a_tax_id", "from_tax_id"]))
-        target_tax_id = normalize_tax_id(first_present(link, ["target_tax_id", "target_tax_id_norm", "company_b_tax_id", "to_tax_id"]))
-
-        if not source_tax_id or not target_tax_id or source_tax_id == target_tax_id:
-            skipped_invalid_coordinates += 1
-            continue
-
-        pair_key = tuple(sorted([source_tax_id, target_tax_id]))
-        if pair_key in seen_pairs:
-            continue
-        seen_pairs.add(pair_key)
-
-        source_company = company_lookup.get(source_tax_id, {})
-        target_company = company_lookup.get(target_tax_id, {})
-        if source_company:
-            link = {
-                **link,
-                "source_lat": first_present(link, ["source_lat", "from_lat", "company_a_lat"], source_company.get("lat")),
-                "source_lon": first_present(link, ["source_lon", "from_lon", "company_a_lon"], source_company.get("lon")),
-                "source_company_name": first_present(link, ["source_company_name", "source_company", "company_a_name"], source_company.get("company_name")),
-                "source_province": first_present(link, ["source_province", "company_a_province"], source_company.get("province")),
-            }
-        if target_company:
-            link = {
-                **link,
-                "target_lat": first_present(link, ["target_lat", "to_lat", "company_b_lat"], target_company.get("lat")),
-                "target_lon": first_present(link, ["target_lon", "to_lon", "company_b_lon"], target_company.get("lon")),
-                "target_company_name": first_present(link, ["target_company_name", "target_company", "company_b_name"], target_company.get("company_name")),
-                "target_province": first_present(link, ["target_province", "company_b_province"], target_company.get("province")),
-            }
-
         feature = build_linkage_line_feature(link)
         if feature:
             features.append(feature)
-        else:
-            skipped_invalid_coordinates += 1
 
     return build_layer_payload(
         layer_id="linkage_lines",
@@ -1623,9 +1033,6 @@ def build_linkage_lines_layer(context: Optional[Dict[str, Any]] = None) -> Dict[
         extra={
             "source": "shared_director_links",
             "link_count": len(links),
-            "skipped_invalid_coordinates": skipped_invalid_coordinates,
-            "degraded": not bool(features),
-            "reason": "linkage source missing or no valid company-company coordinates" if not features else "",
         },
     )
 
@@ -1648,14 +1055,11 @@ def build_branch_points_layer(context: Optional[Dict[str, Any]] = None) -> Dict[
         ]
 
     features = []
-    skipped_invalid_coordinates = 0
 
     for branch in branches:
         feature = build_branch_feature(branch)
         if feature:
             features.append(feature)
-        else:
-            skipped_invalid_coordinates += 1
 
     return build_layer_payload(
         layer_id="branch_points",
@@ -1666,9 +1070,6 @@ def build_branch_points_layer(context: Optional[Dict[str, Any]] = None) -> Dict[
         extra={
             "source": "province_branch_coordinate_master",
             "branch_count": len(branches),
-            "skipped_invalid_coordinates": skipped_invalid_coordinates,
-            "degraded": not bool(branches),
-            "reason": "branch source missing or empty" if not branches else "",
         },
     )
 
@@ -1682,17 +1083,20 @@ def build_heatmap_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, A
 
     companies = load_company_records()
 
+    companies = [
+        company
+        for company in companies
+        if validate_coordinate(company.get("lat"), company.get("lon"))["valid"]
+    ]
+
     companies = filter_company_records(companies, ctx)
 
     features = []
-    skipped_invalid_coordinates = 0
 
     for company in companies:
         feature = build_heatmap_feature(company)
         if feature:
             features.append(feature)
-        else:
-            skipped_invalid_coordinates += 1
 
     return build_layer_payload(
         layer_id="heatmap",
@@ -1704,9 +1108,6 @@ def build_heatmap_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, A
         extra={
             "source": "company_unified_master",
             "company_count": len(companies),
-            "skipped_invalid_coordinates": skipped_invalid_coordinates,
-            "degraded": not bool(companies),
-            "reason": "company source missing or empty" if not companies else "",
         },
     )
 
@@ -1719,7 +1120,10 @@ def build_province_boundaries_layer(context: Optional[Dict[str, Any]] = None) ->
     if get_province_boundaries is not None:
         try:
             boundary = get_province_boundaries()
-            feature_collection = safe_feature_collection(boundary)
+            feature_collection = {
+                "type": "FeatureCollection",
+                "features": boundary.get("features", []),
+            }
             records = boundary.get("records", [])
 
             return build_layer_payload(
@@ -1734,38 +1138,8 @@ def build_province_boundaries_layer(context: Optional[Dict[str, Any]] = None) ->
                     "record_count_raw": len(records),
                 },
             )
-        except Exception as exc:
-            return build_layer_payload(
-                layer_id="province_boundaries",
-                layer_name="Province Boundaries",
-                layer_type="polygon",
-                feature_collection=empty_feature_collection(),
-                visible=False,
-                opacity=0.7,
-                extra={
-                    "source": "flood_spatial_service",
-                    "degraded": True,
-                    "reason": "province boundary service failed",
-                    "error_type": exc.__class__.__name__,
-                    "error_message": str(exc),
-                },
-            )
-
-    cached_records = load_boundary_records("province")
-    if cached_records:
-        return build_layer_payload(
-            layer_id="province_boundaries",
-            layer_name="Province Boundaries",
-            layer_type="polygon",
-            feature_collection=boundary_records_to_feature_collection(cached_records),
-            visible=False,
-            opacity=0.7,
-            extra={
-                "source": "province_boundaries",
-                "record_count_raw": len(cached_records),
-                "degraded": False,
-            },
-        )
+        except Exception:
+            pass
 
     return build_layer_payload(
         layer_id="province_boundaries",
@@ -1774,11 +1148,6 @@ def build_province_boundaries_layer(context: Optional[Dict[str, Any]] = None) ->
         feature_collection=make_feature_collection([]),
         visible=False,
         opacity=0.7,
-        extra={
-            "source": "",
-            "degraded": True,
-            "reason": "province boundary source missing or empty",
-        },
     )
 
 
@@ -1790,7 +1159,10 @@ def build_basin_boundaries_layer(context: Optional[Dict[str, Any]] = None) -> Di
     if get_basin_boundaries is not None:
         try:
             boundary = get_basin_boundaries()
-            feature_collection = safe_feature_collection(boundary)
+            feature_collection = {
+                "type": "FeatureCollection",
+                "features": boundary.get("features", []),
+            }
             records = boundary.get("records", [])
 
             return build_layer_payload(
@@ -1805,38 +1177,8 @@ def build_basin_boundaries_layer(context: Optional[Dict[str, Any]] = None) -> Di
                     "record_count_raw": len(records),
                 },
             )
-        except Exception as exc:
-            return build_layer_payload(
-                layer_id="basin_boundaries",
-                layer_name="Basin Boundaries",
-                layer_type="polygon",
-                feature_collection=empty_feature_collection(),
-                visible=False,
-                opacity=0.7,
-                extra={
-                    "source": "flood_spatial_service",
-                    "degraded": True,
-                    "reason": "basin boundary service failed",
-                    "error_type": exc.__class__.__name__,
-                    "error_message": str(exc),
-                },
-            )
-
-    cached_records = load_boundary_records("basin")
-    if cached_records:
-        return build_layer_payload(
-            layer_id="basin_boundaries",
-            layer_name="Basin Boundaries",
-            layer_type="polygon",
-            feature_collection=boundary_records_to_feature_collection(cached_records),
-            visible=False,
-            opacity=0.7,
-            extra={
-                "source": "basin_boundaries",
-                "record_count_raw": len(cached_records),
-                "degraded": False,
-            },
-        )
+        except Exception:
+            pass
 
     return build_layer_payload(
         layer_id="basin_boundaries",
@@ -1845,11 +1187,6 @@ def build_basin_boundaries_layer(context: Optional[Dict[str, Any]] = None) -> Di
         feature_collection=make_feature_collection([]),
         visible=False,
         opacity=0.7,
-        extra={
-            "source": "",
-            "degraded": True,
-            "reason": "basin boundary source missing or empty",
-        },
     )
 
 
@@ -1876,7 +1213,10 @@ def get_map_companies(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any
         source="map_graph_service.get_map_companies",
     )
 
-    return finalize_cached_payload(cache_result)
+    return {
+        **cache_result["data"],
+        "cache_used": cache_result["cache_used"],
+    }
 
 
 def get_map_flood(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1898,7 +1238,10 @@ def get_map_flood(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         source="map_graph_service.get_map_flood",
     )
 
-    return finalize_cached_payload(cache_result)
+    return {
+        **cache_result["data"],
+        "cache_used": cache_result["cache_used"],
+    }
 
 
 def get_map_policy_exposure(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1920,7 +1263,10 @@ def get_map_policy_exposure(context: Optional[Dict[str, Any]] = None) -> Dict[st
         source="map_graph_service.get_map_policy_exposure",
     )
 
-    return finalize_cached_payload(cache_result)
+    return {
+        **cache_result["data"],
+        "cache_used": cache_result["cache_used"],
+    }
 
 
 def get_map_linkage_lines(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1942,7 +1288,10 @@ def get_map_linkage_lines(context: Optional[Dict[str, Any]] = None) -> Dict[str,
         source="map_graph_service.get_map_linkage_lines",
     )
 
-    return finalize_cached_payload(cache_result)
+    return {
+        **cache_result["data"],
+        "cache_used": cache_result["cache_used"],
+    }
 
 
 def get_map_branches(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1964,7 +1313,10 @@ def get_map_branches(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         source="map_graph_service.get_map_branches",
     )
 
-    return finalize_cached_payload(cache_result)
+    return {
+        **cache_result["data"],
+        "cache_used": cache_result["cache_used"],
+    }
 
 
 def get_map_heatmap(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1986,7 +1338,10 @@ def get_map_heatmap(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         source="map_graph_service.get_map_heatmap",
     )
 
-    return finalize_cached_payload(cache_result)
+    return {
+        **cache_result["data"],
+        "cache_used": cache_result["cache_used"],
+    }
 
 
 # ============================================================
@@ -2004,62 +1359,37 @@ def get_map_layers(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     ctx = normalize_context(context)
 
     def builder() -> Dict[str, Any]:
-        layer_builders = [
-            (
-                "province_boundaries",
-                bool(ctx.get("include_boundaries") and ctx.get("include_province_boundaries")),
-                build_province_boundaries_layer,
-                "Province Boundaries",
-                "polygon",
-            ),
-            (
-                "basin_boundaries",
-                bool(ctx.get("include_boundaries") and ctx.get("include_basin_boundaries")),
-                build_basin_boundaries_layer,
-                "Basin Boundaries",
-                "polygon",
-            ),
-            ("heatmap", bool(ctx.get("include_heatmap")), build_heatmap_layer, "Exposure Heatmap", "heatmap"),
-            ("flood_points", bool(ctx.get("include_flood")), build_flood_points_layer, "Flood Sources", "point"),
-            ("policy_exposure", bool(ctx.get("include_policy")), build_policy_exposure_layer, "Policy Exposure", "point"),
-            ("company_points", bool(ctx.get("include_companies")), build_company_points_layer, "Company Points", "point"),
-            ("branch_points", bool(ctx.get("include_branches")), build_branch_points_layer, "Branch / Province Fallback Points", "point"),
-            ("linkage_lines", bool(ctx.get("include_linkage")), build_linkage_lines_layer, "Shared Director Lines", "line"),
-        ]
+        layers: Dict[str, Dict[str, Any]] = {}
 
-        layers_by_id: Dict[str, Dict[str, Any]] = {}
-        errors: List[Dict[str, Any]] = []
+        if ctx.get("include_boundaries"):
+            layers["province_boundaries"] = build_province_boundaries_layer(ctx)
+            layers["basin_boundaries"] = build_basin_boundaries_layer(ctx)
 
-        for layer_id, enabled, layer_builder, layer_name, layer_type in layer_builders:
-            if not enabled:
-                continue
-            try:
-                layers_by_id[layer_id] = layer_builder(ctx)
-            except Exception as exc:
-                layers_by_id[layer_id] = make_empty_layer(
-                    layer_id=layer_id,
-                    layer_name=layer_name,
-                    layer_type=layer_type,
-                    reason=str(exc),
-                    degraded=True,
-                )
-                errors.append(
-                    {
-                        "layer_id": layer_id,
-                        "error_type": exc.__class__.__name__,
-                        "message": str(exc),
-                    }
-                )
+        if ctx.get("include_heatmap"):
+            layers["heatmap"] = build_heatmap_layer(ctx)
+
+        if ctx.get("include_flood"):
+            layers["flood_points"] = build_flood_points_layer(ctx)
+
+        if ctx.get("include_policy"):
+            layers["policy_exposure"] = build_policy_exposure_layer(ctx)
+
+        if ctx.get("include_companies"):
+            layers["company_points"] = build_company_points_layer(ctx)
+
+        if ctx.get("include_branches"):
+            layers["branch_points"] = build_branch_points_layer(ctx)
+
+        if ctx.get("include_linkage"):
+            layers["linkage_lines"] = build_linkage_lines_layer(ctx)
 
         layer_list = [
-            layers_by_id[layer_id]
+            layers[layer_id]
             for layer_id in DEFAULT_LAYER_ORDER
-            if layer_id in layers_by_id
+            if layer_id in layers
         ]
 
-        record_count = sum(layer.get("record_count", 0) for layer in layer_list)
-        degraded = bool(errors) or any(layer.get("meta", {}).get("degraded") for layer in layer_list)
-        generated_at = now_iso()
+        feature_count = sum(layer.get("record_count", 0) for layer in layer_list)
 
         return {
             "map": {
@@ -2070,29 +1400,13 @@ def get_map_layers(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
                 "base_tile_url": MAP_BASE_TILE_URL,
                 "base_attribution": MAP_BASE_ATTRIBUTION,
             },
-            "center": MAP_DEFAULT_CENTER,
-            "zoom": MAP_DEFAULT_ZOOM,
-            "min_zoom": MAP_MIN_ZOOM,
-            "max_zoom": MAP_MAX_ZOOM,
-            "base_tile_url": MAP_BASE_TILE_URL,
-            "base_attribution": MAP_BASE_ATTRIBUTION,
-            "layers": layer_list,
-            "layers_by_id": layers_by_id,
+            "layers": layers,
             "layer_order": [layer["layer_id"] for layer in layer_list],
             "layer_list": layer_list,
             "summary": {
                 "layer_count": len(layer_list),
-                "feature_count": record_count,
-                "record_count": record_count,
-                "generated_at": generated_at,
-                "degraded": degraded,
-            },
-            "meta": {
-                "generated_at": generated_at,
-                "layer_count": len(layer_list),
-                "record_count": record_count,
-                "degraded": degraded,
-                "errors": errors,
+                "feature_count": feature_count,
+                "generated_at": now_iso(),
             },
             "context": ctx,
         }
@@ -2105,17 +1419,10 @@ def get_map_layers(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         source="map_graph_service.get_map_layers",
     )
 
-    data = dict(cache_result.get("data") or {})
-    if not isinstance(data.get("layers"), list):
-        data = builder()
-
-    payload = {
-        **data,
+    return {
+        **cache_result["data"],
         "cache_used": cache_result["cache_used"],
     }
-    if isinstance(payload.get("meta"), dict):
-        payload["meta"]["cache_used"] = cache_result["cache_used"]
-    return to_jsonable(payload)
 
 
 # ============================================================
@@ -2165,48 +1472,35 @@ def get_selected_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, 
     selected_province = ctx.get("selected_province")
 
     result: Dict[str, Any] = {
-        "selected": {
-            "tax_id_norm": selected_tax_id,
-            "director_id": selected_director_id,
-            "province": selected_province,
-        },
-        "company": {},
-        "director": {},
-        "province": {},
-        "spatial": {},
-        "nearby": {
-            "companies": [],
-            "flood_sources": [],
-        },
+        "selected_tax_id": selected_tax_id,
+        "selected_director_id": selected_director_id,
+        "selected_province": selected_province,
+        "company": None,
+        "spatial": None,
         "nearby_companies": [],
         "nearby_flood_sources": [],
         "linkage_lines": [],
         "province_context": {},
-        "map_focus": {
-            "center": MAP_DEFAULT_CENTER,
-            "zoom": 8,
-        },
-        "meta": {
-            "found": False,
-            "generated_at": now_iso(),
-            "degraded": False,
-        },
+        "map_focus": None,
+        "generated_at": now_iso(),
     }
 
     if selected_tax_id:
         company = find_company_by_tax_id(selected_tax_id)
         spatial = find_spatial_by_tax_id(selected_tax_id)
 
-        result["company"] = company or {}
-        result["spatial"] = spatial or {}
-        result["meta"]["found"] = bool(company or spatial)
+        result["company"] = company
+        result["spatial"] = spatial
 
         if company:
-            lat, lon, valid, _issue = safe_get_lat_lon(company)
+            lat = company.get("lat")
+            lon = company.get("lon")
+            coord = validate_coordinate(lat, lon)
 
-            if valid:
+            if coord["valid"]:
                 result["map_focus"] = {
-                    "center": [lon, lat],
+                    "lat": coord["lat"],
+                    "lon": coord["lon"],
                     "zoom": 12,
                 }
 
@@ -2230,32 +1524,10 @@ def get_selected_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, 
             or normalize_tax_id(link.get("target_tax_id")) == selected_tax_id
         ]
 
-        result["nearby"] = {
-            "companies": result["nearby_companies"],
-            "flood_sources": result["nearby_flood_sources"],
-        }
-
-    if selected_director_id:
-        director_links = [
-            link
-            for link in load_linkage_records()
-            if clean_text(link.get("director_id") or link.get("person_id")) == selected_director_id
-            or selected_director_id in clean_text(link.get("shared_directors_text"))
-        ]
-        result["director"] = {
-            "director_id": selected_director_id,
-            "connected_link_count": len(director_links),
-            "connected_links": director_links[:50],
-        }
-        result["meta"]["found"] = result["meta"]["found"] or bool(director_links)
-
     if selected_province:
-        province_context = build_province_context(selected_province)
-        result["province_context"] = province_context
-        result["province"] = province_context
-        result["meta"]["found"] = result["meta"]["found"] or bool(province_context)
+        result["province_context"] = build_province_context(selected_province)
 
-    return to_jsonable(result)
+    return result
 
 
 def find_nearby_companies(
@@ -2406,21 +1678,14 @@ def get_map_dashboard_payload(context: Optional[Dict[str, Any]] = None) -> Dict[
 
     layer_summary = layers.get("summary", {})
 
-    return to_jsonable({
+    return {
         "map": layers.get("map", {}),
         "layers": layers.get("layers", {}),
-        "layers_by_id": layers.get("layers_by_id", {}),
         "layer_order": layers.get("layer_order", []),
         "summary": layer_summary,
         "selected_context": selected_context,
-        "meta": {
-            "generated_at": now_iso(),
-            "degraded": bool(layers.get("meta", {}).get("degraded") or selected_context.get("meta", {}).get("degraded")),
-            "layer_count": layer_summary.get("layer_count", 0),
-            "record_count": layer_summary.get("record_count", layer_summary.get("feature_count", 0)),
-        },
         "generated_at": now_iso(),
-    })
+    }
 
 
 def get_external_viewer_map_payload(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -2431,41 +1696,14 @@ def get_external_viewer_map_payload(context: Optional[Dict[str, Any]] = None) ->
     """
 
     ctx = normalize_context(context)
-    ctx["public_mode"] = True
-
-    if not ctx.get("package_id"):
-        return to_jsonable({
-            "map": {
-                "center": MAP_DEFAULT_CENTER,
-                "zoom": MAP_DEFAULT_ZOOM,
-                "min_zoom": MAP_MIN_ZOOM,
-                "max_zoom": MAP_MAX_ZOOM,
-                "base_tile_url": MAP_BASE_TILE_URL,
-                "base_attribution": MAP_BASE_ATTRIBUTION,
-            },
-            "layer_order": [],
-            "layers": [],
-            "summary": {
-                "layer_count": 0,
-                "record_count": 0,
-                "generated_at": now_iso(),
-                "degraded": True,
-            },
-            "meta": {
-                "generated_at": now_iso(),
-                "degraded": True,
-                "reason": "public package context missing",
-                "package_id": "",
-                "public_mode": True,
-            },
-            "generated_at": now_iso(),
-        })
 
     layers = get_map_layers(ctx)
-    public_layers = []
-    for layer in layers.get("layers", []):
-        public_layers.append(
-            {
+
+    return {
+        "map": layers.get("map", {}),
+        "layer_order": layers.get("layer_order", []),
+        "layers": {
+            layer_id: {
                 "layer_id": layer.get("layer_id"),
                 "layer_name": layer.get("layer_name"),
                 "layer_type": layer.get("layer_type"),
@@ -2473,58 +1711,41 @@ def get_external_viewer_map_payload(context: Optional[Dict[str, Any]] = None) ->
                 "opacity": layer.get("opacity"),
                 "z_index": layer.get("z_index"),
                 "record_count": layer.get("record_count"),
-                "features": layer.get("features"),
+                "feature_collection": layer.get("feature_collection"),
                 "style": layer.get("style"),
-                "meta": {
-                    key: value
-                    for key, value in layer.get("meta", {}).items()
-                    if key not in {"source_path", "cache_path", "file_path"}
-                },
             }
-        )
-
-    return to_jsonable({
-        "map": layers.get("map", {}),
-        "layer_order": layers.get("layer_order", []),
-        "layers": public_layers,
-        "summary": layers.get("summary", {}),
-        "meta": {
-            "generated_at": now_iso(),
-            "degraded": bool(layers.get("meta", {}).get("degraded") or not ctx.get("package_id")),
-            "package_id": ctx.get("package_id"),
-            "public_mode": True,
+            for layer_id, layer in layers.get("layers", {}).items()
         },
+        "summary": layers.get("summary", {}),
         "generated_at": now_iso(),
-    })
+    }
 
 
 # ============================================================
 # 12) CACHE REBUILD
 # ============================================================
 
-def rebuild_map_cache(context: Optional[Dict[str, Any]] = None, force_refresh: Optional[bool] = None) -> Dict[str, Any]:
+def rebuild_map_cache(force_refresh: bool = True) -> Dict[str, Any]:
     """
     rebuild cache ทั้งหมดของ map_graph_service.py
     """
 
-    if isinstance(context, bool):
-        context = {"force_refresh": context}
-    ctx = normalize_context(context)
-    if force_refresh is not None:
-        ctx["force_refresh"] = bool(force_refresh)
-
-    results = {
-        "map_companies": get_map_companies(ctx),
-        "map_flood": get_map_flood(ctx),
-        "map_policy_exposure": get_map_policy_exposure(ctx),
-        "map_linkage_lines": get_map_linkage_lines(ctx),
-        "map_branches": get_map_branches(ctx),
-        "map_heatmap": get_map_heatmap(ctx),
-        "map_layers": get_map_layers(ctx),
-        "map_selected_context": get_selected_context(ctx),
+    context = {
+        "force_refresh": force_refresh,
     }
 
-    return to_jsonable({
+    results = {
+        "map_companies": get_map_companies(context),
+        "map_flood": get_map_flood(context),
+        "map_policy_exposure": get_map_policy_exposure(context),
+        "map_linkage_lines": get_map_linkage_lines(context),
+        "map_branches": get_map_branches(context),
+        "map_heatmap": get_map_heatmap(context),
+        "map_layers": get_map_layers(context),
+        "map_selected_context": get_selected_context(context),
+    }
+
+    return {
         "rebuilt": True,
         "results": {
             key: {
@@ -2535,43 +1756,11 @@ def rebuild_map_cache(context: Optional[Dict[str, Any]] = None, force_refresh: O
             for key, value in results.items()
         },
         "generated_at": now_iso(),
-    })
+    }
 
 
 # ============================================================
-# 13) BACKWARD COMPATIBILITY ALIASES
-# ============================================================
-
-def get_flood_map_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return get_map_flood(context)
-
-
-def get_company_map_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return get_map_companies(context)
-
-
-def get_policy_exposure_map_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return get_map_policy_exposure(context)
-
-
-def get_linkage_line_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return get_map_linkage_lines(context)
-
-
-def get_branch_map_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return get_map_branches(context)
-
-
-def get_heatmap_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return get_map_heatmap(context)
-
-
-def get_selected_map_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return get_selected_context(context)
-
-
-# ============================================================
-# 14) CLASS ADAPTER FOR API ROUTES
+# 13) CLASS ADAPTER FOR API ROUTES
 # ============================================================
 
 class MapGraphService:

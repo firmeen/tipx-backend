@@ -50,7 +50,6 @@ Data Quality ไม่ควรทำให้ระบบล่ม
 """
 
 from __future__ import annotations
-import hashlib
 try:
     import bootstrap
     BOOTSTRAP_LOADED = True
@@ -63,363 +62,77 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-try:
-    import pandas as pd
-    PANDAS_LOADED = True
-except Exception as e:
-    PANDAS_LOADED = False
-    PANDAS_ERROR = str(e)
+import pandas as pd
 
-    class _MiniDataFrame:
-        def __init__(self, records: Optional[List[Dict[str, Any]]] = None) -> None:
-            self._records = [dict(item) for item in records or [] if isinstance(item, dict)]
-            self.columns = list({key for record in self._records for key in record.keys()})
+from config import (
+    POLICY_INPUT_PATH,
+    LINKAGE_INPUT_PATH,
+    FLOOD_OUTPUT_DIR,
+    FLOOD_LATEST_DATABASE_PATH,
+    FLOOD_MASTER_DATABASE_PATH,
+    FLOOD_HISTORY_DIR,
+    POLICY_SHEETS,
+    POLICY_SHEET_INDEX_FALLBACK,
+    LINKAGE_SHEET_INDEX_FALLBACK,
+    FLOOD_LATEST_SHEETS,
+    FLOOD_MASTER_SHEETS,
+    DATA_QUALITY_RULES,
+    DATA_QUALITY_SEVERITIES,
+    DATA_QUALITY_CATEGORIES,
+    CACHE_TTL_SECONDS,
+)
 
-        @property
-        def empty(self) -> bool:
-            return not bool(self._records)
+from utils import (
+    add_tax_id_columns,
+    apply_search_sort_pagination,
+    build_issue,
+    clean_dataframe_common,
+    clean_text,
+    clean_text_lower,
+    combine_risk_levels,
+    count_distinct,
+    dataframe_to_records,
+    detect_policy_status_conflict,
+    file_info,
+    get_cache_file_path,
+    get_or_build_cache,
+    get_excel_sheet_names,
+    group_records_by,
+    is_empty_value,
+    normalize_columns,
+    normalize_province_name,
+    normalize_tax_id,
+    read_cache,
+    read_excel_by_logical_sheet,
+    read_excel_sheet,
+    read_excel_sheets,
+    read_json,
+    rename_columns_by_candidates,
+    to_bool,
+    to_datetime,
+    to_int,
+    to_jsonable,
+    to_number,
+    validate_coordinate,
+    validate_required_columns_df,
+    validate_tax_id,
+    write_cache,
+    write_json,
+)
 
-        def __len__(self) -> int:
-            return len(self._records)
+from schemas import (
+    POLICY_INPUT_SCHEMA,
+    LINKAGE_INPUT_SCHEMA,
+    FLOOD_INPUT_SCHEMA,
+    DATA_QUALITY_SUMMARY_SCHEMA,
+)
 
-        def iterrows(self):
-            for index, record in enumerate(self._records):
-                yield index, record
-
-        def to_dict(self, orient: str = "records") -> Any:
-            if orient == "records":
-                return [dict(item) for item in self._records]
-            return {index: dict(item) for index, item in enumerate(self._records)}
-
-        def get(self, key: str, default: Any = None) -> Any:
-            return [record.get(key, default) for record in self._records]
-
-    class _PandasFallback:
-        DataFrame = _MiniDataFrame
-
-        @staticmethod
-        def isna(value: Any) -> bool:
-            return value is None or (isinstance(value, float) and value != value)
-
-    pd = _PandasFallback()
-
-try:
-    from config import (
-        POLICY_INPUT_PATH,
-        LINKAGE_INPUT_PATH,
-        FLOOD_OUTPUT_DIR,
-        FLOOD_LATEST_DATABASE_PATH,
-        FLOOD_MASTER_DATABASE_PATH,
-        FLOOD_HISTORY_DIR,
-        POLICY_SHEETS,
-        POLICY_SHEET_INDEX_FALLBACK,
-        LINKAGE_SHEET_INDEX_FALLBACK,
-        FLOOD_LATEST_SHEETS,
-        FLOOD_MASTER_SHEETS,
-        DATA_QUALITY_RULES,
-        DATA_QUALITY_SEVERITIES,
-        DATA_QUALITY_CATEGORIES,
-        CACHE_TTL_SECONDS,
-    )
-    CONFIG_LOADED = True
-except Exception as e:
-    CONFIG_LOADED = False
-    CONFIG_ERROR = str(e)
-    _DQ_BASE_DIR = Path(__file__).resolve().parent
-    POLICY_INPUT_PATH = _DQ_BASE_DIR / "input" / "policy.xlsx"
-    LINKAGE_INPUT_PATH = _DQ_BASE_DIR / "input" / "linkage.xlsx"
-    FLOOD_OUTPUT_DIR = _DQ_BASE_DIR / "output" / "flood"
-    FLOOD_LATEST_DATABASE_PATH = FLOOD_OUTPUT_DIR / "latest.xlsx"
-    FLOOD_MASTER_DATABASE_PATH = FLOOD_OUTPUT_DIR / "master.xlsx"
-    FLOOD_HISTORY_DIR = FLOOD_OUTPUT_DIR / "history"
-    POLICY_SHEETS = {}
-    POLICY_SHEET_INDEX_FALLBACK = {}
-    LINKAGE_SHEET_INDEX_FALLBACK = {}
-    FLOOD_LATEST_SHEETS = {}
-    FLOOD_MASTER_SHEETS = {}
-    DATA_QUALITY_RULES = {}
-    DATA_QUALITY_SEVERITIES = {}
-    DATA_QUALITY_CATEGORIES = {}
-    CACHE_TTL_SECONDS = 300
-
-try:
-    from utils import (
-        add_tax_id_columns,
-        apply_search_sort_pagination,
-        build_issue,
-        clean_dataframe_common,
-        clean_text,
-        clean_text_lower,
-        combine_risk_levels,
-        count_distinct,
-        dataframe_to_records,
-        detect_policy_status_conflict,
-        file_info,
-        get_cache_file_path,
-        get_or_build_cache,
-        get_excel_sheet_names,
-        group_records_by,
-        is_empty_value,
-        normalize_columns,
-        normalize_province_name,
-        normalize_tax_id,
-        read_cache,
-        read_excel_by_logical_sheet,
-        read_excel_sheet,
-        read_excel_sheets,
-        read_json,
-        rename_columns_by_candidates,
-        to_bool,
-        to_datetime,
-        to_jsonable,
-        to_number,
-        validate_coordinate,
-        validate_required_columns_df,
-        validate_tax_id,
-        write_cache,
-        write_json,
-    )
-    UTILS_LOADED = True
-except Exception as e:
-    UTILS_LOADED = False
-    UTILS_ERROR = str(e)
-
-    def clean_text(value: Any, default: str = "") -> str:
-        if value is None:
-            return default
-        text = str(value).strip()
-        return text if text else default
-
-    def clean_text_lower(value: Any, default: str = "") -> str:
-        return clean_text(value, default=default).lower()
-
-    def is_empty_value(value: Any) -> bool:
-        if value is None:
-            return True
-        if isinstance(value, str) and value.strip() in {"", "-", "N/A", "n/a", "nan", "NaN", "None", "none", "null"}:
-            return True
-        if isinstance(value, float) and value != value:
-            return True
-        if isinstance(value, (list, tuple, set, dict)) and len(value) == 0:
-            return True
-        return False
-
-    def to_number(value: Any, default: Any = None) -> Any:
-        if is_empty_value(value):
-            return default
-        try:
-            text = str(value).strip().replace(",", "")
-            if text.endswith("%"):
-                text = text[:-1]
-            number = float(text)
-        except Exception:
-            return default
-        if number != number or number in {float("inf"), float("-inf")}:
-            return default
-        return number
-
-    def to_bool(value: Any, default: bool = False) -> bool:
-        if isinstance(value, bool):
-            return value
-        if value is None:
-            return default
-        text = clean_text_lower(value)
-        if text in {"1", "true", "yes", "y", "on"}:
-            return True
-        if text in {"0", "false", "no", "n", "off"}:
-            return False
-        return default
-
-    def to_datetime(value: Any, default: Any = None) -> Any:
-        if isinstance(value, datetime):
-            return value
-        if is_empty_value(value):
-            return default
-        text = clean_text(value)
-        try:
-            return datetime.fromisoformat(text[:19])
-        except Exception:
-            return default
-
-    def to_jsonable(value: Any) -> Any:
-        if value is None or isinstance(value, (str, int, bool)):
-            return value
-        if isinstance(value, float):
-            return None if value != value or value in {float("inf"), float("-inf")} else value
-        if isinstance(value, datetime):
-            return value.isoformat()
-        if isinstance(value, Path):
-            return str(value)
-        if isinstance(value, dict):
-            return {clean_text(key): to_jsonable(item) for key, item in value.items()}
-        if isinstance(value, (list, tuple, set)):
-            return [to_jsonable(item) for item in value]
-        if hasattr(value, "to_dict"):
-            try:
-                return to_jsonable(value.to_dict(orient="records"))
-            except Exception:
-                return to_jsonable(value.to_dict())
-        if hasattr(value, "item"):
-            try:
-                return to_jsonable(value.item())
-            except Exception:
-                pass
-        return clean_text(value)
-
-    def normalize_tax_id(value: Any) -> str:
-        return "".join(ch for ch in clean_text(value) if ch.isdigit())
-
-    def validate_tax_id(value: Any) -> Dict[str, Any]:
-        tax_id = normalize_tax_id(value)
-        issues = []
-        if not tax_id:
-            issues.append("missing_tax_id")
-        elif len(tax_id) != 13:
-            issues.append("invalid_tax_id_format")
-        return {"valid": not issues, "tax_id_norm": tax_id, "issues": issues}
-
-    def validate_coordinate(lat: Any, lon: Any) -> Dict[str, Any]:
-        lat_number = to_number(lat, None)
-        lon_number = to_number(lon, None)
-        issues = []
-        if lat_number is None or lon_number is None:
-            issues.append("missing_coordinate")
-        elif lat_number == 0 and lon_number == 0:
-            issues.append("zero_coordinate")
-        elif not (5.0 <= lat_number <= 21.5 and 97.0 <= lon_number <= 106.5):
-            issues.append("outside_thailand")
-        return {"valid": not issues, "lat": lat_number, "lon": lon_number, "issues": issues}
-
-    def dataframe_to_records(value: Any) -> List[Dict[str, Any]]:
-        if value is None:
-            return []
-        if isinstance(value, list):
-            return [dict(item) for item in value if isinstance(item, dict)]
-        if isinstance(value, dict):
-            return [dict(value)]
-        if hasattr(value, "to_dict"):
-            try:
-                return value.to_dict(orient="records")
-            except Exception:
-                data = value.to_dict()
-                return data if isinstance(data, list) else [data]
-        return []
-
-    def build_issue(**kwargs: Any) -> Dict[str, Any]:
-        code = clean_text(kwargs.get("code"), default="data_quality_issue")
-        dataset = clean_text(kwargs.get("dataset"), default="unknown")
-        field = clean_text(kwargs.get("field"), default="")
-        record_key = clean_text(kwargs.get("record_key"), default="")
-        return {
-            "issue_id": f"{dataset}:{code}:{field}:{record_key}",
-            "code": code,
-            "message": clean_text(kwargs.get("message"), default=code),
-            "category": clean_text(kwargs.get("category"), default="system"),
-            "severity": clean_text_lower(kwargs.get("severity"), default="info"),
-            "dataset": dataset,
-            "field": field,
-            "record_key": record_key,
-            "value": kwargs.get("value"),
-            "suggestion": clean_text(kwargs.get("suggestion"), default=""),
-        }
-
-    def get_cache_file_path(cache_key: str) -> Path:
-        return Path(__file__).resolve().parent.parent / "cache" / f"{clean_text(cache_key)}.json"
-
-    def read_json(path: Path, default: Any = None) -> Any:
-        try:
-            path = Path(path)
-            if not path.exists():
-                return [] if default is None else default
-            import json
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return [] if default is None else default
-
-    def write_json(path: Path, data: Any) -> Path:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        import json
-        path.write_text(json.dumps(to_jsonable(data), ensure_ascii=False, indent=2), encoding="utf-8")
-        return path
-
-    def read_cache(cache_key: str, default: Any = None) -> Any:
-        return read_json(get_cache_file_path(cache_key), default=default if default is not None else {})
-
-    def write_cache(cache_key: str, data: Any, **kwargs: Any) -> Path:
-        return write_json(get_cache_file_path(cache_key), data)
-
-    def get_or_build_cache(cache_key: str, builder: Any, ttl_seconds: int = 0, force_refresh: bool = False, source: str = "") -> Dict[str, Any]:
-        return {"data": builder(), "cache_used": False, "source": source}
-
-    def apply_search_sort_pagination(records: List[Dict[str, Any]], context: Dict[str, Any], searchable_fields: Optional[List[str]] = None) -> Dict[str, Any]:
-        page = max(1, int(context.get("page", 1) or 1))
-        page_size = max(1, min(500, int(context.get("page_size", 50) or 50)))
-        search = clean_text_lower(context.get("search", ""))
-        filtered = list(records or [])
-        if search:
-            fields = searchable_fields or sorted({key for record in filtered[:100] for key in record.keys()})
-            filtered = [record for record in filtered if any(search in clean_text_lower(record.get(field)) for field in fields)]
-        total = len(filtered)
-        total_pages = (total + page_size - 1) // page_size if total else 0
-        start = (page - 1) * page_size
-        page_records = filtered[start:start + page_size]
-        return {"records": page_records, "total": total, "page": page, "page_size": page_size, "total_pages": total_pages, "has_next": bool(total_pages and page < total_pages), "has_prev": bool(total_pages and page > 1)}
-
-    def add_tax_id_columns(df: Any) -> Any: return df
-    def clean_dataframe_common(df: Any) -> Any: return df
-    def combine_risk_levels(values: Iterable[Any]) -> str: return next((clean_text(v) for v in values if clean_text(v)), "Unknown")
-    def count_distinct(records: Iterable[Dict[str, Any]], field: str) -> int: return len({clean_text(item.get(field)) for item in records if clean_text(item.get(field))})
-    def detect_policy_status_conflict(record: Dict[str, Any]) -> Dict[str, Any]: return {"has_conflict": False, "issues": []}
-    def file_info(path: Path) -> Dict[str, Any]: return {"path": str(path), "exists": Path(path).exists()}
-    def get_excel_sheet_names(path: Path) -> List[str]: return []
-    def group_records_by(records: List[Dict[str, Any]], field: str) -> Dict[str, List[Dict[str, Any]]]:
-        grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-        for record in records:
-            grouped[clean_text(record.get(field), default="__empty__")].append(record)
-        return dict(grouped)
-    def normalize_columns(df: Any) -> Any: return df
-    def normalize_province_name(value: Any) -> str: return clean_text(value)
-    def read_excel_by_logical_sheet(*args: Any, **kwargs: Any) -> Any: return pd.DataFrame()
-    def read_excel_sheet(*args: Any, **kwargs: Any) -> Any: return pd.DataFrame()
-    def read_excel_sheets(*args: Any, **kwargs: Any) -> Dict[str, Any]: return {}
-    def rename_columns_by_candidates(df: Any, *args: Any, **kwargs: Any) -> Any: return df
-    def validate_required_columns_df(df: Any, required_columns: List[str], **kwargs: Any) -> Dict[str, Any]:
-        columns = set(getattr(df, "columns", []) or [])
-        missing = [field for field in required_columns if field not in columns]
-        return {"valid": not missing, "missing_columns": missing}
-
-try:
-    from schemas import (
-        POLICY_INPUT_SCHEMA,
-        LINKAGE_INPUT_SCHEMA,
-        FLOOD_INPUT_SCHEMA,
-        DATA_QUALITY_SUMMARY_SCHEMA,
-    )
-    SCHEMAS_LOADED = True
-except Exception as e:
-    SCHEMAS_LOADED = False
-    SCHEMAS_ERROR = str(e)
-    POLICY_INPUT_SCHEMA = {}
-    LINKAGE_INPUT_SCHEMA = {}
-    FLOOD_INPUT_SCHEMA = {}
-    DATA_QUALITY_SUMMARY_SCHEMA = {}
-
-try:
-    from config import (
-        POLICY_FACT_COLUMNS,
-        POLICY_LOCATION_COLUMNS,
-        PROVINCE_BRANCH_COLUMNS,
-        LINKAGE_COLUMNS,
-    )
-    CONFIG_COLUMN_MAPPINGS_LOADED = True
-except Exception as e:
-    CONFIG_COLUMN_MAPPINGS_LOADED = False
-    CONFIG_COLUMN_MAPPINGS_ERROR = str(e)
-    POLICY_FACT_COLUMNS = {}
-    POLICY_LOCATION_COLUMNS = {}
-    PROVINCE_BRANCH_COLUMNS = {}
-    LINKAGE_COLUMNS = {}
+from config import (
+    POLICY_FACT_COLUMNS,
+    POLICY_LOCATION_COLUMNS,
+    PROVINCE_BRANCH_COLUMNS,
+    LINKAGE_COLUMNS,
+)
 
 
 # ============================================================
@@ -466,17 +179,32 @@ def normalize_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any
     """
 
     result = dict(DEFAULT_CONTEXT)
-    result.update(context or {})
+    if isinstance(context, dict):
+        result.update(context)
 
-    result["force_refresh"] = bool(result.get("force_refresh", False))
-    result["page"] = int(result.get("page", 1) or 1)
-    result["page_size"] = int(result.get("page_size", 50) or 50)
+    result["force_refresh"] = bool(to_bool(result.get("force_refresh", False), default=False))
+
+    page = to_int(result.get("page", 1), default=1) or 1
+    page_size = to_int(result.get("page_size", 50), default=50) or 50
+    result["page"] = max(1, page)
+    result["page_size"] = max(1, min(page_size, 10000))
+
     result["search"] = clean_text(result.get("search", ""))
     result["sort_by"] = clean_text(result.get("sort_by", ""))
     result["sort_dir"] = clean_text_lower(result.get("sort_dir", "asc")) or "asc"
+    if result["sort_dir"] not in {"asc", "desc"}:
+        result["sort_dir"] = "asc"
 
-    if not isinstance(result.get("filters"), dict):
-        result["filters"] = {}
+    filters = result.get("filters")
+    if not isinstance(filters, dict):
+        filters = {}
+
+    # Support API/query contexts that pass filters at the top level.
+    for key in ["severity", "category", "dataset", "code"]:
+        value = result.get(key)
+        if value not in (None, "") and key not in filters:
+            filters[key] = value
+    result["filters"] = filters
 
     return result
 
@@ -2435,6 +2163,46 @@ def get_data_quality_summary(context: Optional[Dict[str, Any]] = None) -> Dict[s
     return response_summary
 
 
+def get_data_quality_issues(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Public issue-list payload for Data Quality Dashboard.
+
+    This is intentionally a thin wrapper over the existing issue builders so
+    API/frontend callers can request the issue table directly without unpacking
+    get_data_quality_summary().
+    """
+
+    ctx = normalize_context(context)
+
+    if ctx.get("force_refresh"):
+        issues = build_all_data_quality_issues()
+        write_cache(
+            DATA_QUALITY_ISSUES_CACHE_KEY,
+            issues,
+            ttl_seconds=CACHE_TTL_SECONDS.get("data_quality", 900),
+            source="data_quality.py",
+        )
+    else:
+        issues = read_cache(DATA_QUALITY_ISSUES_CACHE_KEY, default=None)
+        if not isinstance(issues, list):
+            issues = build_all_data_quality_issues()
+
+    paginated = apply_issue_context(issues, ctx)
+
+    return {
+        "records": paginated["records"],
+        "issues": paginated["records"],
+        "total": paginated["total"],
+        "page": paginated["page"],
+        "page_size": paginated["page_size"],
+        "total_pages": paginated["total_pages"],
+        "has_next": paginated["has_next"],
+        "has_prev": paginated["has_prev"],
+        "summary": summarize_issues(issues),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
 # ============================================================
 # 12) API-SPECIFIC QUALITY FUNCTIONS
 # ============================================================
@@ -2771,6 +2539,12 @@ def build_data_quality_dashboard_payload(context: Optional[Dict[str, Any]] = Non
 # 15) MODULE HEALTH
 # ============================================================
 
+def get_data_quality_dashboard_payload(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Alias for dashboard/API naming consistency."""
+
+    return build_data_quality_dashboard_payload(context)
+
+
 def get_data_quality_module_status() -> Dict[str, Any]:
     """
     คืนสถานะ module data_quality.py
@@ -2818,1171 +2592,3 @@ def run_data_quality_self_test() -> Dict[str, Any]:
         "summary": summary,
         "module_status": get_data_quality_module_status(),
     }
-
-
-# ============================================================
-# 16) PHASE 11 STABLE DATA QUALITY API CONTRACT
-# ============================================================
-
-_legacy_check_flood_quality = check_flood_quality
-_legacy_build_all_data_quality_issues = build_all_data_quality_issues
-_legacy_build_data_quality_summary = build_data_quality_summary
-_legacy_get_data_quality_summary = get_data_quality_summary
-_legacy_get_company_quality_flags = get_company_quality_flags
-
-SEVERITY_LEVELS: List[str] = ["critical", "high", "medium", "low", "info"]
-SEVERITY_ALIASES: Dict[str, str] = {
-    "error": "high",
-    "warning": "medium",
-    "warn": "medium",
-    "normal": "info",
-}
-ISSUE_CATEGORIES: List[str] = [
-    "input_file",
-    "schema",
-    "required_column",
-    "missing_value",
-    "tax_id",
-    "coordinate",
-    "duplicate",
-    "policy",
-    "linkage",
-    "flood",
-    "spatial",
-    "company_unified",
-    "status_conflict",
-    "cache",
-    "runtime",
-    "json_safety",
-    "package_readiness",
-    "map_readiness",
-    "frontend_readiness",
-    "data_quality",
-]
-SOURCE_NAMES: List[str] = [
-    "policy_input",
-    "linkage_input",
-    "flood_output",
-    "company_unified_master",
-    "policy_fact",
-    "linkage_graph",
-    "director_master",
-    "flood_computed_risk",
-    "spatial_join_result",
-    "policy_flood_exposure",
-    "map_layers",
-    "dashboard_summary",
-    "package_export",
-    "system",
-    "unknown",
-]
-QUALITY_PENALTY: Dict[str, int] = {
-    "critical": 25,
-    "high": 10,
-    "medium": 4,
-    "low": 1,
-    "info": 0,
-}
-REQUIRED_FIELDS_BY_SOURCE: Dict[str, List[str]] = {
-    "company_unified_master": ["tax_id_norm", "company_name", "province", "has_policy", "has_linkage", "has_location"],
-    "policy_fact": ["tax_id_norm", "company_name", "product", "subclass", "status_now", "premium", "loss", "suminsure"],
-    "linkage_graph": ["tax_id_norm", "company_name", "director_name", "director_id"],
-    "flood_computed_risk": ["source_id", "source_type", "risk_level", "latitude", "longitude", "province"],
-    "spatial_join_result": ["tax_id_norm", "company_name", "flood_risk_level", "flood_join_level"],
-}
-
-
-def now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
-
-
-def json_safe(value: Any) -> Any:
-    return to_jsonable(value)
-
-
-def safe_len(value: Any) -> int:
-    try:
-        return len(value or [])
-    except Exception:
-        return 0
-
-
-def safe_record_preview(records: Any, limit: int = 5) -> List[Dict[str, Any]]:
-    return json_safe(dataframe_to_records(records)[: max(0, int(limit or 0))])
-
-
-def normalize_severity(severity: Any) -> str:
-    value = clean_text_lower(severity, default="info")
-    value = SEVERITY_ALIASES.get(value, value)
-    return value if value in SEVERITY_LEVELS else "info"
-
-
-def normalize_category(category: Any, issue_type: Any = "") -> str:
-    value = clean_text_lower(category, default="")
-    issue_text = clean_text_lower(issue_type)
-    if value in ISSUE_CATEGORIES:
-        return value
-    if value in {"input", "file"}:
-        return "input_file"
-    if value in {"location"} or "coordinate" in issue_text or "lat" in issue_text or "lon" in issue_text:
-        return "coordinate"
-    if value in {"system"}:
-        return "cache"
-    if value in {"spatial_join"}:
-        return "spatial"
-    if "status_conflict" in issue_text:
-        return "status_conflict"
-    return "data_quality"
-
-
-def normalize_source(source: Any, dataset: Any = "") -> str:
-    value = clean_text_lower(source or dataset, default="unknown")
-    if value == "cache":
-        value = clean_text_lower(dataset, default="unknown")
-    return value if value in SOURCE_NAMES else clean_text_lower(dataset, default=value or "unknown") or "unknown"
-
-
-def issue_key(issue: Dict[str, Any]) -> str:
-    parts = [
-        issue.get("source"),
-        issue.get("category"),
-        issue.get("issue_type"),
-        issue.get("record_key"),
-        issue.get("tax_id_norm"),
-        issue.get("field"),
-        issue.get("row_number"),
-    ]
-    return "|".join(clean_text(part) for part in parts)
-
-
-def make_quality_issue(
-    issue_type: str,
-    message: str,
-    severity: str = "medium",
-    category: str = "data_quality",
-    source: str = "unknown",
-    source_file: str = "",
-    source_sheet: str = "",
-    record_key: str = "",
-    row_number: Optional[int] = None,
-    tax_id_norm: str = "",
-    company_name: str = "",
-    field: str = "",
-    expected: Any = None,
-    actual: Any = None,
-    suggestion: str = "",
-    meta: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    issue = {
-        "severity": normalize_severity(severity),
-        "category": normalize_category(category, issue_type),
-        "source": normalize_source(source),
-        "source_file": clean_text(source_file),
-        "source_sheet": clean_text(source_sheet),
-        "record_key": clean_text(record_key),
-        "row_number": row_number,
-        "tax_id_norm": normalize_tax_id(tax_id_norm or record_key),
-        "company_name": clean_text(company_name),
-        "field": clean_text(field),
-        "issue_type": clean_text(issue_type, default="data_quality_issue"),
-        "message": clean_text(message, default=issue_type),
-        "expected": expected,
-        "actual": actual,
-        "suggestion": clean_text(suggestion),
-        "is_blocker": normalize_severity(severity) == "critical",
-        "created_at": now_iso(),
-        "meta": dict(meta or {}),
-    }
-    key = issue_key(issue)
-    issue["issue_key"] = key
-    issue["issue_id"] = "DQ_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16].upper()
-    issue["code"] = issue["issue_type"]
-    issue["dataset"] = issue["source"]
-    issue["value"] = actual
-    return json_safe(issue)
-
-
-def normalize_issue(issue: Any) -> Dict[str, Any]:
-    if not isinstance(issue, dict):
-        return make_quality_issue(
-            issue_type="malformed_issue",
-            message="Malformed quality issue was normalized.",
-            severity="low",
-            category="json_safety",
-            source="unknown",
-            actual=issue,
-        )
-    return make_quality_issue(
-        issue_type=issue.get("issue_type") or issue.get("code") or "data_quality_issue",
-        message=issue.get("message") or issue.get("description") or issue.get("code") or "Data quality issue.",
-        severity=issue.get("severity", "info"),
-        category=issue.get("category", "data_quality"),
-        source=issue.get("source") or issue.get("dataset") or "unknown",
-        source_file=issue.get("source_file", ""),
-        source_sheet=issue.get("source_sheet", ""),
-        record_key=issue.get("record_key", ""),
-        row_number=issue.get("row_number"),
-        tax_id_norm=issue.get("tax_id_norm") or issue.get("record_key") or "",
-        company_name=issue.get("company_name", ""),
-        field=issue.get("field", ""),
-        expected=issue.get("expected"),
-        actual=issue.get("actual", issue.get("value")),
-        suggestion=issue.get("suggestion", ""),
-        meta=issue.get("meta") or issue.get("extra") or {},
-    )
-
-
-def dedupe_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    seen = set()
-    result: List[Dict[str, Any]] = []
-    for raw_issue in issues or []:
-        issue = normalize_issue(raw_issue)
-        key = issue.get("issue_key") or issue_key(issue)
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(issue)
-    return result
-
-
-def group_issues(issues: List[Dict[str, Any]], field: str) -> Dict[str, int]:
-    counter = Counter(clean_text(issue.get(field), default="unknown") for issue in issues or [])
-    return dict(counter)
-
-
-def score_quality(issues: List[Dict[str, Any]], source_record_count: int = 0) -> Dict[str, Any]:
-    normalized = dedupe_issues(issues or [])
-    severity_counts = {severity: 0 for severity in SEVERITY_LEVELS}
-    for issue in normalized:
-        severity_counts[normalize_severity(issue.get("severity"))] += 1
-    if not normalized and not source_record_count:
-        return {
-            "score": 0.0,
-            "grade": "unknown",
-            "severity_counts": severity_counts,
-            "issue_count": 0,
-            "record_count": 0,
-        }
-    penalty = sum(QUALITY_PENALTY[severity] * count for severity, count in severity_counts.items())
-    score = max(0.0, min(100.0, 100.0 - float(penalty)))
-    grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 40 else "F"
-    return {
-        "score": round(score, 2),
-        "grade": grade,
-        "severity_counts": severity_counts,
-        "issue_count": len(normalized),
-        "record_count": int(source_record_count or 0),
-    }
-
-
-def summarize_issues_v2(issues: List[Dict[str, Any]], source_record_count: int = 0) -> Dict[str, Any]:
-    normalized = dedupe_issues(issues or [])
-    score = score_quality(normalized, source_record_count)
-    by_source = group_issues(normalized, "source")
-    by_category = group_issues(normalized, "category")
-    by_severity = {severity: score["severity_counts"].get(severity, 0) for severity in SEVERITY_LEVELS}
-    return {
-        "overall_score": score["score"],
-        "overall_grade": score["grade"],
-        "issue_count": len(normalized),
-        "critical_count": by_severity.get("critical", 0),
-        "high_count": by_severity.get("high", 0),
-        "medium_count": by_severity.get("medium", 0),
-        "low_count": by_severity.get("low", 0),
-        "info_count": by_severity.get("info", 0),
-        "source_count": len(by_source),
-        "degraded": bool(len(by_source) == 0 or any(issue.get("issue_type") in {"missing_source", "checker_failed"} for issue in normalized)),
-        "by_source": by_source,
-        "by_category": by_category,
-        "by_severity": by_severity,
-    }
-
-
-def make_quality_response(
-    data: Optional[Dict[str, Any]] = None,
-    message: str = "Data quality operation completed.",
-    meta: Optional[Dict[str, Any]] = None,
-    errors: Optional[List[Dict[str, Any]]] = None,
-    success: bool = True,
-) -> Dict[str, Any]:
-    response_meta = {
-        "module": "data_quality",
-        "generated_at": now_iso(),
-        "source_count": 0,
-        "issue_count": 0,
-        "degraded": False,
-    }
-    response_meta.update(meta or {})
-    return json_safe(
-        {
-            "success": bool(success),
-            "message": message,
-            "data": data or {},
-            "meta": response_meta,
-            "errors": errors or [],
-        }
-    )
-
-
-def make_quality_error(
-    message: str = "Data quality operation failed.",
-    error_type: str = "RuntimeError",
-    status_code: int = 500,
-    data: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    return make_quality_response(
-        data=data or {},
-        message=message,
-        meta={"status_code": status_code, "degraded": True},
-        errors=[{"type": error_type, "message": message}],
-        success=False,
-    )
-
-
-def make_degraded_quality_response(reason: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return make_quality_response(
-        data=data or {"issues": [], "summary": {}},
-        message="Data quality operation completed with missing source data.",
-        meta={"degraded": True, "reason": reason},
-        errors=[],
-        success=True,
-    )
-
-
-def normalize_source_payload_to_records(payload: Any, source_name: Optional[str] = None) -> List[Dict[str, Any]]:
-    records: List[Dict[str, Any]] = []
-
-    def append_items(items: Any, record_kind: str = "") -> None:
-        if not isinstance(items, list):
-            return
-        for item in items:
-            if isinstance(item, dict):
-                record = dict(item)
-                if record_kind and "record_kind" not in record:
-                    record["record_kind"] = record_kind
-                if source_name and "source" not in record:
-                    record["source"] = source_name
-                records.append(record)
-
-    if isinstance(payload, list):
-        append_items(payload)
-        return records
-
-    if not isinstance(payload, dict):
-        return []
-
-    for key in ["records", "items", "companies", "issues", "packages"]:
-        if isinstance(payload.get(key), list):
-            append_items(payload[key], key[:-1] if key.endswith("s") else key)
-            return records
-
-    data = payload.get("data")
-    if isinstance(data, list):
-        append_items(data)
-        return records
-    if isinstance(data, dict):
-        extracted = normalize_source_payload_to_records(data, source_name=source_name)
-        if extracted:
-            return extracted
-
-    if isinstance(payload.get("nodes"), list) or isinstance(payload.get("edges"), list):
-        append_items(payload.get("nodes", []), "node")
-        append_items(payload.get("edges", []), "edge")
-        return records
-
-    layers = payload.get("layers")
-    if isinstance(layers, dict):
-        layer_iterable = layers.values()
-    elif isinstance(layers, list):
-        layer_iterable = layers
-    else:
-        layer_iterable = []
-
-    for layer in layer_iterable:
-        if not isinstance(layer, dict):
-            continue
-        layer_id = clean_text(layer.get("layer_id"))
-        feature_collection = layer.get("features") or layer.get("feature_collection")
-        if isinstance(feature_collection, dict) and isinstance(feature_collection.get("features"), list):
-            for feature in feature_collection["features"]:
-                if not isinstance(feature, dict):
-                    continue
-                properties = feature.get("properties", {}) if isinstance(feature.get("properties"), dict) else {}
-                records.append(
-                    {
-                        "record_kind": "map_feature",
-                        "source": source_name or "map_layers",
-                        "layer_id": layer_id,
-                        "feature_type": properties.get("feature_type"),
-                        **properties,
-                    }
-                )
-    if records:
-        return records
-
-    features = payload.get("features")
-    if isinstance(features, dict) and isinstance(features.get("features"), list):
-        for feature in features["features"]:
-            if isinstance(feature, dict):
-                records.append(
-                    {
-                        "record_kind": "map_feature",
-                        "source": source_name or "map_layers",
-                        **(feature.get("properties", {}) if isinstance(feature.get("properties"), dict) else {}),
-                    }
-                )
-        return records
-
-    for key in ["summary", "cards", "charts"]:
-        value = payload.get(key)
-        if isinstance(value, list):
-            append_items(value, key[:-1] if key.endswith("s") else key)
-        elif isinstance(value, dict):
-            for item_key, item_value in value.items():
-                if isinstance(item_value, dict):
-                    records.append({"record_kind": key, "key": item_key, **item_value})
-                else:
-                    records.append({"record_kind": key, "key": item_key, "value": item_value})
-
-    return records
-
-
-def load_cache_records(cache_key: str, source_name: Optional[str] = None) -> List[Dict[str, Any]]:
-    try:
-        payload = read_json(get_cache_file_path(cache_key), default={})
-    except Exception:
-        return []
-    return json_safe(normalize_source_payload_to_records(payload, source_name=source_name or cache_key))
-
-
-def load_policy_records() -> List[Dict[str, Any]]:
-    for key in ["policy_fact", "policy_company_summary", "policy_product_summary"]:
-        records = load_cache_records(key, "policy_fact")
-        if records:
-            return records
-    return []
-
-
-def load_linkage_records() -> List[Dict[str, Any]]:
-    for key in ["linkage_graph", "linkage_nodes", "linkage_edges", "shared_director_links", "director_company_pairs"]:
-        records = load_cache_records(key, "linkage_graph")
-        if records:
-            return records
-    return []
-
-
-def load_flood_records() -> List[Dict[str, Any]]:
-    for key in ["flood_computed_risk", "province_risk_summary", "rainfall_latest", "waterlevel_latest", "large_dam_latest", "medium_dam_latest"]:
-        records = load_cache_records(key, "flood_computed_risk")
-        if records:
-            return records
-    return []
-
-
-def load_company_unified_records() -> List[Dict[str, Any]]:
-    return load_cache_records("company_unified_master", "company_unified_master")
-
-
-def load_spatial_records() -> List[Dict[str, Any]]:
-    for key in ["spatial_join_result", "company_flood_context", "policy_flood_exposure"]:
-        records = load_cache_records(key, "spatial_join_result")
-        if records:
-            return records
-    return []
-
-
-def check_input_file_exists(path: Optional[Any] = None, source_name: str = "", required: bool = True) -> List[Dict[str, Any]]:
-    if path is None:
-        issues: List[Dict[str, Any]] = []
-        issues.extend(check_policy_input_file())
-        issues.extend(check_linkage_input_file())
-        issues.extend(check_flood_source_paths())
-        return issues
-
-    target = Path(path)
-    if target.exists():
-        return []
-    return [
-        make_quality_issue(
-            issue_type=f"missing_{clean_text(source_name, default='input_file')}",
-            message=f"Missing required input/source path: {target}",
-            severity="critical" if required else "medium",
-            category="input_file",
-            source=source_name or "unknown",
-            source_file=str(target),
-            field="path",
-            expected="existing file or directory",
-            actual=str(target),
-            suggestion="Verify configured input/source path before running data-dependent phases.",
-        )
-    ]
-
-
-def check_policy_input_file(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    return check_input_file_exists(POLICY_INPUT_PATH, "policy_input", required=True)
-
-
-def check_linkage_input_file(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    return check_input_file_exists(LINKAGE_INPUT_PATH, "linkage_input", required=True)
-
-
-def check_flood_source_paths(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    issues: List[Dict[str, Any]] = []
-    issues.extend(check_input_file_exists(FLOOD_OUTPUT_DIR, "flood_output", required=True))
-    issues.extend(check_input_file_exists(FLOOD_LATEST_DATABASE_PATH, "flood_output", required=True))
-    issues.extend(check_input_file_exists(FLOOD_MASTER_DATABASE_PATH, "flood_output", required=True))
-    return issues
-
-
-def check_required_columns(records: Any, required_fields: List[str], source_name: str) -> List[Dict[str, Any]]:
-    record_list = dataframe_to_records(records)
-    if not record_list:
-        return [
-            make_quality_issue(
-                issue_type="missing_source",
-                message=f"{source_name} source is missing or empty.",
-                severity="high",
-                category="cache",
-                source=source_name,
-                field="records",
-                expected="non-empty records",
-                actual=0,
-            )
-        ]
-    available = {key for record in record_list[:200] for key in record.keys()}
-    return [
-        make_quality_issue(
-            issue_type="missing_required_column",
-            message=f"{source_name} is missing required field {field}.",
-            severity="high",
-            category="required_column",
-            source=source_name,
-            field=field,
-            expected=field,
-            actual="missing",
-        )
-        for field in required_fields
-        if field not in available
-    ]
-
-
-def check_missing_values(records: Any, fields: List[str], source_name: str, severity: str = "medium") -> List[Dict[str, Any]]:
-    record_list = dataframe_to_records(records)
-    total = len(record_list)
-    if not total:
-        return []
-    issues: List[Dict[str, Any]] = []
-    for field in fields:
-        missing_count = sum(1 for record in record_list if is_empty_value(record.get(field)))
-        if not missing_count:
-            continue
-        ratio = missing_count / total
-        issue_severity = "high" if field in {"tax_id_norm", "company_name", "province", "risk_level", "status_now", "director_name"} and ratio >= 0.25 else severity
-        issues.append(
-            make_quality_issue(
-                issue_type="missing_value",
-                message=f"{source_name}.{field} has missing values.",
-                severity=issue_severity,
-                category="missing_value",
-                source=source_name,
-                field=field,
-                expected="non-empty value",
-                actual=f"{missing_count}/{total}",
-                meta={"missing_count": missing_count, "missing_ratio": round(ratio, 4), "record_count": total},
-            )
-        )
-    return issues
-
-
-def check_duplicate_keys(records: Any, key_fields: Any, source_name: str) -> List[Dict[str, Any]]:
-    record_list = dataframe_to_records(records)
-    fields = [key_fields] if isinstance(key_fields, str) else list(key_fields or [])
-    counter: Dict[str, int] = {}
-    for record in record_list:
-        parts = [clean_text(record.get(field)) for field in fields]
-        if not any(parts):
-            continue
-        key = "|".join(parts)
-        counter[key] = counter.get(key, 0) + 1
-    duplicates = {key: count for key, count in counter.items() if count > 1}
-    if not duplicates:
-        return []
-    return [
-        make_quality_issue(
-            issue_type="duplicate_key",
-            message=f"{source_name} has duplicate key values.",
-            severity="high",
-            category="duplicate",
-            source=source_name,
-            field="|".join(fields),
-            expected="unique key",
-            actual=len(duplicates),
-            meta={"duplicate_count": len(duplicates), "sample_keys": list(duplicates.keys())[:20]},
-        )
-    ]
-
-
-def check_tax_id_quality(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    issues: List[Dict[str, Any]] = []
-    company_records = load_company_unified_records()
-    policy_records = load_policy_records()
-    linkage_records = load_linkage_records()
-    spatial_records = load_spatial_records()
-    company_tax_ids = {normalize_tax_id(record.get("tax_id_norm") or record.get("tax_id")) for record in company_records}
-    company_tax_ids.discard("")
-
-    source_records = [
-        ("company_unified_master", company_records, "high"),
-        ("policy_fact", policy_records, "medium"),
-        ("linkage_graph", linkage_records, "medium"),
-        ("spatial_join_result", spatial_records, "medium"),
-    ]
-    for source_name, records, default_severity in source_records:
-        for index, record in enumerate(records[:5000], start=1):
-            raw_value = record.get("tax_id_norm") or record.get("tax_id") or record.get("tax_id_raw")
-            validation = validate_tax_id(raw_value)
-            tax_id = validation.get("tax_id_norm") or normalize_tax_id(raw_value)
-            if not tax_id:
-                issues.append(make_quality_issue("missing_tax_id", f"{source_name} record is missing tax_id_norm.", default_severity, "tax_id", source_name, record_key=clean_text(raw_value), row_number=index, field="tax_id_norm", actual=raw_value))
-                continue
-            if not validation.get("valid"):
-                issues.append(make_quality_issue("invalid_tax_id_format", f"{source_name} has invalid tax_id_norm.", default_severity, "tax_id", source_name, record_key=tax_id, row_number=index, tax_id_norm=tax_id, field="tax_id_norm", expected="13 digit tax id", actual=raw_value, meta={"issues": validation.get("issues", [])}))
-            if source_name in {"policy_fact", "linkage_graph", "spatial_join_result"} and company_tax_ids and tax_id not in company_tax_ids:
-                issues.append(make_quality_issue("tax_id_join_loss", f"{source_name} tax_id_norm is not found in company_unified_master.", default_severity, "tax_id", source_name, record_key=tax_id, row_number=index, tax_id_norm=tax_id, field="tax_id_norm", expected="tax id exists in company_unified_master", actual=tax_id))
-
-    issues.extend(check_duplicate_keys(company_records, "tax_id_norm", "company_unified_master"))
-    return issues
-
-
-def get_lat_lon(record: Dict[str, Any]) -> Tuple[Any, Any]:
-    pairs = [
-        ("lat", "lon"),
-        ("latitude", "longitude"),
-        ("company_lat", "company_lon"),
-        ("company_latitude", "company_longitude"),
-        ("station_latitude", "station_longitude"),
-        ("dam_latitude", "dam_longitude"),
-        ("medium_latitude", "medium_longitude"),
-    ]
-    for lat_key, lon_key in pairs:
-        if not is_empty_value(record.get(lat_key)) or not is_empty_value(record.get(lon_key)):
-            return record.get(lat_key), record.get(lon_key)
-    return None, None
-
-
-def check_coordinate_quality(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    issues: List[Dict[str, Any]] = []
-    sources = [
-        ("company_unified_master", load_company_unified_records(), "high"),
-        ("flood_computed_risk", load_flood_records(), "high"),
-        ("spatial_join_result", load_spatial_records(), "medium"),
-        ("map_layers", load_cache_records("map_layers", "map_layers"), "medium"),
-    ]
-    for source_name, records, severity in sources:
-        for index, record in enumerate(records[:5000], start=1):
-            lat, lon = get_lat_lon(record)
-            if is_empty_value(lat) and is_empty_value(lon):
-                if to_bool(record.get("has_location"), default=False) or source_name in {"flood_computed_risk", "map_layers"}:
-                    issues.append(make_quality_issue("missing_coordinate", f"{source_name} record is missing coordinates.", severity, "coordinate", source_name, row_number=index, tax_id_norm=record.get("tax_id_norm", ""), company_name=record.get("company_name", ""), field="lat/lon", expected="valid latitude and longitude", actual={"lat": lat, "lon": lon}))
-                continue
-            validation = validate_coordinate(lat, lon)
-            if not validation.get("valid"):
-                issue_type = "zero_coordinate" if "zero_coordinate" in validation.get("issues", []) else "outside_thailand_coordinate" if "outside_thailand" in validation.get("issues", []) else "invalid_coordinate"
-                issues.append(make_quality_issue(issue_type, f"{source_name} record has invalid coordinates.", severity, "coordinate", source_name, row_number=index, tax_id_norm=record.get("tax_id_norm", ""), company_name=record.get("company_name", ""), field="lat/lon", expected="valid Thailand coordinate", actual={"lat": lat, "lon": lon}, meta={"issues": validation.get("issues", [])}))
-    return issues
-
-
-def check_policy_quality(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    records = load_policy_records()
-    issues: List[Dict[str, Any]] = []
-    issues.extend(check_required_columns(records, REQUIRED_FIELDS_BY_SOURCE["policy_fact"], "policy_fact"))
-    issues.extend(check_missing_values(records, ["tax_id_norm", "company_name", "status_now"], "policy_fact", severity="medium"))
-    for index, record in enumerate(records[:5000], start=1):
-        for field in ["premium", "loss", "suminsure", "total_premium", "total_loss", "total_suminsure"]:
-            if field in record and (to_number(record.get(field), 0) or 0) < 0:
-                issues.append(make_quality_issue("invalid_policy_numeric", f"Policy numeric field {field} is negative.", "medium", "policy", "policy_fact", row_number=index, tax_id_norm=record.get("tax_id_norm", ""), company_name=record.get("company_name", ""), field=field, expected="number >= 0", actual=record.get(field)))
-    return issues
-
-
-def check_policy_status_conflicts(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    records = load_policy_records() or load_company_unified_records()
-    issues: List[Dict[str, Any]] = []
-    for index, record in enumerate(records[:5000], start=1):
-        status_now = clean_text_lower(record.get("status_now") or record.get("policy_status_now"))
-        status_new = clean_text_lower(record.get("status_now_new") or record.get("policy_status_now_new"))
-        inforced = to_bool(record.get("inforced_flag"), default=None)
-        active_count = to_number(record.get("active_subs") or record.get("active_policy_count"), 0) or 0
-        expired_count = to_number(record.get("expired_subs") or record.get("expired_policy_count"), 0) or 0
-        conflict = bool(status_now and status_new and status_now != status_new)
-        conflict = conflict or bool(inforced is True and expired_count > active_count and active_count == 0)
-        if conflict:
-            issues.append(make_quality_issue("policy_status_conflict", "Policy status fields appear inconsistent.", "medium", "status_conflict", "policy_fact", row_number=index, tax_id_norm=record.get("tax_id_norm", ""), company_name=record.get("company_name", ""), field="status_now/status_now_new", expected="consistent status", actual={"status_now": status_now, "status_now_new": status_new, "inforced_flag": inforced, "active_subs": active_count, "expired_subs": expired_count}))
-    return issues
-
-
-def check_linkage_quality(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    records = load_linkage_records()
-    issues: List[Dict[str, Any]] = []
-    if not records:
-        return [make_quality_issue("missing_linkage_source", "Linkage source cache is missing or empty.", "high", "linkage", "linkage_graph")]
-    issues.extend(check_missing_values(records, ["tax_id_norm", "company_name", "director_name"], "linkage_graph", severity="medium"))
-    issues.extend(check_duplicate_keys(records, "edge_id", "linkage_graph"))
-    for index, record in enumerate(records[:5000], start=1):
-        if clean_text(record.get("record_kind")) == "edge" and (is_empty_value(record.get("source")) or is_empty_value(record.get("target"))):
-            issues.append(make_quality_issue("edge_missing_source_or_target", "Linkage edge is missing source or target.", "high", "linkage", "linkage_graph", row_number=index, field="source/target", actual={"source": record.get("source"), "target": record.get("target")}))
-        if clean_text(record.get("edge_type")) == "SHARED_DIRECTOR" and is_empty_value(record.get("shared_directors")):
-            issues.append(make_quality_issue("empty_shared_directors", "SHARED_DIRECTOR edge has no shared_directors value.", "medium", "linkage", "linkage_graph", row_number=index, field="shared_directors"))
-    return issues
-
-
-def check_flood_quality(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    issues = check_flood_source_paths(context)
-    records = load_flood_records()
-    if not records:
-        issues.append(make_quality_issue("missing_flood_cache", "flood_computed_risk cache is missing or empty.", "high", "flood", "flood_computed_risk"))
-        return issues
-    issues.extend(check_missing_values(records, ["source_id", "source_type", "risk_level", "province"], "flood_computed_risk", severity="medium"))
-    allowed = {"normal", "watch", "warning", "critical", "unknown"}
-    for index, record in enumerate(records[:5000], start=1):
-        level = clean_text_lower(record.get("risk_level") or record.get("flood_risk_level"))
-        if level and level not in allowed:
-            issues.append(make_quality_issue("unknown_risk_level", "Flood source has unknown risk_level.", "medium", "flood", "flood_computed_risk", row_number=index, field="risk_level", expected=sorted(allowed), actual=level))
-        score = to_number(record.get("risk_score"), None)
-        if score is not None and not (0 <= score <= 100):
-            issues.append(make_quality_issue("invalid_risk_score", "Flood risk_score is outside expected range.", "medium", "flood", "flood_computed_risk", row_number=index, field="risk_score", expected="0..100", actual=score))
-    issues.extend([issue for issue in check_coordinate_quality(context) if issue.get("source") == "flood_computed_risk"])
-    return issues
-
-
-def check_spatial_join_quality_internal(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    records = load_spatial_records()
-    company_records = load_company_unified_records()
-    issues: List[Dict[str, Any]] = []
-    if not records:
-        issues.append(make_quality_issue("missing_spatial_join", "spatial_join_result cache is missing or empty.", "high", "spatial", "spatial_join_result"))
-        return issues
-    issues.extend(check_missing_values(records, ["tax_id_norm", "flood_risk_level", "flood_join_level"], "spatial_join_result", severity="medium"))
-    spatial_tax_ids = {normalize_tax_id(record.get("tax_id_norm")) for record in records}
-    for record in company_records[:5000]:
-        tax_id = normalize_tax_id(record.get("tax_id_norm"))
-        if tax_id and to_bool(record.get("has_location"), default=False) and tax_id not in spatial_tax_ids:
-            issues.append(make_quality_issue("company_spatial_join_loss", "Company has location but no spatial join record.", "medium", "spatial", "spatial_join_result", record_key=tax_id, tax_id_norm=tax_id, company_name=record.get("company_name", "")))
-    return issues
-
-
-def check_company_unified_quality(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    records = load_company_unified_records()
-    issues: List[Dict[str, Any]] = []
-    if not records:
-        return [make_quality_issue("missing_company_unified_master", "company_unified_master cache is missing or empty.", "critical", "company_unified", "company_unified_master")]
-    issues.extend(check_required_columns(records, REQUIRED_FIELDS_BY_SOURCE["company_unified_master"], "company_unified_master"))
-    issues.extend(check_missing_values(records, ["tax_id_norm", "company_name", "province"], "company_unified_master", severity="medium"))
-    issues.extend(check_duplicate_keys(records, "tax_id_norm", "company_unified_master"))
-    for index, record in enumerate(records[:5000], start=1):
-        if to_bool(record.get("has_location"), default=False):
-            lat, lon = get_lat_lon(record)
-            if not validate_coordinate(lat, lon).get("valid"):
-                issues.append(make_quality_issue("location_flag_mismatch", "Company has_location is true but coordinate is invalid or missing.", "medium", "company_unified", "company_unified_master", row_number=index, tax_id_norm=record.get("tax_id_norm", ""), company_name=record.get("company_name", ""), field="has_location/lat/lon", actual={"has_location": record.get("has_location"), "lat": lat, "lon": lon}))
-        total_loss = to_number(record.get("total_loss"), None)
-        total_premium = to_number(record.get("total_premium"), None)
-        if total_loss is not None and total_loss < 0 or total_premium is not None and total_premium < 0:
-            issues.append(make_quality_issue("invalid_company_financial", "Company financial aggregate is negative.", "medium", "company_unified", "company_unified_master", row_number=index, tax_id_norm=record.get("tax_id_norm", ""), field="total_loss/total_premium"))
-    return issues
-
-
-def check_map_readiness(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    issues: List[Dict[str, Any]] = []
-    companies = load_company_unified_records()
-    valid_location_count = 0
-    for record in companies[:5000]:
-        lat, lon = get_lat_lon(record)
-        if validate_coordinate(lat, lon).get("valid"):
-            valid_location_count += 1
-    if companies and valid_location_count == 0:
-        issues.append(make_quality_issue("map_no_valid_company_coordinates", "No company records have valid map coordinates.", "high", "map_readiness", "company_unified_master"))
-    if not load_cache_records("map_layers", "map_layers"):
-        issues.append(make_quality_issue("map_layer_cache_missing", "map_layers cache is missing or empty; map can degrade to dynamic layers.", "low", "map_readiness", "map_layers"))
-    return issues
-
-
-def check_package_readiness(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    issues: List[Dict[str, Any]] = []
-    if not load_company_unified_records():
-        issues.append(make_quality_issue("package_missing_company_master", "Package export needs company_unified_master or a degraded empty snapshot.", "high", "package_readiness", "company_unified_master"))
-    if not load_cache_records("dashboard_summary", "dashboard_summary"):
-        issues.append(make_quality_issue("package_dashboard_summary_missing", "dashboard_summary cache is missing; package dashboard cards may degrade.", "low", "package_readiness", "dashboard_summary"))
-    return issues
-
-
-def check_frontend_readiness(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    issues: List[Dict[str, Any]] = []
-    required_facades = [
-        "get_data_quality_summary",
-        "get_tax_id_quality",
-        "get_coordinate_quality",
-        "get_policy_quality",
-        "get_linkage_quality",
-        "get_flood_quality",
-        "get_spatial_join_quality",
-        "get_policy_status_conflicts",
-        "get_data_quality_issues",
-        "get_company_quality_flags",
-    ]
-    for function_name in required_facades:
-        if callable(globals().get(function_name)):
-            continue
-        issues.append(
-            make_quality_issue(
-                "frontend_quality_facade_missing",
-                "Data quality frontend facade is missing.",
-                "high",
-                "frontend_readiness",
-                "dashboard_summary",
-                field=function_name,
-            )
-        )
-    return issues
-
-
-def build_quality_flags_by_company(issues: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-    normalized = dedupe_issues(issues if issues is not None else build_all_data_quality_issues())
-    flags_by_tax_id: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    summary_by_tax_id: Dict[str, Dict[str, int]] = {}
-    for issue in normalized:
-        tax_id = normalize_tax_id(issue.get("tax_id_norm") or issue.get("record_key")) or "__unknown__"
-        if tax_id == "__unknown__" and not issue.get("tax_id_norm"):
-            continue
-        flag = {
-            "severity": issue.get("severity"),
-            "category": issue.get("category"),
-            "issue_type": issue.get("issue_type"),
-            "message": issue.get("message"),
-            "field": issue.get("field"),
-        }
-        if flag not in flags_by_tax_id[tax_id]:
-            flags_by_tax_id[tax_id].append(flag)
-        summary = summary_by_tax_id.setdefault(tax_id, {severity: 0 for severity in SEVERITY_LEVELS} | {"total": 0})
-        severity = normalize_severity(issue.get("severity"))
-        summary[severity] += 1
-        summary["total"] += 1
-    return json_safe({"flags_by_tax_id": dict(flags_by_tax_id), "summary_by_tax_id": summary_by_tax_id})
-
-
-def build_quality_flags_by_tax_id(issues: Optional[List[Dict[str, Any]]] = None) -> Dict[str, List[str]]:
-    grouped = build_quality_flags_by_company(issues).get("flags_by_tax_id", {})
-    return {
-        tax_id: sorted({clean_text(flag.get("issue_type")) for flag in flags if clean_text(flag.get("issue_type"))})
-        for tax_id, flags in grouped.items()
-    }
-
-
-def check_import_fallback_quality(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    checks = [
-        ("bootstrap", globals().get("BOOTSTRAP_LOADED", True), globals().get("BOOTSTRAP_ERROR", "")),
-        ("pandas", globals().get("PANDAS_LOADED", True), globals().get("PANDAS_ERROR", "")),
-        ("config", globals().get("CONFIG_LOADED", True), globals().get("CONFIG_ERROR", "")),
-        ("utils", globals().get("UTILS_LOADED", True), globals().get("UTILS_ERROR", "")),
-        ("schemas", globals().get("SCHEMAS_LOADED", True), globals().get("SCHEMAS_ERROR", "")),
-        ("config_column_mappings", globals().get("CONFIG_COLUMN_MAPPINGS_LOADED", True), globals().get("CONFIG_COLUMN_MAPPINGS_ERROR", "")),
-    ]
-    issues: List[Dict[str, Any]] = []
-    for component, loaded, error in checks:
-        if loaded:
-            continue
-        issues.append(
-            make_quality_issue(
-                issue_type="import_fallback_active",
-                message=f"{component} import fallback is active.",
-                severity="medium" if component in {"bootstrap", "pandas", "utils"} else "low",
-                category="runtime",
-                source="system",
-                suggestion="Review the Python environment or missing optional config/schema dependency before production release.",
-                actual={"component": component, "error": clean_text(error)},
-                meta={"component": component},
-            )
-        )
-    return issues
-
-
-def build_all_data_quality_issues(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    checker_plan = [
-        ("import_fallbacks", check_import_fallback_quality),
-        ("input_file", check_input_file_exists),
-        ("policy", check_policy_quality),
-        ("policy_status_conflicts", check_policy_status_conflicts),
-        ("linkage", check_linkage_quality),
-        ("flood", check_flood_quality),
-        ("tax_id", check_tax_id_quality),
-        ("coordinate", check_coordinate_quality),
-        ("company_unified", check_company_unified_quality),
-        ("spatial", check_spatial_join_quality_internal),
-        ("map_readiness", check_map_readiness),
-        ("package_readiness", check_package_readiness),
-        ("frontend_readiness", check_frontend_readiness),
-    ]
-    issues: List[Dict[str, Any]] = []
-    for checker_name, checker in checker_plan:
-        try:
-            issues.extend(checker(context) if checker_name != "input_file" else checker())
-        except Exception as exc:
-            issues.append(
-                make_quality_issue(
-                    issue_type="checker_failed",
-                    message=f"{checker_name} failed: {exc}",
-                    severity="high",
-                    category="data_quality",
-                    source="unknown",
-                    meta={"checker": checker_name, "exception_type": exc.__class__.__name__},
-                )
-            )
-    return dedupe_issues(issues)
-
-
-def build_quality_by_source(issues: List[Dict[str, Any]]) -> Dict[str, int]:
-    return group_issues(issues, "source")
-
-
-def build_quality_by_severity(issues: List[Dict[str, Any]]) -> Dict[str, int]:
-    counts = group_issues(issues, "severity")
-    return {severity: counts.get(severity, 0) for severity in SEVERITY_LEVELS}
-
-
-def build_data_quality_cards(summary: Dict[str, Any], issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    by_category = summary.get("by_category", {})
-    return [
-        {"card_id": "overall_score", "label": "Overall Score", "value": summary.get("overall_score", 0), "severity": "info", "description": summary.get("overall_grade", "unknown")},
-        {"card_id": "critical_issues", "label": "Critical Issues", "value": summary.get("critical_count", 0), "severity": "critical", "description": ""},
-        {"card_id": "high_issues", "label": "High Issues", "value": summary.get("high_count", 0), "severity": "high", "description": ""},
-        {"card_id": "tax_id_issues", "label": "Tax ID Issues", "value": by_category.get("tax_id", 0), "severity": "high", "description": ""},
-        {"card_id": "coordinate_issues", "label": "Coordinate Issues", "value": by_category.get("coordinate", 0), "severity": "high", "description": ""},
-        {"card_id": "policy_issues", "label": "Policy Issues", "value": by_category.get("policy", 0), "severity": "medium", "description": ""},
-        {"card_id": "linkage_issues", "label": "Linkage Issues", "value": by_category.get("linkage", 0), "severity": "medium", "description": ""},
-        {"card_id": "flood_issues", "label": "Flood Issues", "value": by_category.get("flood", 0), "severity": "medium", "description": ""},
-        {"card_id": "spatial_join_issues", "label": "Spatial Join Issues", "value": by_category.get("spatial", 0), "severity": "medium", "description": ""},
-        {"card_id": "map_readiness", "label": "Map Readiness", "value": by_category.get("map_readiness", 0), "severity": "low", "description": ""},
-        {"card_id": "package_readiness", "label": "Package Readiness", "value": by_category.get("package_readiness", 0), "severity": "low", "description": ""},
-    ]
-
-
-def build_data_quality_summary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    issues = build_all_data_quality_issues(context)
-    source_record_count = (
-        safe_len(load_company_unified_records())
-        + safe_len(load_policy_records())
-        + safe_len(load_linkage_records())
-        + safe_len(load_flood_records())
-        + safe_len(load_spatial_records())
-    )
-    summary = summarize_issues_v2(issues, source_record_count=source_record_count)
-    cards = build_data_quality_cards(summary, issues)
-    flags = build_quality_flags_by_company(issues)
-    readiness = {
-        "map": {"issue_count": summary.get("by_category", {}).get("map_readiness", 0)},
-        "package": {"issue_count": summary.get("by_category", {}).get("package_readiness", 0)},
-        "frontend": {"issue_count": summary.get("by_category", {}).get("frontend_readiness", 0)},
-    }
-    return json_safe(
-        {
-            "summary": summary,
-            "cards": cards,
-            "issues": issues[:100],
-            "by_source": summary.get("by_source", {}),
-            "by_category": summary.get("by_category", {}),
-            "by_severity": summary.get("by_severity", {}),
-            "company_flags": flags,
-            "readiness": readiness,
-            "meta": {
-                "generated_at": now_iso(),
-                "source_record_count": source_record_count,
-                "issue_count": len(issues),
-                "degraded": summary.get("degraded", False),
-            },
-        }
-    )
-
-
-def filter_quality_issues(issues: List[Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    ctx = normalize_context(context)
-    filters = dict(ctx.get("filters", {}) or {})
-    for key in ["severity", "category", "source", "issue_type", "tax_id_norm", "field"]:
-        if key in ctx and ctx.get(key):
-            filters[key] = ctx[key]
-    search = clean_text_lower(ctx.get("search", ""))
-    filtered = []
-    for issue in issues or []:
-        keep = True
-        for key, expected in filters.items():
-            if is_empty_value(expected):
-                continue
-            actual = clean_text_lower(issue.get(key))
-            values = expected if isinstance(expected, list) else [expected]
-            if actual not in {clean_text_lower(value) for value in values}:
-                keep = False
-                break
-        if keep and search:
-            haystack = " ".join(clean_text(issue.get(field)) for field in ["issue_id", "issue_type", "message", "source", "category", "field", "record_key", "company_name"])
-            keep = search in haystack.lower()
-        if keep:
-            filtered.append(issue)
-    return filtered
-
-
-def paginate_quality_issues(issues: List[Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    ctx = normalize_context(context)
-    page = max(1, int(ctx.get("page", 1) or 1))
-    page_size = max(1, min(500, int(ctx.get("page_size", ctx.get("limit", 50)) or 50)))
-    filtered = filter_quality_issues(issues, ctx)
-    total = len(filtered)
-    total_pages = (total + page_size - 1) // page_size if total else 0
-    start = (page - 1) * page_size
-    return {
-        "issues": filtered[start:start + page_size],
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": total_pages,
-        "has_next": bool(total_pages and page < total_pages),
-        "has_prev": bool(total_pages and page > 1),
-    }
-
-
-def response_for_issues(label: str, issues: List[Dict[str, Any]], context: Optional[Dict[str, Any]] = None, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    normalized = dedupe_issues(issues)
-    paginated = paginate_quality_issues(normalized, context)
-    summary = summarize_issues_v2(normalized)
-    data = {
-        "summary": summary,
-        "issues": paginated["issues"],
-        "total": paginated["total"],
-        "page": paginated["page"],
-        "page_size": paginated["page_size"],
-        "total_pages": paginated["total_pages"],
-    }
-    data.update(extra or {})
-    return make_quality_response(
-        data=data,
-        message=f"{label} data quality loaded.",
-        meta={"source_count": summary.get("source_count", 0), "issue_count": len(normalized), "degraded": summary.get("degraded", False)},
-    )
-
-
-def get_data_quality_summary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    try:
-        payload = build_data_quality_summary(context)
-        return make_quality_response(
-            data=payload,
-            message="Data quality summary loaded.",
-            meta={
-                "source_count": payload.get("summary", {}).get("source_count", 0),
-                "issue_count": payload.get("summary", {}).get("issue_count", 0),
-                "degraded": payload.get("summary", {}).get("degraded", False),
-            },
-        )
-    except Exception as exc:
-        return make_quality_error(str(exc), error_type=exc.__class__.__name__)
-
-
-def get_tax_id_quality(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    issues = check_tax_id_quality(context)
-    return response_for_issues(
-        "Tax ID",
-        issues,
-        context,
-        {
-            "invalid_tax_id_count": sum(1 for issue in issues if issue.get("issue_type") == "invalid_tax_id_format"),
-            "missing_tax_id_count": sum(1 for issue in issues if issue.get("issue_type") == "missing_tax_id"),
-            "duplicate_tax_id_count": sum(1 for issue in issues if issue.get("issue_type") == "duplicate_key"),
-            "join_loss_count": sum(1 for issue in issues if issue.get("issue_type") == "tax_id_join_loss"),
-        },
-    )
-
-
-def get_coordinate_quality(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    issues = check_coordinate_quality(context)
-    return response_for_issues(
-        "Coordinate",
-        issues,
-        context,
-        {
-            "missing_coordinate_count": sum(1 for issue in issues if issue.get("issue_type") == "missing_coordinate"),
-            "invalid_coordinate_count": sum(1 for issue in issues if issue.get("issue_type") == "invalid_coordinate"),
-            "zero_coordinate_count": sum(1 for issue in issues if issue.get("issue_type") == "zero_coordinate"),
-            "outside_thailand_count": sum(1 for issue in issues if issue.get("issue_type") == "outside_thailand_coordinate"),
-        },
-    )
-
-
-def get_policy_quality(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    issues = check_policy_quality(context)
-    conflicts = [issue for issue in check_policy_status_conflicts(context) if issue.get("issue_type") == "policy_status_conflict"]
-    return response_for_issues("Policy", issues + conflicts, context, {"status_conflicts": conflicts, "financial_anomalies": [issue for issue in issues if issue.get("issue_type") == "invalid_policy_numeric"], "join_loss_count": 0})
-
-
-def get_linkage_quality(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    issues = check_linkage_quality(context)
-    return response_for_issues("Linkage", issues, context, {"director_issue_count": sum(1 for issue in issues if "director" in issue.get("issue_type", "")), "edge_issue_count": sum(1 for issue in issues if "edge" in issue.get("issue_type", "")), "join_loss_count": sum(1 for issue in issues if "join_loss" in issue.get("issue_type", ""))})
-
-
-def get_flood_quality(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    issues = check_flood_quality(context)
-    return response_for_issues("Flood", issues, context, {"missing_source_count": sum(1 for issue in issues if "missing" in issue.get("issue_type", "")), "unknown_risk_count": sum(1 for issue in issues if issue.get("issue_type") == "unknown_risk_level"), "invalid_coordinate_count": sum(1 for issue in issues if "coordinate" in issue.get("issue_type", ""))})
-
-
-def get_spatial_join_quality(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    issues = check_spatial_join_quality_internal(context)
-    return response_for_issues("Spatial join", issues, context, {"join_loss_count": sum(1 for issue in issues if "join_loss" in issue.get("issue_type", "")), "missing_context_count": sum(1 for issue in issues if "missing" in issue.get("issue_type", "")), "unknown_risk_count": sum(1 for issue in issues if "unknown" in issue.get("issue_type", ""))})
-
-
-def get_policy_status_conflicts(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    issues = check_policy_status_conflicts(context)
-    conflicts = [
-        {
-            "tax_id_norm": issue.get("tax_id_norm"),
-            "company_name": issue.get("company_name"),
-            "issue_type": issue.get("issue_type"),
-            "message": issue.get("message"),
-            "severity": issue.get("severity"),
-            **(issue.get("actual") if isinstance(issue.get("actual"), dict) else {}),
-        }
-        for issue in issues
-    ]
-    return response_for_issues("Policy status conflict", issues, context, {"conflicts": conflicts})
-
-
-def get_data_quality_issues(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    issues = build_all_data_quality_issues(context)
-    paginated = paginate_quality_issues(issues, context)
-    return make_quality_response(
-        data={
-            "issues": paginated["issues"],
-            "total": paginated["total"],
-            "page": paginated["page"],
-            "page_size": paginated["page_size"],
-            "total_pages": paginated["total_pages"],
-            "severity": (context or {}).get("severity") if isinstance(context, dict) else "",
-            "category": (context or {}).get("category") if isinstance(context, dict) else "",
-            "source": (context or {}).get("source") if isinstance(context, dict) else "",
-        },
-        message="Data quality issues loaded.",
-        meta={"issue_count": len(issues), "source_count": len(group_issues(issues, "source"))},
-    )
-
-
-def get_company_quality_flags(context: Optional[Any] = None) -> Dict[str, Any]:
-    if not isinstance(context, dict) and not is_empty_value(context):
-        tax_id = normalize_tax_id(context)
-        flags = build_quality_flags_by_tax_id().get(tax_id, [])
-        return make_quality_response(data={"tax_id_norm": tax_id, "flags": flags}, message="Company quality flags loaded.", meta={"issue_count": len(flags)})
-    issues = build_all_data_quality_issues(context if isinstance(context, dict) else None)
-    flags = build_quality_flags_by_company(issues)
-    return make_quality_response(data=flags, message="Company quality flags loaded.", meta={"issue_count": len(issues), "source_count": len(flags.get("flags_by_tax_id", {}))})
-
-
-def rebuild_data_quality_cache(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    payload = build_data_quality_summary(context)
-    return make_quality_response(data={"rebuilt": False, "summary": payload.get("summary", {}), "issues": payload.get("issues", [])}, message="Data quality cache rebuild is deferred in this phase.", meta={"degraded": False, "issue_count": payload.get("summary", {}).get("issue_count", 0)})
-
-
-def get_data_quality_dashboard_payload(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    response = get_data_quality_summary(context)
-    return response.get("data", {}) if isinstance(response, dict) else {}

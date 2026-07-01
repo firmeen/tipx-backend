@@ -52,6 +52,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -59,150 +60,34 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from urllib.parse import quote
 
-try:
-    from config import (
-        APP_SHORT_NAME,
-        APP_VERSION,
-        SECRET_KEY,
-        PACKAGE_TOKEN_SALT,
-        ENABLE_PACKAGE_ACCESS_TOKEN,
-        PUBLIC_PACKAGE_READ_ONLY,
-        MASK_TAX_ID_VISIBLE_LAST_DIGITS,
-        MASK_DIRECTOR_VISIBLE_FIRST_CHARS,
-        PACKAGE_SECURITY_OPTIONS,
-        PACKAGE_DEFAULT_EXPIRE_DAYS,
-        PACKAGE_MAX_EXPIRE_DAYS,
-    )
-    CONFIG_LOADED = True
-except Exception as e:
-    CONFIG_LOADED = False
-    CONFIG_ERROR = str(e)
-    APP_SHORT_NAME = "TIPX"
-    APP_VERSION = "unknown"
-    SECRET_KEY = "tipx-local-security-fallback"
-    PACKAGE_TOKEN_SALT = "tipx-package-token"
-    ENABLE_PACKAGE_ACCESS_TOKEN = True
-    PUBLIC_PACKAGE_READ_ONLY = True
-    MASK_TAX_ID_VISIBLE_LAST_DIGITS = 4
-    MASK_DIRECTOR_VISIBLE_FIRST_CHARS = 1
-    PACKAGE_SECURITY_OPTIONS = {
-        "mask_tax_id": True,
-        "mask_director_name": True,
-        "mask_person_name": True,
-        "mask_address": True,
-        "hide_financial_fields": False,
-        "remove_internal_paths": True,
-        "remove_debug_fields": True,
-        "public": True,
-    }
-    PACKAGE_DEFAULT_EXPIRE_DAYS = 30
-    PACKAGE_MAX_EXPIRE_DAYS = 365
+from config import (
+    APP_SHORT_NAME,
+    APP_VERSION,
+    SECRET_KEY,
+    PACKAGE_TOKEN_SALT,
+    ENABLE_PACKAGE_ACCESS_TOKEN,
+    PUBLIC_PACKAGE_READ_ONLY,
+    MASK_TAX_ID_VISIBLE_LAST_DIGITS,
+    MASK_DIRECTOR_VISIBLE_FIRST_CHARS,
+    PACKAGE_SECURITY_OPTIONS,
+    PACKAGE_DEFAULT_EXPIRE_DAYS,
+    PACKAGE_MAX_EXPIRE_DAYS,
+)
 
-try:
-    from utils import (
-        clean_text,
-        clean_text_lower,
-        is_empty_value,
-        mask_tax_id,
-        normalize_tax_id,
-        now_iso,
-        to_jsonable,
-        to_bool,
-        to_int,
-        write_json,
-        read_json,
-        make_hash_id,
-    )
-    UTILS_LOADED = True
-except Exception as e:
-    UTILS_LOADED = False
-    UTILS_ERROR = str(e)
-
-    def clean_text(value: Any, default: str = "") -> str:
-        if value is None:
-            return default
-        text = str(value).strip()
-        return text if text else default
-
-    def clean_text_lower(value: Any, default: str = "") -> str:
-        return clean_text(value, default=default).lower()
-
-    def is_empty_value(value: Any) -> bool:
-        if value is None:
-            return True
-        if isinstance(value, str) and value.strip() in {"", "-", "N/A", "n/a", "None", "none", "null", "nan", "NaN"}:
-            return True
-        if isinstance(value, float) and value != value:
-            return True
-        return False
-
-    def normalize_tax_id(value: Any) -> str:
-        return "".join(ch for ch in clean_text(value) if ch.isdigit())
-
-    def now_iso() -> str:
-        return datetime.now().isoformat(timespec="seconds")
-
-    def to_jsonable(value: Any) -> Any:
-        if value is None or isinstance(value, (str, int, bool)):
-            return value
-        if isinstance(value, float):
-            return None if value != value else value
-        if isinstance(value, (datetime, Path)):
-            return value.isoformat() if isinstance(value, datetime) else str(value)
-        if isinstance(value, dict):
-            return {str(k): to_jsonable(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple, set)):
-            return [to_jsonable(item) for item in value]
-        if hasattr(value, "to_dict"):
-            try:
-                return to_jsonable(value.to_dict("records"))
-            except Exception:
-                try:
-                    return to_jsonable(value.to_dict())
-                except Exception:
-                    pass
-        return clean_text(value)
-
-    def to_bool(value: Any, default: bool = False) -> bool:
-        if isinstance(value, bool):
-            return value
-        if is_empty_value(value):
-            return default
-        return clean_text_lower(value) in {"1", "true", "yes", "y", "on"}
-
-    def to_int(value: Any, default: int = 0) -> int:
-        try:
-            return int(float(clean_text(value)))
-        except Exception:
-            return default
-
-    def write_json(path: Any, data: Any, **kwargs: Any) -> Path:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(to_jsonable(data), ensure_ascii=False, indent=2), encoding="utf-8")
-        return target
-
-    def read_json(path: Any, default: Any = None) -> Any:
-        try:
-            target = Path(path)
-            if not target.exists():
-                return default
-            return json.loads(target.read_text(encoding="utf-8"))
-        except Exception:
-            return default
-
-    def make_hash_id(*parts: Any, length: int = 12) -> str:
-        text = "|".join(clean_text(part) for part in parts)
-        return hashlib.sha256(text.encode("utf-8")).hexdigest()[: max(6, int(length or 12))]
-
-    def mask_tax_id(value: Any, visible_last: int = 4) -> str:
-        digits = normalize_tax_id(value)
-        if not digits:
-            return ""
-        visible = max(0, min(len(digits), int(visible_last or 0)))
-        if len(digits) <= visible:
-            return "*" * len(digits) if digits else "***"
-        return "*" * (len(digits) - visible) + digits[-visible:]
+from utils import (
+    clean_text,
+    clean_text_lower,
+    is_empty_value,
+    mask_tax_id,
+    normalize_tax_id,
+    now_iso,
+    to_jsonable,
+    to_bool,
+    to_int,
+    write_json,
+    read_json,
+    make_hash_id,
+)
 
 
 # ============================================================
@@ -214,6 +99,10 @@ SENSITIVE_FIELD_GROUPS: Dict[str, List[str]] = {
         "tax_id",
         "tax_id_raw",
         "tax_id_norm",
+        "company_key",
+        "record_key",
+        "source_tax_id",
+        "target_tax_id",
         "taxid",
         "Tax Id",
         "Tax ID",
@@ -224,6 +113,10 @@ SENSITIVE_FIELD_GROUPS: Dict[str, List[str]] = {
         "director_name",
         "director_name_norm",
         "boardlist",
+        "shared_directors",
+        "shared_directors_text",
+        "director_list",
+        "key_connector",
         "กรรมการ",
         "รายชื่อกรรมการ",
     ],
@@ -285,13 +178,23 @@ PUBLIC_FORBIDDEN_INTERNAL_KEYS: List[str] = [
     "source_file_path",
     "internal_path",
     "cache_path",
+    "cache_key",
     "local_path",
     "absolute_path",
+    "path",
+    "debug_raw",
+    "raw_record",
+    "raw_payload",
+    "traceback",
     "password",
     "secret",
+    "token",
+    "access_token",
+    "public_token",
     "token_secret",
     "package_token_salt",
     "secret_key",
+    "private_key",
 ]
 
 
@@ -429,6 +332,26 @@ def b64url_decode_json(value: str) -> Dict[str, Any]:
 # 4) MASKING HELPERS
 # ============================================================
 
+def mask_tax_id_substrings(value: Any, visible_last_digits: int = MASK_TAX_ID_VISIBLE_LAST_DIGITS) -> Any:
+    """Mask 13-digit tax id substrings even when embedded in graph ids like company:<tax_id>."""
+
+    if not isinstance(value, str):
+        return value
+
+    return re.sub(
+        r"(?<!\d)(\d{13})(?!\d)",
+        lambda match: mask_tax_id(match.group(1), visible_last_digits=visible_last_digits),
+        value,
+    )
+
+
+def looks_like_thai_person_name(value: Any) -> bool:
+    """Best-effort public export guard for Thai director/person labels."""
+
+    text = clean_text(value)
+    return text.startswith(("นาย", "นาง", "นางสาว", "พลเอก", "พล.ต.", "ดร."))
+
+
 def mask_string_keep_edges(
     value: Any,
     visible_start: int = 0,
@@ -565,9 +488,27 @@ def normalize_security_options(options: Optional[Dict[str, Any]] = None) -> Dict
     base = dict(PACKAGE_SECURITY_OPTIONS)
     incoming = options or {}
 
+    # Frontend/API aliases. Keep config keys stable, but accept common public-package
+    # request names so sanitization cannot be bypassed by naming mismatch.
+    alias_map = {
+        "mask_directors": "mask_director_name",
+        "mask_director": "mask_director_name",
+        "mask_people": "mask_director_name",
+        "hide_addresses": "mask_address",
+        "mask_addresses": "mask_address",
+        "hide_financials": "hide_financial_fields",
+        "mask_financials": "hide_financial_fields",
+        "hide_financial": "hide_financial_fields",
+    }
+
+    normalized_incoming = dict(incoming)
+    for alias, canonical in alias_map.items():
+        if alias in incoming and canonical not in normalized_incoming:
+            normalized_incoming[canonical] = incoming.get(alias)
+
     for key in base.keys():
-        if key in incoming:
-            base[key] = bool(to_bool(incoming.get(key), default=base[key]))
+        if key in normalized_incoming:
+            base[key] = bool(to_bool(normalized_incoming.get(key), default=base[key]))
 
     return base
 
@@ -652,14 +593,67 @@ def mask_nested_payload(
 
     if isinstance(payload, dict):
         masked = {}
+        current_type = clean_text_lower(
+            payload.get("type")
+            or payload.get("node_type")
+            or payload.get("feature_type")
+            or payload.get("entity_type")
+        )
 
         for key, value in payload.items():
+            if options.get("mask_tax_id") and is_tax_id_field(key):
+                if isinstance(value, list):
+                    masked[key] = [mask_tax_id(item, visible_last_digits=MASK_TAX_ID_VISIBLE_LAST_DIGITS) for item in value]
+                elif isinstance(value, dict):
+                    masked[key] = mask_nested_payload(value, security_options=options)
+                else:
+                    masked[key] = mask_tax_id(value, visible_last_digits=MASK_TAX_ID_VISIBLE_LAST_DIGITS)
+                continue
+
+            if options.get("mask_director_name") and is_director_field(key):
+                if isinstance(value, list):
+                    masked[key] = [mask_director_name(item) for item in value]
+                elif isinstance(value, dict):
+                    masked[key] = mask_nested_payload(value, security_options=options)
+                else:
+                    masked[key] = mask_director_name(value)
+                continue
+
+            if options.get("mask_director_name") and current_type == "director" and clean_text_lower(key) in {"label", "name", "title"}:
+                masked[key] = mask_director_name(value)
+                continue
+
             if isinstance(value, (dict, list)):
                 masked[key] = mask_nested_payload(value, security_options=options)
             else:
-                masked[key] = mask_record({key: value}, security_options=options).get(key)
+                primitive_value = mask_record({key: value}, security_options=options).get(key)
+
+                if isinstance(primitive_value, str):
+                    if options.get("mask_tax_id"):
+                        primitive_value = mask_tax_id_substrings(
+                            primitive_value,
+                            visible_last_digits=MASK_TAX_ID_VISIBLE_LAST_DIGITS,
+                        )
+                    if options.get("mask_director_name") and looks_like_thai_person_name(primitive_value):
+                        primitive_value = mask_director_name(primitive_value)
+
+                masked[key] = primitive_value
 
         return masked
+
+    if isinstance(payload, str):
+        result_value = payload
+
+        if options.get("mask_tax_id"):
+            result_value = mask_tax_id_substrings(
+                result_value,
+                visible_last_digits=MASK_TAX_ID_VISIBLE_LAST_DIGITS,
+            )
+
+        if options.get("mask_director_name") and looks_like_thai_person_name(result_value):
+            result_value = mask_director_name(result_value)
+
+        return result_value
 
     return payload
 
@@ -667,6 +661,28 @@ def mask_nested_payload(
 # ============================================================
 # 5) SANITIZE INTERNAL PAYLOAD
 # ============================================================
+
+def redact_internal_string(value: Any) -> Any:
+    """Redact local filesystem paths and obvious secret fragments inside public strings."""
+
+    if not isinstance(value, str):
+        return value
+
+    lowered = value.lower()
+    risky_markers = [
+        "c:/users/",
+        "c:\\users\\",
+        "/mnt/data",
+        "portable_libs",
+        "private_key",
+        "secret-token",
+    ]
+
+    if any(marker in lowered for marker in risky_markers):
+        return "[redacted internal value]"
+
+    return value
+
 
 def remove_internal_keys(payload: Any) -> Any:
     """
@@ -702,7 +718,7 @@ def remove_internal_keys(payload: Any) -> Any:
 
         return result
 
-    return payload
+    return redact_internal_string(payload)
 
 
 def sanitize_public_payload(
@@ -1712,440 +1728,3 @@ def run_security_self_test() -> Dict[str, Any]:
         "masked_record": masked,
         "summary": get_security_summary(),
     }
-
-
-# ============================================================
-# 17) PHASE 12 STABLE SECURITY API CONTRACT
-# ============================================================
-
-TAX_ID_FIELDS = {
-    "tax_id",
-    "tax_id_raw",
-    "tax_id_norm",
-    "company_tax_id",
-    "source_tax_id",
-    "target_tax_id",
-}
-DIRECTOR_PERSON_FIELDS = {
-    "director_name",
-    "director_name_raw",
-    "director_name_norm",
-    "director_name_display",
-    "person_name",
-    "shared_directors",
-    "boardlist",
-}
-ADDRESS_FIELDS = {
-    "address",
-    "full_address",
-    "house_no",
-    "street",
-    "subdistrict",
-    "district",
-}
-FINANCIAL_FIELDS = {
-    "premium",
-    "loss",
-    "suminsure",
-    "total_premium",
-    "total_loss",
-    "total_suminsure",
-    "registered_capital",
-    "most_recent_income_val",
-    "most_recent_asset_val",
-    "most_recent_profit_val",
-    "hist_premium_sum_all",
-    "last_premium_active",
-    "exp_premium",
-}
-INTERNAL_PATH_FIELDS = {
-    "_local_path",
-    "absolute_path",
-    "file_path",
-    "source_path",
-    "cache_path",
-    "raw_file_path",
-    "internal_path",
-    "local_path",
-}
-DEBUG_PRIVATE_FIELDS = {
-    "debug",
-    "debug_info",
-    "traceback",
-    "exception",
-    "internal",
-    "secret",
-    "token_secret",
-    "private_key",
-    "package_token_salt",
-    "secret_key",
-}
-PACKAGE_ACCESS_SCOPES = {
-    "meta",
-    "summary",
-    "data",
-    "map",
-    "charts",
-    "tables",
-    "data_quality",
-    "download",
-    "admin",
-}
-DEFAULT_MASKING_POLICY = {
-    "mask_tax_id": True,
-    "mask_director_name": True,
-    "mask_person_name": True,
-    "mask_address": True,
-    "hide_financial_fields": False,
-    "remove_internal_paths": True,
-    "remove_debug_fields": True,
-    "public": True,
-}
-
-
-def json_safe(value: Any) -> Any:
-    return to_jsonable(value)
-
-
-def normalize_security_policy(policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    base = dict(DEFAULT_MASKING_POLICY)
-    if isinstance(PACKAGE_SECURITY_OPTIONS, dict):
-        for key in base:
-            if key in PACKAGE_SECURITY_OPTIONS:
-                base[key] = PACKAGE_SECURITY_OPTIONS[key]
-    if isinstance(policy, dict):
-        for key, value in policy.items():
-            if key in base:
-                base[key] = to_bool(value, default=bool(base[key]))
-            else:
-                base[key] = json_safe(value)
-    if base.get("public", True):
-        base["mask_tax_id"] = to_bool(base.get("mask_tax_id"), True)
-        base["mask_director_name"] = to_bool(base.get("mask_director_name"), True)
-        base["mask_person_name"] = to_bool(base.get("mask_person_name"), True)
-        base["mask_address"] = to_bool(base.get("mask_address"), True)
-        base["remove_internal_paths"] = to_bool(base.get("remove_internal_paths"), True)
-        base["remove_debug_fields"] = to_bool(base.get("remove_debug_fields"), True)
-    return base
-
-
-def _field_name(value: Any) -> str:
-    return clean_text_lower(value).replace(" ", "_")
-
-
-def _looks_like_local_path(value: Any) -> bool:
-    text = clean_text(value)
-    if not text:
-        return False
-    normalized = text.replace("/", "\\")
-    return bool(
-        len(normalized) > 2
-        and (
-            (normalized[1:3] == ":\\" and normalized[0].isalpha())
-            or normalized.startswith("\\\\")
-        )
-    )
-
-
-def mask_tax_id(value: Any, visible_last: int = 4) -> str:
-    digits = "".join(ch for ch in clean_text(value) if ch.isdigit())
-    if not digits:
-        return ""
-    visible = max(0, min(len(digits), int(visible_last or 0)))
-    if len(digits) <= visible:
-        return "*" * len(digits) if len(digits) > 1 else "***"
-    return "*" * (len(digits) - visible) + digits[-visible:]
-
-
-def mask_person_name(value: Any) -> Any:
-    if isinstance(value, list):
-        return [mask_person_name(item) for item in value]
-    text = clean_text(value)
-    if not text:
-        return ""
-    if "," in text:
-        return [mask_person_name(part) for part in text.split(",") if clean_text(part)]
-    if ";" in text:
-        return [mask_person_name(part) for part in text.split(";") if clean_text(part)]
-    prefix = text[:1]
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:4]
-    return f"{prefix}***{digest}"
-
-
-def mask_director_name(value: Any) -> Any:
-    return mask_person_name(value)
-
-
-def mask_address(value: Any) -> str:
-    text = clean_text(value)
-    if not text:
-        return ""
-    parts = [part for part in text.replace(",", " ").split() if part]
-    if len(parts) <= 1:
-        return "***"
-    return f"{parts[-1]} ***"
-
-
-def mask_phone(value: Any) -> str:
-    digits = "".join(ch for ch in clean_text(value) if ch.isdigit())
-    if not digits:
-        return ""
-    return "*" * max(0, len(digits) - 4) + digits[-4:]
-
-
-def mask_email(value: Any) -> str:
-    text = clean_text(value)
-    if "@" not in text:
-        return "***" if text else ""
-    local, domain = text.split("@", 1)
-    return f"{local[:1]}***@{domain}"
-
-
-def hide_financial_fields(record: Dict[str, Any], policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    result = dict(record or {})
-    active_policy = normalize_security_policy(policy)
-    if not to_bool(active_policy.get("hide_financial_fields"), False):
-        return json_safe(result)
-    for key in list(result.keys()):
-        if _field_name(key) in FINANCIAL_FIELDS:
-            result.pop(key, None)
-    return json_safe(result)
-
-
-def sanitize_public_record(record: Dict[str, Any], policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    if not isinstance(record, dict):
-        return {}
-    active_policy = normalize_security_policy(policy)
-    result: Dict[str, Any] = {}
-    for key, value in record.items():
-        normalized_key = _field_name(key)
-        if active_policy.get("remove_internal_paths", True) and normalized_key in INTERNAL_PATH_FIELDS:
-            continue
-        if active_policy.get("remove_debug_fields", True) and normalized_key in DEBUG_PRIVATE_FIELDS:
-            continue
-        if _looks_like_local_path(value):
-            continue
-        if normalized_key in TAX_ID_FIELDS and active_policy.get("mask_tax_id", True):
-            result[key] = mask_tax_id(value, MASK_TAX_ID_VISIBLE_LAST_DIGITS)
-        elif normalized_key in DIRECTOR_PERSON_FIELDS and active_policy.get("mask_director_name", True):
-            result[key] = mask_director_name(value)
-        elif normalized_key in ADDRESS_FIELDS and active_policy.get("mask_address", True):
-            result[key] = mask_address(value)
-        elif normalized_key in FINANCIAL_FIELDS and active_policy.get("hide_financial_fields", False):
-            continue
-        else:
-            result[key] = sanitize_public_payload(value, active_policy)
-    return json_safe(result)
-
-
-def mask_record(record: Dict[str, Any], policy: Optional[Dict[str, Any]] = None, security_options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    active_policy = normalize_security_policy(policy or security_options)
-    return sanitize_public_record(record, active_policy)
-
-
-def mask_records(records: Iterable[Dict[str, Any]], policy: Optional[Dict[str, Any]] = None, security_options: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    active_policy = normalize_security_policy(policy or security_options)
-    return [mask_record(record, active_policy) for record in list(records or []) if isinstance(record, dict)]
-
-
-def remove_internal_paths(payload: Any) -> Any:
-    if isinstance(payload, dict):
-        return {
-            key: remove_internal_paths(value)
-            for key, value in payload.items()
-            if _field_name(key) not in INTERNAL_PATH_FIELDS and not _looks_like_local_path(value)
-        }
-    if isinstance(payload, list):
-        return [remove_internal_paths(item) for item in payload]
-    if _looks_like_local_path(payload):
-        return ""
-    return payload
-
-
-def remove_debug_fields(payload: Any) -> Any:
-    if isinstance(payload, dict):
-        return {
-            key: remove_debug_fields(value)
-            for key, value in payload.items()
-            if _field_name(key) not in DEBUG_PRIVATE_FIELDS
-        }
-    if isinstance(payload, list):
-        return [remove_debug_fields(item) for item in payload]
-    return payload
-
-
-def remove_private_fields(payload: Any) -> Any:
-    return remove_debug_fields(remove_internal_paths(payload))
-
-
-def sanitize_public_payload(payload: Any, policy: Optional[Dict[str, Any]] = None, security_options: Optional[Dict[str, Any]] = None) -> Any:
-    active_policy = normalize_security_policy(policy or security_options)
-    value = json_safe(payload)
-    if isinstance(value, dict):
-        return sanitize_public_record(value, active_policy)
-    if isinstance(value, list):
-        return [sanitize_public_payload(item, active_policy) for item in value]
-    if active_policy.get("remove_internal_paths", True) and _looks_like_local_path(value):
-        return ""
-    return value
-
-
-def apply_masking_policy(payload: Any, policy: Optional[Dict[str, Any]] = None) -> Any:
-    return sanitize_public_payload(payload, policy)
-
-
-def create_package_checksum(payload: Any) -> str:
-    stable = json.dumps(json_safe(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(stable.encode("utf-8")).hexdigest()
-
-
-def create_snapshot_checksum(payload: Any) -> str:
-    return create_package_checksum(payload)
-
-
-def verify_package_checksum(payload: Any, checksum: Optional[str] = None) -> Any:
-    if checksum is None and isinstance(payload, dict):
-        checksum = clean_text(payload.get("checksum") or payload.get("package_checksum") or payload.get("snapshot_checksum"))
-        payload = {key: value for key, value in payload.items() if key not in {"checksum", "package_checksum", "snapshot_checksum"}}
-        return {
-            "valid": constant_time_equal(create_package_checksum(payload), checksum),
-            "checksum": checksum,
-        }
-    return constant_time_equal(create_package_checksum(payload), clean_text(checksum))
-
-
-def generate_package_access_token(package_id: str, scope: Optional[Any] = None, expires_at: Optional[Any] = None, expire_days: Optional[int] = None) -> str:
-    normalized_scope = normalize_access_scope(scope or "data")
-    if expires_at:
-        expiry = clean_text(expires_at)
-    else:
-        days = max(1, min(int(expire_days or PACKAGE_DEFAULT_EXPIRE_DAYS or 30), int(PACKAGE_MAX_EXPIRE_DAYS or 365)))
-        expiry = (datetime.now() + timedelta(days=days)).isoformat(timespec="seconds")
-    payload = {
-        "v": TOKEN_VERSION,
-        "package_id": clean_text(package_id),
-        "scope": normalized_scope,
-        "expires_at": expiry,
-    }
-    body = b64url_encode(payload)
-    signature = hmac_signature(body)
-    return f"{body}.{signature}"
-
-
-def verify_package_access_token(token: str, package_id: Optional[str] = None, scope: Optional[Any] = None) -> Dict[str, Any]:
-    try:
-        token_text = clean_text(token)
-        if not token_text or "." not in token_text:
-            return {"valid": False, "reason": "missing_or_malformed_token"}
-        body, signature = token_text.rsplit(".", 1)
-        if not constant_time_equal(hmac_signature(body), signature):
-            return {"valid": False, "reason": "invalid_signature"}
-        payload = b64url_decode_json(body)
-        if package_id and clean_text(payload.get("package_id")) != clean_text(package_id):
-            return {"valid": False, "reason": "package_mismatch", "payload": payload}
-        expected_scope = normalize_access_scope(scope) if scope else ""
-        token_scope = normalize_access_scope(payload.get("scope"))
-        if expected_scope and token_scope not in {expected_scope, "admin", "data"}:
-            return {"valid": False, "reason": "scope_denied", "payload": payload}
-        expires_at = clean_text(payload.get("expires_at"))
-        if expires_at:
-            try:
-                if datetime.fromisoformat(expires_at) < datetime.now():
-                    return {"valid": False, "reason": "token_expired", "payload": payload}
-            except Exception:
-                return {"valid": False, "reason": "invalid_expiry", "payload": payload}
-        return {"valid": True, "reason": "ok", "payload": payload}
-    except Exception as exc:
-        return {"valid": False, "reason": "token_error", "error": clean_text(exc)}
-
-
-def verify_access_token(token: str, expected_package_id: str = "", expected_scope: str = "") -> Dict[str, Any]:
-    return verify_package_access_token(token, package_id=expected_package_id, scope=expected_scope)
-
-
-def normalize_access_scope(scope: Optional[Any]) -> str:
-    if isinstance(scope, (list, tuple, set)):
-        first = next(iter(scope), "data")
-        return normalize_access_scope(first)
-    value = clean_text_lower(scope, default="data")
-    return value if value in PACKAGE_ACCESS_SCOPES else "data"
-
-
-def validate_package_access_scope(scope: Any, allowed_scopes: Optional[Iterable[str]] = None) -> Dict[str, Any]:
-    normalized = normalize_access_scope(scope)
-    allowed = {normalize_access_scope(item) for item in (allowed_scopes or PACKAGE_ACCESS_SCOPES)}
-    allowed.add("admin")
-    return {
-        "valid": normalized in allowed,
-        "scope": normalized,
-        "allowed_scopes": sorted(allowed),
-        "reason": "ok" if normalized in allowed else "scope_not_allowed",
-    }
-
-
-def public_access_allowed(package_meta: Dict[str, Any], component: Optional[str] = None, token: Optional[str] = None) -> Dict[str, Any]:
-    meta = package_meta if isinstance(package_meta, dict) else {}
-    if not meta:
-        return {"allowed": False, "reason": "package_not_found"}
-    if meta.get("enabled") is False or clean_text_lower(meta.get("status")) in {"disabled", "deleted"}:
-        return {"allowed": False, "reason": "package_disabled"}
-    expires_at = clean_text(meta.get("expires_at"))
-    if expires_at:
-        try:
-            if datetime.fromisoformat(expires_at) < datetime.now():
-                return {"allowed": False, "reason": "package_expired"}
-        except Exception:
-            return {"allowed": False, "reason": "invalid_expiry"}
-    requested_component = normalize_access_scope(component or "data")
-    components = meta.get("components") or meta.get("public_components") or list(PACKAGE_ACCESS_SCOPES)
-    scope_result = validate_package_access_scope(requested_component, components)
-    if not scope_result.get("valid"):
-        return {"allowed": False, "reason": scope_result.get("reason"), "component": requested_component}
-    if meta.get("require_token") or (ENABLE_PACKAGE_ACCESS_TOKEN and token):
-        token_result = verify_package_access_token(token or "", package_id=clean_text(meta.get("package_id")), scope=requested_component)
-        if not token_result.get("valid"):
-            return {"allowed": False, "reason": token_result.get("reason", "token_denied"), "component": requested_component}
-    return {"allowed": True, "reason": "ok", "component": requested_component}
-
-
-def build_public_package_url_meta(package_id: str, base_url: Optional[str] = None, token: Optional[str] = None) -> Dict[str, Any]:
-    clean_id = quote(clean_text(package_id), safe="")
-    prefix = clean_text(base_url).rstrip("/")
-    api_base = f"{prefix}/api/public/packages/{clean_id}" if prefix else f"/api/public/packages/{clean_id}"
-    suffix = f"?token={quote(clean_text(token), safe='')}" if token else ""
-    return {
-        "package_id": clean_text(package_id),
-        "public_url": f"{api_base}/data{suffix}",
-        "meta_url": f"{api_base}/meta{suffix}",
-        "data_url": f"{api_base}/data{suffix}",
-        "summary_url": f"{api_base}/summary{suffix}",
-        "map_url": f"{api_base}/map{suffix}",
-        "charts_url": f"{api_base}/charts{suffix}",
-        "tables_url": f"{api_base}/tables{suffix}",
-        "expires_at": "",
-    }
-
-
-def build_public_viewer_metadata(package_id: str, package_meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    meta = sanitize_public_record(package_meta or {})
-    url_meta = build_public_package_url_meta(package_id, token=meta.get("access_token") if meta.get("include_token_in_url") else None)
-    return {
-        "package_id": clean_text(package_id),
-        "name": meta.get("name") or meta.get("package_name") or clean_text(package_id),
-        "description": meta.get("description", ""),
-        "created_at": meta.get("created_at", ""),
-        "updated_at": meta.get("updated_at", meta.get("created_at", "")),
-        "status": meta.get("status", "active"),
-        "enabled": meta.get("enabled", True),
-        "public": meta.get("public", True),
-        "expires_at": meta.get("expires_at", ""),
-        "public_url_meta": url_meta,
-    }
-
-
-mask_company_tax_id = mask_tax_id
-mask_director = mask_director_name
-sanitize_package_payload = sanitize_public_payload
-sanitize_external_payload = sanitize_public_payload
-generate_access_token = generate_package_access_token
-build_checksum = create_package_checksum

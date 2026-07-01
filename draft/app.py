@@ -39,6 +39,13 @@ backend/app.py
 """
 
 from __future__ import annotations
+try:
+    import bootstrap
+    BOOTSTRAP_LOADED = True
+except Exception as e:
+    bootstrap = None
+    BOOTSTRAP_LOADED = False
+    BOOTSTRAP_ERROR = str(e)
 import json
 import logging
 import traceback

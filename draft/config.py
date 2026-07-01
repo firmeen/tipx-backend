@@ -979,61 +979,90 @@ DEFAULT_MAP_ZOOM: int = 6
 DEFAULT_MAP_MIN_ZOOM: int = 4
 DEFAULT_MAP_MAX_ZOOM: int = 18
 
-MAP_DEFAULT_CENTER: Tuple[float, float] = DEFAULT_MAP_CENTER
-MAP_DEFAULT_ZOOM: int = DEFAULT_MAP_ZOOM
-MAP_MIN_ZOOM: int = DEFAULT_MAP_MIN_ZOOM
-MAP_MAX_ZOOM: int = DEFAULT_MAP_MAX_ZOOM
-MAP_BASE_TILE_URL: str = "https://{a-c}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-MAP_BASE_ATTRIBUTION: str = "OpenStreetMap contributors"
+# Service-facing OpenLayers map aliases.
+# Keep DEFAULT_MAP_* for existing config consumers, and expose MAP_* for
+# map_graph_service.py import stability. Coordinates are (lon, lat).
+MAP_DEFAULT_CENTER: Tuple[float, float] = (
+    float(os.getenv("TIPX_MAP_DEFAULT_LON", str(DEFAULT_MAP_CENTER[0]))),
+    float(os.getenv("TIPX_MAP_DEFAULT_LAT", str(DEFAULT_MAP_CENTER[1]))),
+)
+MAP_DEFAULT_ZOOM: int = int(os.getenv("TIPX_MAP_DEFAULT_ZOOM", str(DEFAULT_MAP_ZOOM)))
+MAP_MIN_ZOOM: int = int(os.getenv("TIPX_MAP_MIN_ZOOM", str(DEFAULT_MAP_MIN_ZOOM)))
+MAP_MAX_ZOOM: int = int(os.getenv("TIPX_MAP_MAX_ZOOM", str(DEFAULT_MAP_MAX_ZOOM)))
+MAP_BASE_TILE_URL: str = os.getenv(
+    "TIPX_MAP_BASE_TILE_URL",
+    "https://{a-c}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+)
+MAP_BASE_ATTRIBUTION: str = os.getenv(
+    "TIPX_MAP_BASE_ATTRIBUTION",
+    "© OpenStreetMap contributors",
+)
 
+# Layer keys follow the actual layer IDs used by map_graph_service.py.
 MAP_LAYER_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "province_boundaries": {
         "layer_name": "Province Boundaries",
-        "visible": False,
-        "opacity": 0.45,
-        "z_index": 0,
+        "label": "Province Boundaries",
+        "visible": True,
+        "z_index": 10,
+        "opacity": 0.35,
+        "layer_type": "polygon",
     },
     "basin_boundaries": {
         "layer_name": "Basin Boundaries",
+        "label": "Basin Boundaries",
         "visible": False,
-        "opacity": 0.45,
-        "z_index": 1,
+        "z_index": 11,
+        "opacity": 0.3,
+        "layer_type": "polygon",
     },
     "heatmap": {
-        "layer_name": "Flood Risk Heatmap",
+        "layer_name": "Risk Heatmap",
+        "label": "Risk Heatmap",
         "visible": False,
+        "z_index": 20,
         "opacity": 0.65,
-        "z_index": 2,
+        "layer_type": "heatmap",
     },
     "flood_points": {
-        "layer_name": "Flood Points",
+        "layer_name": "Flood Stations",
+        "label": "Flood Stations",
         "visible": True,
-        "opacity": 0.85,
-        "z_index": 3,
+        "z_index": 30,
+        "opacity": 0.9,
+        "layer_type": "point",
     },
     "policy_exposure": {
         "layer_name": "Policy Exposure",
+        "label": "Policy Exposure",
         "visible": True,
+        "z_index": 35,
         "opacity": 0.9,
-        "z_index": 4,
+        "layer_type": "point",
     },
     "company_points": {
-        "layer_name": "Company Points",
+        "layer_name": "Companies",
+        "label": "Companies",
         "visible": True,
+        "z_index": 40,
         "opacity": 1.0,
-        "z_index": 5,
+        "layer_type": "point",
     },
     "branch_points": {
-        "layer_name": "Branch Points",
+        "layer_name": "Branches",
+        "label": "Branches",
         "visible": True,
-        "opacity": 0.9,
-        "z_index": 6,
+        "z_index": 45,
+        "opacity": 1.0,
+        "layer_type": "point",
     },
     "linkage_lines": {
         "layer_name": "Linkage Lines",
+        "label": "Linkage Lines",
         "visible": False,
-        "opacity": 0.65,
-        "z_index": 7,
+        "z_index": 50,
+        "opacity": 0.7,
+        "layer_type": "line",
     },
 }
 
@@ -1060,8 +1089,13 @@ SPATIAL_JOIN_LEVELS: List[str] = [
 
 NEAREST_STATION_MAX_DISTANCE_KM: float = 100.0
 NEAREST_DAM_MAX_DISTANCE_KM: float = 150.0
-SPATIAL_NEAREST_STATION_LIMIT_KM: float = NEAREST_STATION_MAX_DISTANCE_KM
-SPATIAL_COMPANY_FLOOD_RADIUS_KM: float = 50.0
+
+SPATIAL_NEAREST_STATION_LIMIT_KM: float = float(
+    os.getenv("TIPX_SPATIAL_NEAREST_STATION_LIMIT_KM", "50")
+)
+SPATIAL_COMPANY_FLOOD_RADIUS_KM: float = float(
+    os.getenv("TIPX_SPATIAL_COMPANY_FLOOD_RADIUS_KM", "30")
+)
 
 
 # ============================================================
@@ -1093,25 +1127,6 @@ GRAPH_NODE_TYPES: Dict[str, str] = {
 GRAPH_EDGE_TYPES: Dict[str, str] = {
     "director_of": EDGE_TYPE_DIRECTOR_OF,
     "shared_director": EDGE_TYPE_SHARED_DIRECTOR,
-}
-
-GRAPH_COLORS: Dict[str, str] = {
-    "company": "#60A5FA",
-    "director": "#FBBF24",
-    "person": "#FBBF24",
-    "key_connector": "#F97316",
-    "policy": "#A78BFA",
-    "linkage": "#38BDF8",
-    "edge": "#64748B",
-    "shared_director": "#94A3B8",
-    "normal": "#22C55E",
-    "watch": "#EAB308",
-    "warning": "#F97316",
-    "critical": "#EF4444",
-    "unknown": "#94A3B8",
-    "low": "#22C55E",
-    "medium": "#EAB308",
-    "high": "#F97316",
 }
 
 
@@ -1619,6 +1634,18 @@ GRAPH_NODE_SIZE: Dict[str, int] = {
     "key_connector": 18,
     "selected": 22,
     "default": 10,
+}
+
+GRAPH_COLORS: Dict[str, str] = {
+    "company": "#38bdf8",
+    "company_wtip": "#22c55e",
+    "director": "#a855f7",
+    "key_connector": "#facc15",
+    "selected": "#f97316",
+    "connected": "#fb7185",
+    "director_of": "rgba(148, 163, 184, 0.42)",
+    "shared_director": "rgba(56, 189, 248, 0.78)",
+    "default": "#94a3b8",
 }
 
 GRAPH_EDGE_WIDTH: Dict[str, float] = {
