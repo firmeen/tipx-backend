@@ -147,6 +147,7 @@ CACHE_KEYS: Dict[str, str] = {
     "policy_yearly_summary": "policy_yearly_summary",
     "policy_loss_ratio_summary": "policy_loss_ratio_summary",
     "linkage_company_profile": "linkage_company_profile",
+    "company_unified_base": "company_unified_base",
     "company_unified_master": "company_unified_master",
 }
 
@@ -171,6 +172,9 @@ COMPANY_SEARCHABLE_FIELDS: List[str] = [
     "wtip",
     "loss_ratio_band",
     "flood_risk_level",
+    "linkage_risk_level",
+    "flood_join_level",
+    "location_quality",
 ]
 
 NUMERIC_POLICY_FIELDS: List[str] = [
@@ -1294,19 +1298,16 @@ def load_spatial_context_index() -> Dict[str, Dict[str, Any]]:
 
     return index_records_by_tax_id(records)
 
-
 def load_linkage_summary_index() -> Dict[str, Dict[str, Any]]:
     """
-    โหลด linkage company detail summary จาก cache ถ้ามี
+    โหลด linkage summary จาก cache หลัง PHASE linkage
 
-    ถ้า linkage_service.py ยังไม่สร้าง cache จะ return empty
+    ใช้เติม:
+    - director_count
+    - shared_company_count
+    - key_connector_count
+    - linkage_risk_level
     """
-
-    candidate_keys = [
-        "linkage_company_summary",
-        "director_company_pairs",
-        "key_connector_summary",
-    ]
 
     result: Dict[str, Dict[str, Any]] = {}
 
@@ -1314,7 +1315,7 @@ def load_linkage_summary_index() -> Dict[str, Dict[str, Any]]:
     pairs = []
 
     if isinstance(pairs_data, dict):
-        pairs = pairs_data.get("records", [])
+        pairs = pairs_data.get("records", []) or pairs_data.get("data", [])
     elif isinstance(pairs_data, list):
         pairs = pairs_data
 
@@ -1322,21 +1323,122 @@ def load_linkage_summary_index() -> Dict[str, Dict[str, Any]]:
         grouped = defaultdict(list)
 
         for pair in pairs:
-            tax_id_norm = normalize_tax_id(pair.get("tax_id_norm"))
+            tax_id_norm = normalize_tax_id(pair.get("tax_id_norm") or pair.get("tax_id"))
             if tax_id_norm:
                 grouped[tax_id_norm].append(pair)
 
         for tax_id_norm, group in grouped.items():
             director_ids = {
-                clean_text(item.get("director_id"))
+                clean_text(item.get("director_id") or item.get("person_id"))
                 for item in group
-                if clean_text(item.get("director_id"))
+                if clean_text(item.get("director_id") or item.get("person_id"))
             }
 
             result[tax_id_norm] = {
                 "director_count": len(director_ids),
+                "shared_company_count": 0,
+                "key_connector_count": 0,
+                "linkage_risk_level": "Watch" if len(director_ids) > 1 else "Normal",
                 "has_linkage": len(director_ids) > 0,
             }
+
+    graph_payload = read_cache("linkage_graph_payload", default={}) or read_cache("linkage_graph", default={})
+
+    if isinstance(graph_payload, dict):
+        graph_data = graph_payload.get("data") if isinstance(graph_payload.get("data"), dict) else graph_payload
+        nodes = graph_data.get("nodes", []) if isinstance(graph_data, dict) else []
+        edges = graph_data.get("edges", []) if isinstance(graph_data, dict) else []
+    else:
+        nodes = []
+        edges = []
+
+    company_node_ids: Dict[str, str] = {}
+
+    for node in nodes if isinstance(nodes, list) else []:
+        if not isinstance(node, dict):
+            continue
+
+        tax_id_norm = normalize_tax_id(
+            node.get("tax_id_norm")
+            or node.get("tax_id")
+            or node.get("id")
+            or node.get("node_id")
+        )
+
+        node_id = clean_text(node.get("id") or node.get("node_id"))
+
+        if tax_id_norm and node_id:
+            company_node_ids[node_id] = tax_id_norm
+
+        if tax_id_norm:
+            item = result.setdefault(
+                tax_id_norm,
+                {
+                    "director_count": 0,
+                    "shared_company_count": 0,
+                    "key_connector_count": 0,
+                    "linkage_risk_level": "Normal",
+                    "has_linkage": False,
+                },
+            )
+
+            item["director_count"] = max(
+                to_int(item.get("director_count"), 0),
+                to_int(node.get("director_count"), 0),
+            )
+            item["shared_company_count"] = max(
+                to_int(item.get("shared_company_count"), 0),
+                to_int(node.get("shared_company_count"), 0),
+            )
+            item["key_connector_count"] = max(
+                to_int(item.get("key_connector_count"), 0),
+                to_int(node.get("key_connector_count"), 0),
+            )
+            item["has_linkage"] = bool(
+                item.get("director_count")
+                or item.get("shared_company_count")
+                or item.get("key_connector_count")
+            )
+
+    shared_count_by_tax_id: Dict[str, int] = defaultdict(int)
+
+    for edge in edges if isinstance(edges, list) else []:
+        if not isinstance(edge, dict):
+            continue
+
+        source = clean_text(edge.get("source") or edge.get("source_id") or edge.get("from"))
+        target = clean_text(edge.get("target") or edge.get("target_id") or edge.get("to"))
+
+        for node_id in [source, target]:
+            tax_id_norm = company_node_ids.get(node_id) or normalize_tax_id(node_id)
+            if tax_id_norm:
+                shared_count_by_tax_id[tax_id_norm] += 1
+
+    for tax_id_norm, shared_count in shared_count_by_tax_id.items():
+        item = result.setdefault(
+            tax_id_norm,
+            {
+                "director_count": 0,
+                "shared_company_count": 0,
+                "key_connector_count": 0,
+                "linkage_risk_level": "Normal",
+                "has_linkage": False,
+            },
+        )
+        item["shared_company_count"] = max(to_int(item.get("shared_company_count"), 0), shared_count)
+        item["has_linkage"] = True
+
+    for item in result.values():
+        director_count = to_int(item.get("director_count"), 0)
+        shared_company_count = to_int(item.get("shared_company_count"), 0)
+        key_connector_count = to_int(item.get("key_connector_count"), 0)
+
+        if key_connector_count > 0 or shared_company_count >= 5:
+            item["linkage_risk_level"] = "Warning"
+        elif shared_company_count > 0 or director_count > 0:
+            item["linkage_risk_level"] = "Watch"
+        else:
+            item["linkage_risk_level"] = "Normal"
 
     return result
 
@@ -1369,11 +1471,272 @@ def index_records_by_company_key(records: List[Dict[str, Any]]) -> Dict[str, Dic
 
     return result
 
-def build_company_unified_master(force_refresh: bool = False) -> Dict[str, Any]:
+def build_company_base_record(
+    company_key: str,
+    policy: Dict[str, Any],
+    location: Dict[str, Any],
+    linkage: Dict[str, Any],
+    branch_by_province: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
     """
-    สร้าง company_unified_master
+    สร้าง 1 record สำหรับ company_unified_base
 
-    เป็น table กลางที่สุดของระบบ TIPX
+    base ห้ามรอ spatial_join_result และห้ามรอ linkage graph summary
+    """
+
+    tax_id_norm = normalize_tax_id(
+        first_non_empty(
+            company_key if company_key.isdigit() else "",
+            policy.get("tax_id_norm"),
+            linkage.get("tax_id_norm"),
+            location.get("tax_id_norm"),
+            default="",
+        )
+    )
+
+    company_name = first_non_empty(
+        policy.get("company_name_policy"),
+        policy.get("company_name"),
+        linkage.get("company_name_linkage"),
+        linkage.get("name_th"),
+        location.get("company_name_location"),
+        default="",
+    )
+
+    province = normalize_province_name(
+        first_non_empty(
+            policy.get("province"),
+            location.get("province"),
+            default="",
+        )
+    )
+
+    lat = location.get("lat")
+    lon = location.get("lon")
+    location_source = location.get("location_source", "")
+    location_quality = location.get("location_quality", "missing_coordinate")
+
+    coord = validate_coordinate(lat, lon)
+
+    if not coord["valid"] and province in branch_by_province:
+        branch = branch_by_province[province]
+        lat = branch.get("lat")
+        lon = branch.get("lon")
+        location_source = branch.get("location_source", "policy_sheet_3_branch_or_province")
+        location_quality = "approximate_branch_or_province"
+
+    coord_final = validate_coordinate(lat, lon)
+
+    if not coord_final["valid"]:
+        if lat is None or lon is None or is_empty_value(lat) or is_empty_value(lon):
+            location_quality = "missing_coordinate"
+        else:
+            location_quality = "invalid_coordinate"
+
+    has_policy = bool(policy)
+    has_linkage = bool(linkage)
+    has_location = bool(coord_final["valid"])
+
+    record = {
+        "tax_id_raw": first_non_empty(
+            policy.get("tax_id_norm"),
+            linkage.get("tax_id_raw"),
+            location.get("tax_id_raw"),
+            tax_id_norm,
+            default=tax_id_norm,
+        ),
+        "tax_id_norm": tax_id_norm,
+        "tax_id_valid": validate_tax_id(tax_id_norm)["tax_id_valid"],
+        "tax_id_issue": validate_tax_id(tax_id_norm)["tax_id_issue"],
+        "company_key": company_key,
+
+        "company_name": company_name,
+        "company_name_policy": policy.get("company_name_policy", ""),
+        "company_name_linkage": linkage.get("company_name_linkage", ""),
+        "company_name_location": location.get("company_name_location", ""),
+
+        "business_type": policy.get("business_type", ""),
+        "business_type_objective": linkage.get("business_type_objective", ""),
+        "business_type_tsic": linkage.get("business_type_tsic", ""),
+        "company_size": linkage.get("company_size", ""),
+        "wtip": linkage.get("wtip", ""),
+        "boardlist": linkage.get("boardlist", ""),
+        "boardlist_raw": linkage.get("boardlist", ""),
+        "boardlist_profile": {
+            "raw": linkage.get("boardlist", ""),
+            "has_boardlist": bool(clean_text(linkage.get("boardlist"))),
+        },
+
+        "most_recent_asset_val": policy.get("most_recent_asset_val"),
+        "most_recent_income_val": first_non_empty(
+            policy.get("most_recent_income_val"),
+            policy.get("most_recent_income_val_policy"),
+            linkage.get("most_recent_income_val_linkage"),
+            default=None,
+        ),
+        "registered_capital": first_non_empty(
+            policy.get("registered_capital"),
+            policy.get("registered_capital_policy"),
+            linkage.get("registered_capital_linkage"),
+            default=None,
+        ),
+
+        "address": location.get("address", ""),
+        "province": province,
+        "district": location.get("district", ""),
+        "subdistrict": location.get("subdistrict", ""),
+        "lat": coord_final["lat"],
+        "lon": coord_final["lon"],
+        "latitude": coord_final["lat"],
+        "longitude": coord_final["lon"],
+        "location_source": location_source,
+        "location_quality": location_quality,
+        "coordinate_valid": coord_final["valid"],
+        "coordinate_issue": coord_final["issue"],
+
+        "has_policy": has_policy,
+        "has_linkage": has_linkage,
+        "has_location": has_location,
+        "has_flood_context": False,
+
+        "policy_status": "Active" if to_number(policy.get("active_policy_count"), 0) else "Expired" if to_number(policy.get("expired_policy_count"), 0) else "Unknown",
+        "premium": policy.get("total_premium", 0),
+        "loss": policy.get("total_loss", 0),
+        "suminsure": policy.get("total_suminsure", 0),
+        "total_premium": policy.get("total_premium", 0),
+        "total_loss": policy.get("total_loss", 0),
+        "total_suminsure": policy.get("total_suminsure", 0),
+        "total_noofpol": policy.get("total_noofpol", 0),
+        "active_policy_count": policy.get("active_policy_count", 0),
+        "expired_policy_count": policy.get("expired_policy_count", 0),
+        "policy_record_count": policy.get("policy_record_count", 0),
+        "product_count": policy.get("product_count", 0),
+        "subclass_count": policy.get("subclass_count", 0),
+        "product_summary": {
+            "product_count": policy.get("product_count", 0),
+            "product_holding": policy.get("product_holding", 0),
+        },
+        "subclass_summary": {
+            "subclass_count": policy.get("subclass_count", 0),
+            "subclass_holding": policy.get("subclass_holding", 0),
+        },
+        "first_policy_year": policy.get("first_policy_year"),
+        "latest_policy_year": policy.get("latest_policy_year"),
+        "loss_ratio": policy.get("loss_ratio"),
+        "loss_ratio_band": policy.get("loss_ratio_band", "Undefined"),
+        "premium_zero_with_loss_count": policy.get("premium_zero_with_loss_count", 0),
+        "status_conflict_count": policy.get("status_conflict_count", 0),
+
+        "director_count": 0,
+        "shared_company_count": 0,
+        "key_connector_count": 0,
+        "linkage_risk_level": "Unknown",
+
+        "flood_risk_level": "Unknown",
+        "flood_join_level": "none",
+        "flood_risk_reason": "",
+        "nearest_rainfall_station_id": "",
+        "nearest_waterlevel_station_id": "",
+        "nearest_dam_id": "",
+
+        "data_quality_flags": [],
+
+        "source_flags": {
+            "has_policy": has_policy,
+            "has_linkage": has_linkage,
+            "has_location": has_location,
+            "has_flood_context": False,
+            "is_base_record": True,
+            "is_enriched_record": False,
+        },
+
+        "record_stage": "base",
+        "updated_at": now_iso(),
+    }
+
+    return to_jsonable(record)
+
+
+def enrich_company_base_record(
+    base_record: Dict[str, Any],
+    spatial: Dict[str, Any],
+    linkage_summary: Dict[str, Any],
+    quality_flags: List[str],
+) -> Dict[str, Any]:
+    """
+    เติม enrichment หลัง linkage/flood/spatial/data_quality พร้อมแล้ว
+    """
+
+    record = dict(base_record)
+
+    has_flood_context = bool(
+        to_bool(
+            spatial.get("has_flood_context"),
+            default=False,
+        )
+    )
+
+    flood_risk_level = first_non_empty(
+        spatial.get("final_flood_risk_level"),
+        spatial.get("flood_risk_level"),
+        spatial.get("province_risk_level"),
+        default="Unknown",
+    )
+
+    director_count = to_int(linkage_summary.get("director_count"), 0)
+    shared_company_count = to_int(linkage_summary.get("shared_company_count"), 0)
+    key_connector_count = to_int(linkage_summary.get("key_connector_count"), 0)
+
+    record.update(
+        {
+            "has_linkage": bool(record.get("has_linkage")) or bool(linkage_summary.get("has_linkage")),
+            "has_flood_context": has_flood_context,
+
+            "director_count": director_count,
+            "shared_company_count": shared_company_count,
+            "key_connector_count": key_connector_count,
+            "linkage_risk_level": linkage_summary.get("linkage_risk_level", "Unknown"),
+
+            "flood_risk_level": flood_risk_level,
+            "flood_join_level": first_non_empty(
+                spatial.get("join_level"),
+                spatial.get("flood_join_level"),
+                default="none",
+            ),
+            "flood_risk_reason": first_non_empty(
+                spatial.get("flood_risk_reason"),
+                spatial.get("risk_reason"),
+                default="",
+            ),
+            "nearest_rainfall_station_id": spatial.get("nearest_rainfall_station_id", ""),
+            "nearest_waterlevel_station_id": spatial.get("nearest_waterlevel_station_id", ""),
+            "nearest_dam_id": spatial.get("nearest_dam_id", ""),
+            "data_quality_flags": quality_flags or [],
+            "record_stage": "enriched",
+            "updated_at": now_iso(),
+        }
+    )
+
+    record["source_flags"] = {
+        **(record.get("source_flags") if isinstance(record.get("source_flags"), dict) else {}),
+        "has_policy": bool(record.get("has_policy")),
+        "has_linkage": bool(record.get("has_linkage")),
+        "has_location": bool(record.get("has_location")),
+        "has_flood_context": has_flood_context,
+        "is_base_record": False,
+        "is_enriched_record": True,
+    }
+
+    return to_jsonable(record)
+
+
+def build_company_unified_base(force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    สร้าง company_unified_base
+
+    base รวมเฉพาะ policy + location + branch/province fallback + linkage company profile
+    ไม่อ่าน spatial_join_result
+    ไม่อ่าน linkage graph summary
     """
 
     def builder() -> Dict[str, Any]:
@@ -1386,29 +1749,18 @@ def build_company_unified_master(force_refresh: bool = False) -> Dict[str, Any]:
         location_index = index_records_by_tax_id(location_records)
         linkage_index = index_records_by_tax_id(linkage_records)
         branch_by_province = build_branch_index_by_province(branch_records)
-        spatial_index = load_spatial_context_index()
-        linkage_summary_index = load_linkage_summary_index()
-
-        quality_flags_by_tax_id: Dict[str, List[str]] = {}
-
-        if build_quality_flags_by_tax_id is not None:
-            try:
-                quality_flags_by_tax_id = build_quality_flags_by_tax_id()
-            except Exception:
-                quality_flags_by_tax_id = {}
 
         all_company_keys = sorted(
             set(policy_index.keys())
             | set(location_index.keys())
             | set(linkage_index.keys())
-            | set(spatial_index.keys())
         )
 
-        unified_records: List[Dict[str, Any]] = []
+        base_records: List[Dict[str, Any]] = []
 
         for company_key in all_company_keys:
             policy = policy_index.get(company_key, {})
-        
+
             tax_id_norm = normalize_tax_id(
                 first_non_empty(
                     company_key if company_key.isdigit() else "",
@@ -1416,185 +1768,108 @@ def build_company_unified_master(force_refresh: bool = False) -> Dict[str, Any]:
                     default="",
                 )
             )
-        
+
             location = location_index.get(tax_id_norm, {}) if tax_id_norm else {}
             linkage = linkage_index.get(tax_id_norm, {}) if tax_id_norm else {}
-            spatial = spatial_index.get(tax_id_norm, {}) if tax_id_norm else {}
-            linkage_summary = linkage_summary_index.get(tax_id_norm, {}) if tax_id_norm else {}
 
-            company_name = first_non_empty(
-                policy.get("company_name_policy"),
-                policy.get("company_name"),
-                linkage.get("company_name_linkage"),
-                linkage.get("name_th"),
-                location.get("company_name_location"),
-                default="",
-            )
-
-            province = normalize_province_name(
-                first_non_empty(
-                    policy.get("province"),
-                    location.get("province"),
-                    spatial.get("company_province"),
-                    default="",
+            base_records.append(
+                build_company_base_record(
+                    company_key=company_key,
+                    policy=policy,
+                    location=location,
+                    linkage=linkage,
+                    branch_by_province=branch_by_province,
                 )
             )
 
-            lat = location.get("lat")
-            lon = location.get("lon")
-            location_source = location.get("location_source", "")
-            location_quality = location.get("location_quality", "missing_coordinate")
-
-            coord = validate_coordinate(lat, lon)
-
-            if not coord["valid"] and province in branch_by_province:
-                branch = branch_by_province[province]
-                lat = branch.get("lat")
-                lon = branch.get("lon")
-                location_source = branch.get("location_source", "policy_sheet_3_branch_or_province")
-                location_quality = "approximate_branch_or_province"
-
-            coord_final = validate_coordinate(lat, lon)
-
-            if not coord_final["valid"]:
-                if lat is None or lon is None or is_empty_value(lat) or is_empty_value(lon):
-                    location_quality = "missing_coordinate"
-                else:
-                    location_quality = "invalid_coordinate"
-
-            has_policy = bool(policy)
-            has_linkage = bool(linkage) or bool(linkage_summary.get("has_linkage"))
-            has_location = bool(coord_final["valid"])
-            has_flood_context = bool(
-                to_bool(
-                    spatial.get("has_flood_context"),
-                    default=False,
-                )
-            )
-
-            flood_risk_level = first_non_empty(
-                spatial.get("final_flood_risk_level"),
-                spatial.get("flood_risk_level"),
-                spatial.get("province_risk_level"),
-                default="Unknown",
-            )
-
-            record = {
-                "tax_id_raw": first_non_empty(
-                    policy.get("tax_id_norm"),
-                    linkage.get("tax_id_raw"),
-                    location.get("tax_id_raw"),
-                    tax_id_norm,
-                    default=tax_id_norm,
-                ),
-                "tax_id_norm": tax_id_norm,
-                "tax_id_valid": validate_tax_id(tax_id_norm)["tax_id_valid"],
-                "tax_id_issue": validate_tax_id(tax_id_norm)["tax_id_issue"],
-                
-                # fix
-                "company_key": company_key,
-
-                "company_name": company_name,
-                "company_name_policy": policy.get("company_name_policy", ""),
-                "company_name_linkage": linkage.get("company_name_linkage", ""),
-                "company_name_location": location.get("company_name_location", ""),
-
-                "business_type_objective": linkage.get("business_type_objective", ""),
-                "business_type_tsic": linkage.get("business_type_tsic", ""),
-                "company_size": linkage.get("company_size", ""),
-                "wtip": linkage.get("wtip", ""),
-                "boardlist": linkage.get("boardlist", ""),
-
-                "most_recent_asset_val": policy.get("most_recent_asset_val"),
-                "most_recent_income_val": first_non_empty(
-                    policy.get("most_recent_income_val_policy"),
-                    linkage.get("most_recent_income_val_linkage"),
-                    default=None,
-                ),
-                "registered_capital": first_non_empty(
-                    policy.get("registered_capital_policy"),
-                    linkage.get("registered_capital_linkage"),
-                    default=None,
-                ),
-
-                "address": location.get("address", ""),
-                "province": province,
-                "district": location.get("district", ""),
-                "subdistrict": location.get("subdistrict", ""),
-                "lat": coord_final["lat"],
-                "lon": coord_final["lon"],
-                "location_source": location_source,
-                "location_quality": location_quality,
-
-                "has_policy": has_policy,
-                "has_linkage": has_linkage,
-                "has_location": has_location,
-                "has_flood_context": has_flood_context,
-
-                "total_premium": policy.get("total_premium", 0),
-                "total_loss": policy.get("total_loss", 0),
-                "total_suminsure": policy.get("total_suminsure", 0),
-                "total_noofpol": policy.get("total_noofpol", 0),
-                "active_policy_count": policy.get("active_policy_count", 0),
-                "expired_policy_count": policy.get("expired_policy_count", 0),
-                "policy_record_count": policy.get("policy_record_count", 0),
-                "product_count": policy.get("product_count", 0),
-                "subclass_count": policy.get("subclass_count", 0),
-                "first_policy_year": policy.get("first_policy_year"),
-                "latest_policy_year": policy.get("latest_policy_year"),
-                "loss_ratio": policy.get("loss_ratio"),
-                "loss_ratio_band": policy.get("loss_ratio_band", "Undefined"),
-                "premium_zero_with_loss_count": policy.get("premium_zero_with_loss_count", 0),
-                "status_conflict_count": policy.get("status_conflict_count", 0),
-
-                "director_count": linkage_summary.get("director_count", 0),
-                "shared_company_count": linkage_summary.get("shared_company_count", 0),
-                "key_connector_count": linkage_summary.get("key_connector_count", 0),
-
-                "flood_risk_level": flood_risk_level,
-                "flood_join_level": first_non_empty(
-                    spatial.get("join_level"),
-                    spatial.get("flood_join_level"),
-                    default="none",
-                ),
-                "flood_risk_reason": first_non_empty(
-                    spatial.get("flood_risk_reason"),
-                    spatial.get("risk_reason"),
-                    default="",
-                ),
-                "nearest_rainfall_station_id": spatial.get("nearest_rainfall_station_id", ""),
-                "nearest_waterlevel_station_id": spatial.get("nearest_waterlevel_station_id", ""),
-                "nearest_dam_id": spatial.get("nearest_dam_id", ""),
-
-                "data_quality_flags": quality_flags_by_tax_id.get(tax_id_norm, []),
-
-                "source_flags": {
-                    "has_policy": has_policy,
-                    "has_linkage": has_linkage,
-                    "has_location": has_location,
-                    "has_flood_context": has_flood_context,
-                },
-
-                "updated_at": now_iso(),
-            }
-
-            unified_records.append(record)
-
-        unified_records = sorted(
-            unified_records,
+        base_records = sorted(
+            base_records,
             key=lambda item: clean_text(item.get("company_name")),
         )
 
         return {
-            "records": unified_records,
-            "total": len(unified_records),
+            "records": base_records,
+            "total": len(base_records),
             "created_at": now_iso(),
+            "stage": "base",
             "source": {
                 "policy_company_count": len(policy_company),
                 "location_count": len(location_records),
                 "branch_count": len(branch_records),
                 "linkage_company_count": len(linkage_records),
+                "spatial_context_count": 0,
+                "linkage_summary_count": 0,
+            },
+        }
+
+    cache_result = get_or_build_cache(
+        cache_key=CACHE_KEYS["company_unified_base"],
+        builder=builder,
+        ttl_seconds=get_policy_ttl(),
+        force_refresh=force_refresh,
+        source="company_policy_service.build_company_unified_base",
+    )
+
+    return {
+        **cache_result["data"],
+        "cache_used": cache_result["cache_used"],
+    }
+
+def build_company_unified_master(force_refresh: bool = False, enrichment_mode: str = "full") -> Dict[str, Any]:
+    """
+    สร้าง company_unified_master enriched
+
+    enriched = company_unified_base + linkage summary + flood/spatial context + data quality flags
+    """
+
+    def builder() -> Dict[str, Any]:
+        base_payload = build_company_unified_base(force_refresh=force_refresh)
+        base_records = base_payload.get("records", [])
+
+        spatial_index = load_spatial_context_index() if enrichment_mode in {"full", "spatial", "flood"} else {}
+        linkage_summary_index = load_linkage_summary_index() if enrichment_mode in {"full", "linkage"} else {}
+
+        quality_flags_by_tax_id: Dict[str, List[str]] = {}
+
+        if enrichment_mode in {"full", "data_quality"} and build_quality_flags_by_tax_id is not None:
+            try:
+                quality_flags_by_tax_id = build_quality_flags_by_tax_id()
+            except Exception:
+                quality_flags_by_tax_id = {}
+
+        enriched_records: List[Dict[str, Any]] = []
+
+        for base_record in base_records:
+            tax_id_norm = normalize_tax_id(base_record.get("tax_id_norm"))
+            spatial = spatial_index.get(tax_id_norm, {}) if tax_id_norm else {}
+            linkage_summary = linkage_summary_index.get(tax_id_norm, {}) if tax_id_norm else {}
+            quality_flags = quality_flags_by_tax_id.get(tax_id_norm, []) if tax_id_norm else []
+
+            enriched_records.append(
+                enrich_company_base_record(
+                    base_record=base_record,
+                    spatial=spatial,
+                    linkage_summary=linkage_summary,
+                    quality_flags=quality_flags,
+                )
+            )
+
+        enriched_records = sorted(
+            enriched_records,
+            key=lambda item: clean_text(item.get("company_name")),
+        )
+
+        return {
+            "records": enriched_records,
+            "total": len(enriched_records),
+            "created_at": now_iso(),
+            "stage": "enriched",
+            "enrichment_mode": enrichment_mode,
+            "source": {
+                "base_count": len(base_records),
                 "spatial_context_count": len(spatial_index),
+                "linkage_summary_count": len(linkage_summary_index),
+                "quality_flag_company_count": len(quality_flags_by_tax_id),
             },
         }
 
@@ -1611,13 +1886,23 @@ def build_company_unified_master(force_refresh: bool = False) -> Dict[str, Any]:
         "cache_used": cache_result["cache_used"],
     }
 
+def get_company_unified_base_records(force_refresh: bool = False) -> List[Dict[str, Any]]:
+    """
+    คืน company_unified_base records
+
+    flood_spatial_service.py ใช้ตัวนี้เพื่อตัด circular dependency
+    """
+
+    return build_company_unified_base(force_refresh=force_refresh).get("records", [])
 
 def get_company_unified_records(force_refresh: bool = False) -> List[Dict[str, Any]]:
     """
-    คืน company_unified_master records
+    คืน company_unified_master enriched records
+
+    dashboard/map/package ใช้ตัวนี้
     """
 
-    return build_company_unified_master(force_refresh=force_refresh).get("records", [])
+    return build_company_unified_master(force_refresh=force_refresh, enrichment_mode="full").get("records", [])
 
 
 # ============================================================
@@ -2196,15 +2481,11 @@ def get_company_policy_dashboard_payload(context: Optional[Dict[str, Any]] = Non
         "generated_at": now_iso(),
     }
 
-
-def rebuild_company_policy_cache(force_refresh: bool = True) -> Dict[str, Any]:
+def rebuild_company_policy_base_cache(force_refresh: bool = False) -> Dict[str, Any]:
     """
-    rebuild cache ทั้งหมดของ company/policy
+    PHASE company_policy_base
 
-    ใช้ตอน:
-    - startup refresh
-    - manual refresh
-    - package generation
+    สร้างเฉพาะ base dependencies ที่ linkage/flood/spatial ใช้ต่อได้
     """
 
     results = {
@@ -2217,11 +2498,12 @@ def rebuild_company_policy_cache(force_refresh: bool = True) -> Dict[str, Any]:
         "policy_subclass_summary": build_policy_subclass_summary(force_refresh=force_refresh),
         "policy_yearly_summary": build_policy_yearly_summary(force_refresh=force_refresh),
         "policy_loss_ratio_summary": build_policy_loss_ratio_summary(force_refresh=force_refresh),
-        "company_unified_master": build_company_unified_master(force_refresh=force_refresh),
+        "company_unified_base": build_company_unified_base(force_refresh=force_refresh),
     }
 
     return {
         "rebuilt": True,
+        "stage": "base",
         "results": {
             key: {
                 "total": value.get("total"),
@@ -2233,6 +2515,60 @@ def rebuild_company_policy_cache(force_refresh: bool = True) -> Dict[str, Any]:
         "generated_at": now_iso(),
     }
 
+
+def rebuild_company_policy_enriched_cache(force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    PHASE company_policy_enriched
+
+    เติม linkage/flood/spatial/data_quality หลัง upstream cache พร้อมแล้ว
+    """
+
+    results = {
+        "company_unified_master": build_company_unified_master(
+            force_refresh=force_refresh,
+            enrichment_mode="full",
+        ),
+    }
+
+    return {
+        "rebuilt": True,
+        "stage": "enriched",
+        "results": {
+            key: {
+                "total": value.get("total"),
+                "cache_used": value.get("cache_used"),
+                "created_at": value.get("created_at"),
+            }
+            for key, value in results.items()
+        },
+        "generated_at": now_iso(),
+    }
+
+def rebuild_company_policy_cache(force_refresh: bool = True) -> Dict[str, Any]:
+    """
+    rebuild cache ทั้งหมดของ company/policy แบบ staged
+
+    ลำดับ:
+    1. company_unified_base
+    2. company_unified_master enriched
+    """
+
+    base_result = rebuild_company_policy_base_cache(force_refresh=force_refresh)
+    enriched_result = rebuild_company_policy_enriched_cache(force_refresh=force_refresh)
+
+    return {
+        "rebuilt": True,
+        "staged": True,
+        "stages": {
+            "company_policy_base": base_result,
+            "company_policy_enriched": enriched_result,
+        },
+        "results": {
+            **base_result.get("results", {}),
+            **enriched_result.get("results", {}),
+        },
+        "generated_at": now_iso(),
+    }
 
 # ============================================================
 # 12) MODULE STATUS / SELF TEST
@@ -2251,6 +2587,12 @@ def get_company_policy_module_status() -> Dict[str, Any]:
         "linkage_input_path": str(LINKAGE_INPUT_PATH),
         "linkage_input_exists": LINKAGE_INPUT_PATH.exists(),
         "cache_keys": CACHE_KEYS,
+        "dependency_contract": {
+            "flood_spatial_reads": "company_unified_base",
+            "dashboard_map_package_reads": "company_unified_master",
+            "company_unified_base_waits_for_spatial": False,
+            "company_unified_master_enriches_spatial": True,
+        },
         "supported_outputs": [
             "policy_fact",
             "company_location_master",
@@ -2261,7 +2603,12 @@ def get_company_policy_module_status() -> Dict[str, Any]:
             "policy_yearly_summary",
             "policy_loss_ratio_summary",
             "linkage_company_profile",
+            "company_unified_base",
             "company_unified_master",
+        ],
+        "supported_rebuild_phases": [
+            "company_policy_base",
+            "company_policy_enriched",
         ],
         "checked_at": now_iso(),
     }
@@ -2275,6 +2622,7 @@ def run_company_policy_self_test() -> Dict[str, Any]:
     status = get_company_policy_module_status()
 
     policy_fact = build_policy_fact(force_refresh=False)
+    company_base = build_company_unified_base(force_refresh=False)
     company_master = build_company_unified_master(force_refresh=False)
 
     return {
@@ -2282,6 +2630,7 @@ def run_company_policy_self_test() -> Dict[str, Any]:
         "self_test": True,
         "status": status,
         "policy_fact_total": policy_fact.get("total", 0),
-        "company_unified_total": company_master.get("total", 0),
+        "company_unified_base_total": company_base.get("total", 0),
+        "company_unified_master_total": company_master.get("total", 0),
         "checked_at": now_iso(),
     }

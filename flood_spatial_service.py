@@ -1,7 +1,6 @@
 # ============================================================
 # FILE: backend/flood_spatial_service.py
 # TIPX Enterprise Intelligence Dashboard
-# ลำดับไฟล์ที่ 11 / 20
 # ============================================================
 
 """
@@ -62,19 +61,14 @@ Risk Levels:
 """
 
 from __future__ import annotations
-try:
-    import bootstrap
-    BOOTSTRAP_LOADED = True
-except Exception as e:
-    bootstrap = None
-    BOOTSTRAP_LOADED = False
-    BOOTSTRAP_ERROR = str(e)
+
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+import config
 
 from config import (
     FLOOD_OUTPUT_DIR,
@@ -126,6 +120,23 @@ from utils import (
     to_number,
     validate_coordinate,
     write_cache,
+    clear_excel_cache,
+    clean_column_name,
+    filter_by_province,
+    filter_by_risk,
+    filter_has_location,
+    first_value_by_columns,
+    find_first_existing_column,
+    get_latest_prediction_file,
+    limit_dataframe,
+    read_history_sheet,
+    read_latest_sheet,
+    read_master_sheet,
+    read_prediction_file,
+    safe_float,
+    safe_int,
+    safe_str,
+    safe_filename,
 )
 
 try:
@@ -164,6 +175,14 @@ CACHE_KEYS: Dict[str, str] = {
     "policy_flood_exposure": "policy_flood_exposure",
     "province_risk_exposure": "province_risk_exposure",
     "flood_summary": "flood_summary",
+    "flood_prediction_files": "flood_prediction_files",
+    "flood_prediction_latest": "flood_prediction_latest",
+    "flood_prediction_summary": "flood_prediction_summary",
+    "flood_prediction_map": "flood_prediction_map",
+    "flood_prediction_location_debug": "flood_prediction_location_debug",
+    "flood_prediction_risk_distribution": "flood_prediction_risk_distribution",
+    "flood_history_index": "flood_history_index",
+    "flood_master_station_index": "flood_master_station_index",
 }
 
 FLOOD_SEARCHABLE_FIELDS: List[str] = [
@@ -178,6 +197,26 @@ FLOOD_SEARCHABLE_FIELDS: List[str] = [
     "basin",
     "risk_level",
     "risk_reason",
+]
+
+PREDICTION_SEARCHABLE_FIELDS: List[str] = [
+    "record_key",
+    "station_id",
+    "station_code",
+    "station_name",
+    "station_name_th",
+    "matched_station_id",
+    "matched_station_code",
+    "matched_station_name",
+    "province",
+    "province_model",
+    "risk_level",
+    "risk_status",
+    "warning_level",
+    "warning_level_predict",
+    "base_date",
+    "target_date",
+    "forecast_horizon_day",
 ]
 
 SPATIAL_SEARCHABLE_FIELDS: List[str] = [
@@ -242,27 +281,146 @@ def filter_records_api(
 ) -> Dict[str, Any]:
     """
     apply filter/search/sort/pagination
+
+    รองรับ filter หลัก:
+    - province
+    - risk_level / risk / risk_status
+    - has_location / map_ready
     """
 
     ctx = normalize_context(context)
+    filters = ctx.get("filters", {}) if isinstance(ctx.get("filters"), dict) else {}
+
+    result = list(records or [])
+
+    province_value = (
+        filters.get("province")
+        or filters.get("province_model")
+        or filters.get("province_name_th")
+        or ctx.get("province")
+    )
+
+    risk_value = (
+        filters.get("risk_level")
+        or filters.get("risk")
+        or filters.get("risk_status")
+        or filters.get("warning_level")
+        or filters.get("warning_level_predict")
+        or ctx.get("risk_level")
+        or ctx.get("risk")
+    )
+
+    has_location_value = (
+        filters.get("has_location")
+        if "has_location" in filters
+        else filters.get("map_ready")
+        if "map_ready" in filters
+        else ctx.get("has_location")
+        if "has_location" in ctx
+        else ctx.get("map_ready")
+    )
+
+    station_value = (
+        filters.get("station")
+        or filters.get("station_id")
+        or filters.get("station_code")
+        or filters.get("station_name")
+        or ctx.get("station")
+    )
+
+    if province_value not in (None, "", [], {}):
+        province_norm = normalize_province_name(province_value)
+        result = [
+            record
+            for record in result
+            if normalize_province_name(
+                record.get("province")
+                or record.get("province_model")
+                or record.get("province_name_th")
+                or record.get("company_province")
+            ) == province_norm
+        ]
+
+    if risk_value not in (None, "", [], {}):
+        risk_norm = normalize_risk_status(risk_value)
+        result = [
+            record
+            for record in result
+            if normalize_risk_status(
+                record.get("risk_level")
+                or record.get("risk_status")
+                or record.get("warning_level")
+                or record.get("warning_level_predict")
+                or record.get("final_flood_risk_level")
+                or record.get("flood_risk_level")
+            ) == risk_norm
+        ]
+
+    if has_location_value not in (None, "", [], {}):
+        expected = to_bool(has_location_value, default=None)
+
+        if expected is not None:
+            result = [
+                record
+                for record in result
+                if bool(
+                    record.get("map_ready")
+                    if "map_ready" in record
+                    else record.get("has_location")
+                    if "has_location" in record
+                    else validate_coordinate(
+                        record.get("lat") or record.get("latitude") or record.get("company_lat"),
+                        record.get("lon") or record.get("longitude") or record.get("company_lon"),
+                    ).get("valid")
+                ) is expected
+            ]
+
+    if station_value not in (None, "", [], {}):
+        station_query = clean_text_lower(station_value)
+        result = [
+            record
+            for record in result
+            if station_query in " ".join(
+                [
+                    clean_text(record.get("station_id")),
+                    clean_text(record.get("station_code")),
+                    clean_text(record.get("station_name")),
+                    clean_text(record.get("station_name_th")),
+                    clean_text(record.get("matched_station_id")),
+                    clean_text(record.get("matched_station_code")),
+                    clean_text(record.get("matched_station_name")),
+                    clean_text(record.get("source_id")),
+                    clean_text(record.get("source_name")),
+                    clean_text(record.get("dam_id")),
+                    clean_text(record.get("dam_name")),
+                ]
+            ).lower()
+        ]
 
     if filter_records_for_service is not None:
         try:
-            return filter_records_for_service(
-                records=records,
-                context=ctx,
+            ctx_for_filter = dict(ctx)
+            ctx_for_filter["filters"] = {}
+            ctx_for_filter["page"] = ctx.get("page", 1)
+            ctx_for_filter["page_size"] = ctx.get("page_size", 50)
+
+            filtered = filter_records_for_service(
+                records=result,
+                context=ctx_for_filter,
                 target=target,
                 paginate=True,
             )
+
+            if isinstance(filtered, dict) and "records" in filtered:
+                return filtered
         except Exception:
             pass
 
     return apply_search_sort_pagination(
-        records=records,
+        records=result,
         context=ctx,
         searchable_fields=searchable_fields,
     )
-
 
 # ============================================================
 # 3) COLUMN DETECTION HELPERS
@@ -2328,6 +2486,1685 @@ def get_flood_dashboard_payload(context: Optional[Dict[str, Any]] = None) -> Dic
         "generated_at": now_iso(),
     }
 
+# ============================================================
+# 15) FLOOD RUNTIME OVERRIDES - LATEST / HISTORY / MASTER / PREDICTION
+# ============================================================
+
+def normalize_risk_status(value: Any) -> str:
+    """
+    normalize risk status สำหรับ latest/prediction display
+    """
+
+    text = clean_text(value)
+
+    if not text:
+        return "Unknown"
+
+    lowered = text.strip().lower()
+
+    risk_map = getattr(config, "PREDICTION_RISK_NORMALIZE_MAP", {})
+
+    if isinstance(risk_map, dict) and lowered in risk_map:
+        return risk_map[lowered]
+
+    if lowered in {"normal", "ปกติ", "1.ปกติ"}:
+        return "Normal"
+
+    if lowered in {"watch", "เฝ้าระวัง", "2.เฝ้าระวัง"}:
+        return "Watch"
+
+    if lowered in {"warning", "เตือน", "เตือนภัย", "3.เตือนภัย"}:
+        return "Warning"
+
+    if lowered in {"critical", "วิกฤต", "4.วิกฤต"}:
+        return "Critical"
+
+    return normalize_risk_level(text)
+
+
+def classify_rainfall_risk(row: Any) -> Dict[str, Any]:
+    rainfall = get_value_by_candidates(
+        row,
+        [
+            "rainfall_value",
+            "rainfall",
+            "rain_24h",
+            "rainfall_24h",
+            "rainfall_mm",
+            "value",
+            "latest_value",
+        ],
+        default=None,
+    )
+    return calculate_rainfall_risk(rainfall)
+
+
+def classify_waterlevel_risk(row: Any) -> Dict[str, Any]:
+    waterlevel = get_value_by_candidates(
+        row,
+        [
+            "waterlevel_value",
+            "waterlevel",
+            "water_level",
+            "level",
+            "value",
+            "latest_value",
+        ],
+        default=None,
+    )
+
+    warning_level = get_value_by_candidates(
+        row,
+        [
+            "warning_level",
+            "warning",
+            "warn_level",
+            "warning_level_m",
+        ],
+        default=None,
+    )
+
+    critical_level = get_value_by_candidates(
+        row,
+        [
+            "critical_level",
+            "critical",
+            "danger_level",
+            "critical_level_m",
+        ],
+        default=None,
+    )
+
+    return calculate_waterlevel_risk(
+        waterlevel,
+        warning_level=warning_level,
+        critical_level=critical_level,
+    )
+
+
+def classify_dam_risk(row: Any) -> Dict[str, Any]:
+    storage_percent = get_value_by_candidates(
+        row,
+        [
+            "storage_percent",
+            "percent_storage",
+            "storage_pct",
+            "storage_percentage",
+            "percent",
+            "latest_value",
+        ],
+        default=None,
+    )
+
+    if to_number(storage_percent, None) is None:
+        storage = to_number(
+            get_value_by_candidates(row, ["storage", "water_storage", "current_storage"], default=None),
+            None,
+        )
+        capacity = to_number(
+            get_value_by_candidates(row, ["capacity", "dam_capacity", "full_capacity"], default=None),
+            None,
+        )
+
+        if storage is not None and capacity not in (None, 0):
+            storage_percent = round((storage / capacity) * 100, 4)
+
+    return calculate_dam_risk(storage_percent)
+
+
+def get_display_value(row: Any, source_type: str = "") -> Any:
+    source = clean_text_lower(source_type or get_value_by_candidates(row, ["source_type"], default=""))
+
+    if source == "rainfall":
+        return get_value_by_candidates(
+            row,
+            ["rainfall_value", "rainfall_24h", "rainfall_mm", "value", "latest_value"],
+            default=None,
+        )
+
+    if source == "waterlevel":
+        return get_value_by_candidates(
+            row,
+            ["waterlevel_value", "water_level", "level", "value", "latest_value"],
+            default=None,
+        )
+
+    if source in {"dam", "large_dam", "medium_dam"}:
+        return get_value_by_candidates(
+            row,
+            ["storage_percent", "percent_storage", "storage_pct", "value", "latest_value"],
+            default=None,
+        )
+
+    return get_value_by_candidates(row, ["latest_value", "value", "measure_value"], default=None)
+
+
+def get_display_unit(row: Any, source_type: str = "") -> str:
+    source = clean_text_lower(source_type or get_value_by_candidates(row, ["source_type"], default=""))
+
+    if source == "rainfall":
+        return "mm"
+
+    if source == "waterlevel":
+        return "m"
+
+    if source in {"dam", "large_dam", "medium_dam"}:
+        return "%"
+
+    return clean_text(get_value_by_candidates(row, ["unit", "latest_unit"], default=""))
+
+
+def get_dam_display_name(row: Any) -> str:
+    return clean_text(
+        get_value_by_candidates(
+            row,
+            [
+                "display_name",
+                "dam_name",
+                "medium_name",
+                "reservoir_name",
+                "source_name",
+                "name",
+            ],
+            default="",
+        )
+    )
+
+
+def normalize_latest_record_display(record: Dict[str, Any], source_type: str) -> Dict[str, Any]:
+    result = dict(record)
+    lat = result.get("lat") if result.get("lat") is not None else result.get("latitude")
+    lon = result.get("lon") if result.get("lon") is not None else result.get("longitude")
+    coord = validate_coordinate(lat, lon)
+
+    result["source_type"] = clean_text(result.get("source_type"), default=source_type)
+    result["latest_value"] = get_display_value(result, result["source_type"])
+    result["latest_unit"] = get_display_unit(result, result["source_type"])
+    result["display_name"] = clean_text(
+        result.get("display_name")
+        or result.get("source_name")
+        or result.get("station_name")
+        or result.get("dam_name")
+        or get_dam_display_name(result)
+    )
+    result["latitude"] = coord.get("lat")
+    result["longitude"] = coord.get("lon")
+    result["lat"] = coord.get("lat")
+    result["lon"] = coord.get("lon")
+    result["has_location"] = bool(coord.get("valid"))
+    result["map_ready"] = bool(coord.get("valid"))
+
+    risk_level = normalize_risk_status(result.get("risk_level") or result.get("risk_status"))
+    result["risk_level"] = risk_level
+    result["risk_status"] = risk_level
+    result["risk_score"] = RISK_SCORE.get(risk_level, -1)
+    result["risk_color"] = RISK_COLORS.get(risk_level, RISK_COLORS.get("Unknown", "#64748b"))
+
+    return result
+
+
+def normalize_latest_records_display(records: List[Dict[str, Any]], source_type: str) -> List[Dict[str, Any]]:
+    return [
+        normalize_latest_record_display(record, source_type=source_type)
+        for record in records or []
+    ]
+
+
+def ensure_risk_column(df: pd.DataFrame, source_type: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    result = df.copy()
+
+    risks: List[str] = []
+
+    for _, row in result.iterrows():
+        if source_type == "rainfall":
+            risk = classify_rainfall_risk(row)
+        elif source_type == "waterlevel":
+            risk = classify_waterlevel_risk(row)
+        elif source_type in {"dam", "large_dam", "medium_dam"}:
+            risk = classify_dam_risk(row)
+        else:
+            risk = {"risk_level": normalize_risk_status(get_value_by_candidates(row, ["risk_level", "risk_status"], default="Unknown"))}
+
+        risks.append(risk.get("risk_level", "Unknown"))
+
+    result["risk_level"] = risks
+    result["risk_status"] = risks
+
+    return result
+
+def load_flood_latest_sheets(force_refresh: bool = False) -> Dict[str, pd.DataFrame]:
+    """
+    อ่าน latest_database.xlsx ผ่าน Excel source layer
+    """
+
+    sheet_keys = [
+        "rainfall_latest",
+        "waterlevel_latest",
+        "large_dam_latest",
+        "medium_dam_latest",
+        "all_long_latest",
+    ]
+
+    result: Dict[str, pd.DataFrame] = {}
+
+    for key in sheet_keys:
+        result[key] = clean_dataframe_common(
+            read_latest_sheet(
+                key,
+                use_cache=not force_refresh,
+                return_meta=False,
+            )
+        )
+
+    return result
+
+
+def load_flood_master_sheets(force_refresh: bool = False) -> Dict[str, pd.DataFrame]:
+    """
+    อ่าน master_database.xlsx ผ่าน Excel source layer
+    """
+
+    master_keys = [
+        "province_boundary",
+        "basin_boundary",
+        "rainfall_station_master",
+        "waterlevel_station_master",
+        "dam_reservoir_master",
+        "location_master",
+        "data_quality_log",
+        "error_log",
+        "scrape_runs",
+        "daily_loop_runs",
+        "daily_loop_rounds",
+    ]
+
+    result: Dict[str, pd.DataFrame] = {}
+
+    for key in master_keys:
+        sheet_name = getattr(config, "MASTER_SHEETS", {}).get(key, key)
+        result[key] = clean_dataframe_common(
+            read_master_sheet(
+                key,
+                use_cache=not force_refresh,
+                return_meta=False,
+            )
+        )
+        result[sheet_name] = result[key]
+
+    return result
+
+
+def read_history_dataframe(
+    data_type: Any,
+    year: Any,
+    month: Any,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    อ่าน history dataframe ผ่าน Excel source layer
+    """
+
+    return clean_dataframe_common(
+        read_history_sheet(
+            data_type=data_type,
+            year=year,
+            month=month,
+            sheet_name=None,
+            use_cache=not force_refresh,
+            return_meta=False,
+        )
+    )
+
+def build_rainfall_latest(force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    สร้าง rainfall latest records
+    """
+
+    def builder() -> Dict[str, Any]:
+        df = load_flood_latest_sheets(force_refresh=force_refresh).get("rainfall_latest", pd.DataFrame())
+        records = normalize_latest_records_display(
+            standardize_rainfall_latest(ensure_risk_column(df, "rainfall")),
+            source_type="rainfall",
+        )
+
+        return {
+            "records": records,
+            "total": len(records),
+            "source_path": str(FLOOD_LATEST_DATABASE_PATH),
+            "source_sheet": getattr(config, "LATEST_SHEETS", {}).get("rainfall_latest", "02_rainfall_latest"),
+            "created_at": now_iso(),
+        }
+
+    cache_result = get_or_build_cache(
+        cache_key=CACHE_KEYS["rainfall_latest"],
+        builder=builder,
+        ttl_seconds=get_flood_ttl(),
+        force_refresh=force_refresh,
+        source="flood_spatial_service.build_rainfall_latest",
+    )
+
+    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
+
+
+def build_waterlevel_latest(force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    สร้าง waterlevel latest records
+    """
+
+    def builder() -> Dict[str, Any]:
+        df = load_flood_latest_sheets(force_refresh=force_refresh).get("waterlevel_latest", pd.DataFrame())
+        records = normalize_latest_records_display(
+            standardize_waterlevel_latest(ensure_risk_column(df, "waterlevel")),
+            source_type="waterlevel",
+        )
+
+        return {
+            "records": records,
+            "total": len(records),
+            "source_path": str(FLOOD_LATEST_DATABASE_PATH),
+            "source_sheet": getattr(config, "LATEST_SHEETS", {}).get("waterlevel_latest", "05_waterlevel_latest"),
+            "created_at": now_iso(),
+        }
+
+    cache_result = get_or_build_cache(
+        cache_key=CACHE_KEYS["waterlevel_latest"],
+        builder=builder,
+        ttl_seconds=get_flood_ttl(),
+        force_refresh=force_refresh,
+        source="flood_spatial_service.build_waterlevel_latest",
+    )
+
+    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
+
+
+def build_large_dam_latest(force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    สร้าง large dam latest records
+    """
+
+    def builder() -> Dict[str, Any]:
+        df = load_flood_latest_sheets(force_refresh=force_refresh).get("large_dam_latest", pd.DataFrame())
+        records = normalize_latest_records_display(
+            standardize_dam_latest(ensure_risk_column(df, "large_dam"), dam_type="large_dam"),
+            source_type="large_dam",
+        )
+
+        return {
+            "records": records,
+            "total": len(records),
+            "source_path": str(FLOOD_LATEST_DATABASE_PATH),
+            "source_sheet": getattr(config, "LATEST_SHEETS", {}).get("large_dam_latest", "07_large_dam_latest"),
+            "created_at": now_iso(),
+        }
+
+    cache_result = get_or_build_cache(
+        cache_key=CACHE_KEYS["large_dam_latest"],
+        builder=builder,
+        ttl_seconds=get_flood_ttl(),
+        force_refresh=force_refresh,
+        source="flood_spatial_service.build_large_dam_latest",
+    )
+
+    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
+
+
+def build_medium_dam_latest(force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    สร้าง medium dam latest records
+    """
+
+    def builder() -> Dict[str, Any]:
+        df = load_flood_latest_sheets(force_refresh=force_refresh).get("medium_dam_latest", pd.DataFrame())
+        records = normalize_latest_records_display(
+            standardize_dam_latest(ensure_risk_column(df, "medium_dam"), dam_type="medium_dam"),
+            source_type="medium_dam",
+        )
+
+        return {
+            "records": records,
+            "total": len(records),
+            "source_path": str(FLOOD_LATEST_DATABASE_PATH),
+            "source_sheet": getattr(config, "LATEST_SHEETS", {}).get("medium_dam_latest", "09_medium_dam_latest"),
+            "created_at": now_iso(),
+        }
+
+    cache_result = get_or_build_cache(
+        cache_key=CACHE_KEYS["medium_dam_latest"],
+        builder=builder,
+        ttl_seconds=get_flood_ttl(),
+        force_refresh=force_refresh,
+        source="flood_spatial_service.build_medium_dam_latest",
+    )
+
+    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
+
+
+def build_all_long_latest(force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    สร้าง all_long latest records
+    """
+
+    def builder() -> Dict[str, Any]:
+        df = load_flood_latest_sheets(force_refresh=force_refresh).get("all_long_latest", pd.DataFrame())
+        records = normalize_latest_records_display(
+            standardize_all_long_latest(df),
+            source_type="all_long",
+        )
+
+        return {
+            "records": records,
+            "total": len(records),
+            "source_path": str(FLOOD_LATEST_DATABASE_PATH),
+            "source_sheet": getattr(config, "LATEST_SHEETS", {}).get("all_long_latest", "17_all_long_latest"),
+            "created_at": now_iso(),
+        }
+
+    cache_result = get_or_build_cache(
+        cache_key=CACHE_KEYS["all_long_latest"],
+        builder=builder,
+        ttl_seconds=get_flood_ttl(),
+        force_refresh=force_refresh,
+        source="flood_spatial_service.build_all_long_latest",
+    )
+
+    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
+
+def get_latest_rainfall(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    API:
+    GET /api/latest/rainfall
+    """
+
+    return get_rainfall_latest(context=context)
+
+
+def get_latest_waterlevel(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    API:
+    GET /api/latest/waterlevel
+    """
+
+    return get_waterlevel_latest(context=context)
+
+
+def get_latest_large_dam(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    API:
+    GET /api/latest/dam/large
+    """
+
+    return get_large_dam_latest(context=context)
+
+
+def get_latest_medium_dam(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    API:
+    GET /api/latest/dam/medium
+    """
+
+    return get_medium_dam_latest(context=context)
+
+
+def get_latest_dam(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    API:
+    GET /api/latest/dam
+    """
+
+    ctx = normalize_context(context)
+    dam_size = clean_text_lower(ctx.get("dam_size") or ctx.get("size") or "all")
+
+    records: List[Dict[str, Any]] = []
+
+    if dam_size in {"large", "large_dam", "all", ""}:
+        records.extend(build_large_dam_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+
+    if dam_size in {"medium", "medium_dam", "all", ""}:
+        records.extend(build_medium_dam_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+
+    return filter_records_api(records, ctx, FLOOD_SEARCHABLE_FIELDS, target="flood")
+
+
+def get_all_long_latest(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    API:
+    GET /api/latest/all-long
+    """
+
+    ctx = normalize_context(context)
+    records = build_all_long_latest(force_refresh=ctx.get("force_refresh", False)).get("records", [])
+
+    return filter_records_api(records, ctx, FLOOD_SEARCHABLE_FIELDS, target="flood")
+
+def get_rainfall_station_master(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    df = read_master_sheet("rainfall_station_master", use_cache=not ctx.get("force_refresh", False), return_meta=False)
+    records = standardize_station_master(clean_dataframe_common(df), station_type="rainfall")
+
+    return filter_records_api(records, ctx, FLOOD_SEARCHABLE_FIELDS, target="flood")
+
+
+def get_waterlevel_station_master(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    df = read_master_sheet("waterlevel_station_master", use_cache=not ctx.get("force_refresh", False), return_meta=False)
+    records = standardize_station_master(clean_dataframe_common(df), station_type="waterlevel")
+
+    return filter_records_api(records, ctx, FLOOD_SEARCHABLE_FIELDS, target="flood")
+
+
+def get_dam_reservoir_master(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    df = read_master_sheet("dam_reservoir_master", use_cache=not ctx.get("force_refresh", False), return_meta=False)
+    records = standardize_dam_master(clean_dataframe_common(df))
+
+    return filter_records_api(records, ctx, FLOOD_SEARCHABLE_FIELDS, target="flood")
+
+
+def get_location_master(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    df = clean_dataframe_common(
+        read_master_sheet(
+            "location_master",
+            use_cache=not ctx.get("force_refresh", False),
+            return_meta=False,
+        )
+    )
+    records = dataframe_to_records(df)
+
+    return filter_records_api(records, ctx, FLOOD_SEARCHABLE_FIELDS, target="flood")
+
+
+def get_province_boundary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return get_province_boundaries()
+
+
+def get_basin_boundary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return get_basin_boundaries()
+
+def get_history(
+    data_type: str,
+    year: Any,
+    month: Any,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    อ่าน history ตาม data_type/year/month
+    """
+
+    ctx = normalize_context(context)
+    normalized_type = config.normalize_history_data_type(data_type) if hasattr(config, "normalize_history_data_type") else clean_text(data_type)
+    df = read_history_dataframe(
+        data_type=normalized_type,
+        year=year,
+        month=month,
+        force_refresh=ctx.get("force_refresh", False),
+    )
+
+    records = dataframe_to_records(df)
+    result = filter_records_api(records, ctx, FLOOD_SEARCHABLE_FIELDS, target="flood")
+
+    result["data_type"] = normalized_type
+    result["year"] = year
+    result["month"] = month
+    result["source_file"] = str(config.get_history_file(normalized_type, year, month)) if hasattr(config, "get_history_file") else ""
+    result["source_sheet"] = config.get_history_sheet(normalized_type) if hasattr(config, "get_history_sheet") else ""
+
+    return result
+
+
+def get_history_rainfall(year: Any, month: Any, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return get_history("rainfall", year=year, month=month, context=context)
+
+
+def get_history_rain15d(year: Any, month: Any, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return get_history("rain15d", year=year, month=month, context=context)
+
+
+def get_history_rain_yearly(year: Any, month: Any, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return get_history("rain_yearly", year=year, month=month, context=context)
+
+
+def get_history_waterlevel(year: Any, month: Any, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return get_history("waterlevel", year=year, month=month, context=context)
+
+
+def get_history_dam(
+    data_type: str = "large_dam",
+    year: Any = None,
+    month: Any = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return get_history(data_type or "large_dam", year=year, month=month, context=context)
+
+
+def get_history_all_long(year: Any, month: Any, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return get_history("all_long", year=year, month=month, context=context)
+
+def list_prediction_files() -> List[Path]:
+    prediction_dir = Path(getattr(config, "PREDICTION_DATA_DIR", getattr(config, "FLOOD_PREDICTION_DIR", "")))
+    prediction_glob = getattr(config, "PREDICTION_FILE_GLOB", "predict_*.xlsx")
+
+    if not prediction_dir.exists():
+        return []
+
+    return sorted(
+        [
+            path
+            for path in prediction_dir.glob(prediction_glob)
+            if path.is_file()
+        ],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+
+
+def find_prediction_file(data_date: Optional[Any] = None) -> Optional[Path]:
+    files = list_prediction_files()
+
+    if not files:
+        return None
+
+    wanted = clean_text(data_date)
+
+    if not wanted:
+        return files[0]
+
+    wanted_digits = "".join(ch for ch in wanted if ch.isdigit())
+
+    for path in files:
+        path_digits = "".join(ch for ch in path.stem if ch.isdigit())
+
+        if wanted in path.name or wanted_digits and wanted_digits in path_digits:
+            return path
+
+    return files[0]
+
+
+def get_prediction_file_date(path: Optional[Path]) -> str:
+    if path is None:
+        return ""
+
+    if hasattr(config, "get_prediction_file_date"):
+        try:
+            return clean_text(config.get_prediction_file_date(path))
+        except Exception:
+            pass
+
+    digits = "".join(ch if ch.isdigit() else " " for ch in path.stem).split()
+
+    for item in digits:
+        if len(item) == 8:
+            return f"{item[0:4]}-{item[4:6]}-{item[6:8]}"
+
+    return ""
+
+
+def read_prediction_dataframe(
+    data_date: Optional[Any] = None,
+    force_refresh: bool = False,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    prediction_file = find_prediction_file(data_date=data_date)
+
+    if prediction_file is None:
+        return pd.DataFrame(), {
+            "source": "excel",
+            "source_file": None,
+            "file_name": None,
+            "data_date": clean_text(data_date),
+            "file_exists": False,
+            "record_count": 0,
+        }
+
+    df = clean_dataframe_common(
+        read_prediction_file(
+            file_path=prediction_file,
+            use_cache=not force_refresh,
+            return_meta=False,
+        )
+    )
+
+    meta = {
+        "source": "excel",
+        "source_file": str(prediction_file),
+        "file_name": prediction_file.name,
+        "data_date": get_prediction_file_date(prediction_file) or clean_text(data_date),
+        "file_exists": prediction_file.exists(),
+        "record_count": len(df),
+        "file_modified_at": datetime.fromtimestamp(prediction_file.stat().st_mtime).isoformat(timespec="seconds"),
+    }
+
+    return df, meta
+
+
+def normalize_prediction_dataframe(df: pd.DataFrame, meta: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    result = df.copy()
+    result.columns = [clean_column_name(col) for col in result.columns]
+
+    if "province_model" not in result.columns and "province" in result.columns:
+        result["province_model"] = result["province"]
+
+    if "province" not in result.columns and "province_model" in result.columns:
+        result["province"] = result["province_model"]
+
+    if "station_name" not in result.columns:
+        station_col = find_first_existing_column(
+            result,
+            [
+                "station_name_th",
+                "tele_station_name",
+                "waterlevel_station_name",
+                "name",
+            ],
+        )
+        result["station_name"] = result[station_col] if station_col else ""
+
+    if "base_date" not in result.columns:
+        result["base_date"] = first_value_from_dataframe_columns(
+            result,
+            ["data_date", "predict_date", "file_date"],
+            default=meta.get("data_date") if isinstance(meta, dict) else "",
+        )
+
+    if "target_date" not in result.columns:
+        result["target_date"] = first_value_from_dataframe_columns(
+            result,
+            ["forecast_date", "target", "date"],
+            default="",
+        )
+
+    if "forecast_horizon_day" not in result.columns:
+        horizon_col = find_first_existing_column(result, ["horizon", "prediction_horizon"])
+        result["forecast_horizon_day"] = result[horizon_col] if horizon_col else None
+
+    return clean_dataframe_common(result)
+
+
+def first_value_from_dataframe_columns(
+    df: pd.DataFrame,
+    candidates: List[str],
+    default: Any = "",
+) -> List[Any]:
+    values: List[Any] = []
+
+    for _, row in df.iterrows():
+        values.append(
+            get_value_by_candidates(
+                row,
+                candidates,
+                default=default,
+            )
+        )
+
+    return values
+
+
+def normalize_prediction_risk(row: Any) -> str:
+    direct = get_value_by_candidates(
+        row,
+        [
+            "risk_level",
+            "risk_status",
+            "warning_level_predict",
+            "warning_level",
+            "status",
+        ],
+        default="",
+    )
+
+    if not is_empty_value(direct):
+        return normalize_risk_status(direct)
+
+    percent_to_bank = to_number(
+        get_value_by_candidates(row, ["percent_to_bank"], default=None),
+        None,
+    )
+
+    from_bank_m = to_number(
+        get_value_by_candidates(row, ["from_bank_m", "diff_from_bank_m"], default=None),
+        None,
+    )
+
+    if from_bank_m is not None:
+        if from_bank_m <= 0:
+            return "Critical"
+        if from_bank_m <= 0.50:
+            return "Warning"
+        if from_bank_m <= 1.00:
+            return "Watch"
+        return "Normal"
+
+    if percent_to_bank is not None:
+        if percent_to_bank >= 100:
+            return "Critical"
+        if percent_to_bank >= 90:
+            return "Warning"
+        if percent_to_bank >= 80:
+            return "Watch"
+        return "Normal"
+
+    return "Unknown"
+
+
+def make_prediction_record_key(row: Any) -> str:
+    station = clean_text(
+        get_value_by_candidates(
+            row,
+            [
+                "station_id",
+                "station_code",
+                "station_name",
+                "station_name_th",
+            ],
+            default="station",
+        )
+    )
+
+    base_date = clean_text(get_value_by_candidates(row, ["base_date", "data_date", "predict_date"], default=""))
+    target_date = clean_text(get_value_by_candidates(row, ["target_date", "forecast_date"], default=""))
+    horizon = clean_text(get_value_by_candidates(row, ["forecast_horizon_day", "horizon"], default=""))
+
+    raw_key = f"prediction|{station}|{base_date}|{target_date}|{horizon}"
+    return raw_key
+
+
+def build_station_location_index(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
+    cache_key = CACHE_KEYS["flood_master_station_index"]
+
+    def builder() -> Dict[str, Any]:
+        rainfall = get_rainfall_station_master({"force_refresh": force_refresh, "page_size": 100000}).get("records", [])
+        waterlevel = get_waterlevel_station_master({"force_refresh": force_refresh, "page_size": 100000}).get("records", [])
+
+        index: Dict[str, Dict[str, Any]] = {}
+
+        for source_name, records in [
+            ("waterlevel_station_master", waterlevel),
+            ("rainfall_station_master", rainfall),
+        ]:
+            for record in records:
+                keys = prediction_location_match_keys(record)
+
+                for key in keys:
+                    if key and key not in index:
+                        item = dict(record)
+                        item["matched_source"] = source_name
+                        index[key] = item
+
+        return {
+            "index": index,
+            "total": len(index),
+            "created_at": now_iso(),
+        }
+
+    cache_result = get_or_build_cache(
+        cache_key=cache_key,
+        builder=builder,
+        ttl_seconds=get_flood_ttl(),
+        force_refresh=force_refresh,
+        source="flood_spatial_service.build_station_location_index",
+    )
+
+    return cache_result["data"].get("index", {})
+
+
+def prediction_location_match_keys(row: Any) -> List[str]:
+    values = [
+        get_value_by_candidates(row, ["station_id", "matched_station_id", "source_id"], default=""),
+        get_value_by_candidates(row, ["station_code", "matched_station_code", "code"], default=""),
+        get_value_by_candidates(row, ["station_name", "station_name_th", "matched_station_name", "source_name"], default=""),
+    ]
+
+    province = normalize_province_name(
+        get_value_by_candidates(
+            row,
+            ["province", "province_model", "province_name_th"],
+            default="",
+        )
+    )
+
+    keys: List[str] = []
+
+    for value in values:
+        text = clean_text_lower(value)
+
+        if not text:
+            continue
+
+        keys.append(text)
+
+        if province:
+            keys.append(f"{province}|{text}".lower())
+
+    return list(dict.fromkeys(keys))
+
+
+def find_prediction_station_location_match(
+    row: Any,
+    station_index: Dict[str, Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    keys = prediction_location_match_keys(row)
+
+    for key in keys:
+        if key in station_index:
+            return station_index[key], {
+                "location_match_status": "matched",
+                "location_match_key": key,
+                "location_match_candidates": keys,
+                "location_match_reason": "matched by station master key",
+            }
+
+    return None, {
+        "location_match_status": "not_matched",
+        "location_match_key": "",
+        "location_match_candidates": keys,
+        "location_match_reason": "no station master key matched",
+    }
+
+
+def enrich_prediction_location(
+    record: Dict[str, Any],
+    station_index: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    result = dict(record)
+    match, debug = find_prediction_station_location_match(result, station_index)
+
+    province = normalize_province_name(
+        result.get("province_model")
+        or result.get("province")
+        or result.get("province_name_th")
+    )
+
+    result["province"] = province
+    result["province_model"] = province
+
+    if match:
+        lat = match.get("lat")
+        lon = match.get("lon")
+        coord = validate_coordinate(lat, lon)
+
+        result["matched_source"] = match.get("matched_source", "")
+        result["matched_station_id"] = match.get("station_id") or match.get("source_id")
+        result["matched_station_code"] = match.get("station_code") or match.get("source_id")
+        result["matched_station_name"] = match.get("station_name") or match.get("source_name")
+        result["lat"] = coord.get("lat")
+        result["lon"] = coord.get("lon")
+        result["latitude"] = coord.get("lat")
+        result["longitude"] = coord.get("lon")
+        result["has_location"] = bool(coord.get("valid"))
+        result["map_ready"] = bool(coord.get("valid"))
+        result["focus_level"] = "point" if coord.get("valid") else "province_boundary"
+        result["focus_fallback"] = None if coord.get("valid") else {"type": "province_boundary", "province": province}
+        result["focus_fallback_reason"] = "" if coord.get("valid") else "matched station has invalid coordinate"
+
+    else:
+        result["matched_source"] = ""
+        result["matched_station_id"] = ""
+        result["matched_station_code"] = ""
+        result["matched_station_name"] = ""
+        result["lat"] = None
+        result["lon"] = None
+        result["latitude"] = None
+        result["longitude"] = None
+        result["has_location"] = False
+        result["map_ready"] = False
+        result["focus_level"] = "province_boundary" if province else "none"
+        result["focus_fallback"] = {"type": "province_boundary", "province": province} if province else None
+        result["focus_fallback_reason"] = "station location not matched; fallback to province boundary" if province else "station location and province missing"
+
+    result.update(debug)
+
+    return result
+
+
+def normalize_prediction_records(
+    df: pd.DataFrame,
+    meta: Optional[Dict[str, Any]] = None,
+    force_refresh: bool = False,
+) -> List[Dict[str, Any]]:
+    normalized_df = normalize_prediction_dataframe(df, meta=meta or {})
+
+    if normalized_df.empty:
+        return []
+
+    station_index = build_station_location_index(force_refresh=force_refresh)
+    records: List[Dict[str, Any]] = []
+
+    for idx, row in normalized_df.iterrows():
+        record = {
+            key: to_jsonable(value)
+            for key, value in row.to_dict().items()
+        }
+
+        risk = normalize_prediction_risk(row)
+        record["risk_level"] = risk
+        record["risk_status"] = risk
+        record["warning_level_predict"] = risk
+        record["risk_score"] = RISK_SCORE.get(risk, -1)
+        record["risk_color"] = RISK_COLORS.get(risk, RISK_COLORS.get("Unknown", "#64748b"))
+
+        record["station_id"] = clean_text(
+            record.get("station_id")
+            or record.get("station_code")
+            or record.get("station_name")
+            or record.get("station_name_th")
+        )
+        record["station_name"] = clean_text(record.get("station_name") or record.get("station_name_th") or record.get("station_id"))
+        record["station_name_th"] = clean_text(record.get("station_name_th") or record.get("station_name"))
+        record["record_key"] = make_prediction_record_key(record)
+        record["source_type"] = "prediction"
+        record["source_id"] = record["record_key"]
+        record["source_key"] = record["record_key"]
+        record["source_name"] = record["station_name"]
+        record["source_file"] = meta.get("source_file") if isinstance(meta, dict) else ""
+        record["source_sheet"] = meta.get("sheet_name", 0) if isinstance(meta, dict) else 0
+        record["source_row"] = int(idx) + 2
+        record["data_date"] = clean_text(record.get("data_date") or meta.get("data_date") if isinstance(meta, dict) else record.get("data_date"))
+
+        record = enrich_prediction_location(record, station_index)
+        records.append(record)
+
+    return records
+
+def get_prediction_files(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return get_flood_prediction_files(context=context)
+
+
+def get_flood_prediction_files(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    files = [
+        {
+            "file": str(path),
+            "file_name": path.name,
+            "data_date": get_prediction_file_date(path),
+            "modified_at": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+            "modified_time": path.stat().st_mtime,
+            "exists": path.exists(),
+        }
+        for path in list_prediction_files()
+    ]
+
+    return {
+        "files": files,
+        "records": files,
+        "total": len(files),
+        "data_dir": str(getattr(config, "PREDICTION_DATA_DIR", getattr(config, "FLOOD_PREDICTION_DIR", ""))),
+        "file_pattern": getattr(config, "PREDICTION_FILE_PATTERN", "predict_YYYY_MM_DD.xlsx"),
+        "file_glob": getattr(config, "PREDICTION_FILE_GLOB", "predict_*.xlsx"),
+    }
+
+
+def get_flood_prediction_contract(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return {
+        "data_dir": str(getattr(config, "PREDICTION_DATA_DIR", getattr(config, "FLOOD_PREDICTION_DIR", ""))),
+        "file_pattern": getattr(config, "PREDICTION_FILE_PATTERN", "predict_YYYY_MM_DD.xlsx"),
+        "file_glob": getattr(config, "PREDICTION_FILE_GLOB", "predict_*.xlsx"),
+        "file_example": getattr(config, "PREDICTION_FILE_EXAMPLE", "predict_2026_06_16.xlsx"),
+        "required_columns": getattr(config, "PREDICTION_REQUIRED_COLUMNS", []),
+        "supported_columns": getattr(config, "PREDICTION_SUPPORTED_COLUMNS", []),
+        "numeric_columns": getattr(config, "PREDICTION_NUMERIC_COLUMNS", []),
+        "date_columns": getattr(config, "PREDICTION_DATE_COLUMNS", []),
+        "record_key_contract": "prediction|station|base_date|target_date|forecast_horizon_day",
+        "map_location_policy": "Prediction rows do not use latitude/longitude from prediction file. Map layer enriches location only from waterlevel_station_master and rainfall_station_master. If station location is missing, frontend should focus province boundary using province_model/province_name_th.",
+        "location_master_sources": getattr(
+            config,
+            "PREDICTION_LOCATION_MASTER_SOURCES",
+            [
+                "waterlevel_station_master",
+                "rainfall_station_master",
+            ],
+        ),
+        "location_debug_fields": [
+            "map_ready",
+            "has_location",
+            "matched_source",
+            "matched_station_id",
+            "matched_station_code",
+            "matched_station_name",
+            "location_match_key",
+            "location_match_candidates",
+            "location_match_status",
+            "location_match_reason",
+            "focus_level",
+            "focus_fallback",
+            "focus_fallback_reason",
+        ],
+    }
+
+
+def build_flood_prediction_latest(
+    data_date: Optional[Any] = None,
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    cache_key = CACHE_KEYS["flood_prediction_latest"]
+
+    def builder() -> Dict[str, Any]:
+        df, meta = read_prediction_dataframe(data_date=data_date, force_refresh=force_refresh)
+        records = normalize_prediction_records(df, meta=meta, force_refresh=force_refresh)
+
+        return {
+            "records": records,
+            "total": len(records),
+            "meta": meta,
+            "source_path": meta.get("source_file"),
+            "created_at": now_iso(),
+        }
+
+    cache_result = get_or_build_cache(
+        cache_key=cache_key,
+        builder=builder,
+        ttl_seconds=get_flood_ttl(),
+        force_refresh=force_refresh,
+        source="flood_spatial_service.build_flood_prediction_latest",
+    )
+
+    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
+
+
+def get_latest_flood_predictions(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    filters = ctx.get("filters", {}) if isinstance(ctx.get("filters"), dict) else {}
+    data_date = filters.get("data_date") or ctx.get("data_date")
+
+    data = build_flood_prediction_latest(
+        data_date=data_date,
+        force_refresh=ctx.get("force_refresh", False),
+    )
+
+    records = data.get("records", [])
+    result = filter_records_api(records, ctx, PREDICTION_SEARCHABLE_FIELDS, target="flood_prediction")
+    result["source_path"] = data.get("source_path")
+    result["prediction_meta"] = data.get("meta", {})
+
+    return result
+
+
+def get_flood_prediction_summary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    latest = get_latest_flood_predictions(ctx)
+    records = latest.get("records", [])
+
+    risk_counts = Counter(record.get("risk_level", "Unknown") for record in records)
+    province_counts = Counter(record.get("province", "Unknown") for record in records)
+    map_ready_count = sum(1 for record in records if to_bool(record.get("map_ready"), default=False))
+    fallback_count = sum(1 for record in records if record.get("focus_level") == "province_boundary")
+
+    return {
+        "summary": {
+            "total": len(records),
+            "risk_counts": dict(risk_counts),
+            "province_counts": dict(province_counts),
+            "map_ready_count": map_ready_count,
+            "map_ready_rate": round((map_ready_count / len(records)) * 100, 4) if records else 0,
+            "province_fallback_count": fallback_count,
+            "province_fallback_rate": round((fallback_count / len(records)) * 100, 4) if records else 0,
+        },
+        "risk_counts": dict(risk_counts),
+        "province_counts": dict(province_counts),
+        "total": len(records),
+        "source_path": latest.get("source_path"),
+        "prediction_meta": latest.get("prediction_meta", {}),
+    }
+
+
+def prediction_record_to_map_feature(record: Dict[str, Any]) -> Dict[str, Any]:
+    properties = {
+        "feature_id": record.get("record_key"),
+        "feature_type": "prediction",
+        "source_type": "prediction",
+        "source_id": record.get("record_key"),
+        "source_name": record.get("station_name"),
+        "record_key": record.get("record_key"),
+        "station_id": record.get("station_id"),
+        "station_code": record.get("station_code"),
+        "station_name": record.get("station_name"),
+        "province": record.get("province"),
+        "province_model": record.get("province_model"),
+        "risk_level": record.get("risk_level"),
+        "risk_score": record.get("risk_score"),
+        "risk_color": record.get("risk_color"),
+        "marker_color": record.get("risk_color"),
+        "marker_size": 10 + max(0, to_number(record.get("risk_score"), 0) or 0) * 3,
+        "map_ready": record.get("map_ready"),
+        "has_location": record.get("has_location"),
+        "focus_level": record.get("focus_level"),
+        "focus_fallback": record.get("focus_fallback"),
+        "focus_fallback_reason": record.get("focus_fallback_reason"),
+        "matched_source": record.get("matched_source"),
+        "matched_station_id": record.get("matched_station_id"),
+        "matched_station_code": record.get("matched_station_code"),
+        "matched_station_name": record.get("matched_station_name"),
+        "base_date": record.get("base_date"),
+        "target_date": record.get("target_date"),
+        "forecast_horizon_day": record.get("forecast_horizon_day"),
+    }
+
+    if to_bool(record.get("map_ready"), default=False):
+        feature = make_point_feature(
+            lon=record.get("lon") or record.get("longitude"),
+            lat=record.get("lat") or record.get("latitude"),
+            properties=properties,
+        )
+
+        if feature:
+            return feature
+
+    return {
+        "type": "Feature",
+        "geometry": None,
+        "properties": to_jsonable(properties),
+    }
+
+
+def get_flood_prediction_map(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    latest = get_latest_flood_predictions(ctx)
+    records = latest.get("records", [])
+
+    features = [
+        prediction_record_to_map_feature(record)
+        for record in records
+    ]
+
+    fallback_focus = [
+        {
+            "record_key": record.get("record_key"),
+            "province": record.get("province"),
+            "focus_level": record.get("focus_level"),
+            "focus_fallback": record.get("focus_fallback"),
+            "focus_fallback_reason": record.get("focus_fallback_reason"),
+        }
+        for record in records
+        if not to_bool(record.get("map_ready"), default=False) and record.get("focus_fallback")
+    ]
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "fallback_focus": fallback_focus,
+        "total": len(records),
+        "feature_count": len(features),
+        "map_ready_count": sum(1 for record in records if to_bool(record.get("map_ready"), default=False)),
+        "source_path": latest.get("source_path"),
+        "prediction_meta": latest.get("prediction_meta", {}),
+    }
+
+
+def get_flood_prediction_location_debug(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    latest = get_latest_flood_predictions(ctx)
+    records = latest.get("records", [])
+
+    debug_records = [
+        {
+            "record_key": record.get("record_key"),
+            "station_id": record.get("station_id"),
+            "station_code": record.get("station_code"),
+            "station_name": record.get("station_name"),
+            "province": record.get("province"),
+            "map_ready": record.get("map_ready"),
+            "has_location": record.get("has_location"),
+            "lat": record.get("lat"),
+            "lon": record.get("lon"),
+            "matched_source": record.get("matched_source"),
+            "matched_station_id": record.get("matched_station_id"),
+            "matched_station_code": record.get("matched_station_code"),
+            "matched_station_name": record.get("matched_station_name"),
+            "location_match_status": record.get("location_match_status"),
+            "location_match_key": record.get("location_match_key"),
+            "location_match_candidates": record.get("location_match_candidates"),
+            "location_match_reason": record.get("location_match_reason"),
+            "focus_level": record.get("focus_level"),
+            "focus_fallback": record.get("focus_fallback"),
+            "focus_fallback_reason": record.get("focus_fallback_reason"),
+        }
+        for record in records
+    ]
+
+    return {
+        "records": debug_records,
+        "total": len(debug_records),
+        "summary": get_flood_prediction_summary(ctx).get("summary", {}),
+        "source_path": latest.get("source_path"),
+    }
+
+
+def get_flood_prediction_station_detail(
+    station_id_or_name: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    query = clean_text_lower(station_id_or_name)
+    latest = get_latest_flood_predictions(ctx)
+    records = latest.get("records", [])
+
+    matched = [
+        record
+        for record in records
+        if query
+        and query in " ".join(
+            [
+                clean_text(record.get("record_key")),
+                clean_text(record.get("station_id")),
+                clean_text(record.get("station_code")),
+                clean_text(record.get("station_name")),
+                clean_text(record.get("station_name_th")),
+                clean_text(record.get("matched_station_id")),
+                clean_text(record.get("matched_station_code")),
+                clean_text(record.get("matched_station_name")),
+            ]
+        ).lower()
+    ]
+
+    return {
+        "station": station_id_or_name,
+        "found": len(matched) > 0,
+        "records": matched,
+        "summary": {
+            "total": len(matched),
+            "risk_counts": dict(Counter(record.get("risk_level", "Unknown") for record in matched)),
+        },
+    }
+
+
+def get_flood_prediction_risk_distribution(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    latest = get_latest_flood_predictions(ctx)
+    records = latest.get("records", [])
+
+    risk_counts = Counter(record.get("risk_level", "Unknown") for record in records)
+
+    return {
+        "records": [
+            {
+                "risk_level": risk_level,
+                "count": count,
+                "risk_score": RISK_SCORE.get(risk_level, -1),
+                "risk_color": RISK_COLORS.get(risk_level, RISK_COLORS.get("Unknown", "#64748b")),
+            }
+            for risk_level, count in risk_counts.items()
+        ],
+        "risk_counts": dict(risk_counts),
+        "total": len(records),
+    }
+
+
+def get_flood_prediction_search_results(
+    query: str,
+    search_type: str = "prediction",
+    limit: int = 50,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    ctx["search"] = clean_text(query)
+    ctx["page"] = 1
+    ctx["page_size"] = int(limit or 50)
+
+    return get_latest_flood_predictions(ctx)
+
+def get_station_detail(
+    station_id: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    query = clean_text_lower(station_id)
+
+    candidates: List[Dict[str, Any]] = []
+    candidates.extend(build_rainfall_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+    candidates.extend(build_waterlevel_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+    candidates.extend(get_rainfall_station_master({"page_size": 100000}).get("records", []))
+    candidates.extend(get_waterlevel_station_master({"page_size": 100000}).get("records", []))
+
+    matched = [
+        record
+        for record in candidates
+        if query
+        and query in " ".join(
+            [
+                clean_text(record.get("source_key")),
+                clean_text(record.get("source_id")),
+                clean_text(record.get("station_id")),
+                clean_text(record.get("station_code")),
+                clean_text(record.get("station_name")),
+                clean_text(record.get("source_name")),
+            ]
+        ).lower()
+    ]
+
+    return {
+        "station_id": station_id,
+        "found": len(matched) > 0,
+        "record": matched[0] if matched else None,
+        "records": matched,
+        "total": len(matched),
+    }
+
+
+def get_dam_detail(
+    dam_id: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    query = clean_text_lower(dam_id)
+
+    candidates: List[Dict[str, Any]] = []
+    candidates.extend(build_large_dam_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+    candidates.extend(build_medium_dam_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+    candidates.extend(get_dam_reservoir_master({"page_size": 100000}).get("records", []))
+
+    matched = [
+        record
+        for record in candidates
+        if query
+        and query in " ".join(
+            [
+                clean_text(record.get("source_key")),
+                clean_text(record.get("source_id")),
+                clean_text(record.get("dam_id")),
+                clean_text(record.get("dam_name")),
+                clean_text(record.get("source_name")),
+            ]
+        ).lower()
+    ]
+
+    return {
+        "dam_id": dam_id,
+        "found": len(matched) > 0,
+        "record": matched[0] if matched else None,
+        "records": matched,
+        "total": len(matched),
+    }
+
+
+def get_detail_object(
+    object_type: str,
+    object_id: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    type_key = clean_text_lower(object_type).replace("-", "_")
+
+    if type_key in {"station", "rainfall", "waterlevel"}:
+        return get_station_detail(object_id, context=context)
+
+    if type_key in {"dam", "large_dam", "medium_dam", "reservoir"}:
+        return get_dam_detail(object_id, context=context)
+
+    if type_key in {"prediction", "forecast", "flood_prediction", "waterlevel_prediction"}:
+        return get_flood_prediction_station_detail(object_id, context=context)
+
+    if type_key in {"entity", "uploaded_entity"}:
+        try:
+            import entity_upload_service
+            return entity_upload_service.get_entity_detail(object_id)
+        except Exception as exc:
+            return {
+                "found": False,
+                "record": None,
+                "errors": [
+                    {
+                        "code": "entity_detail_proxy_failed",
+                        "message": str(exc),
+                    }
+                ],
+            }
+
+    return {
+        "found": False,
+        "record": None,
+        "object_type": object_type,
+        "object_id": object_id,
+        "errors": [
+            {
+                "code": "unsupported_object_type",
+                "message": f"Unsupported object type: {object_type}",
+            }
+        ],
+    }
+
+
+def get_search_results(
+    query: str,
+    search_type: str = "all",
+    limit: int = 50,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+    ctx["search"] = clean_text(query)
+    ctx["page"] = 1
+    ctx["page_size"] = int(limit or ctx.get("page_size", 50) or 50)
+
+    type_key = clean_text_lower(search_type).replace("-", "_")
+
+    records: List[Dict[str, Any]] = []
+
+    if type_key in {"all", "rainfall"}:
+        records.extend(build_rainfall_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+
+    if type_key in {"all", "waterlevel"}:
+        records.extend(build_waterlevel_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+
+    if type_key in {"all", "dam", "large_dam"}:
+        records.extend(build_large_dam_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+
+    if type_key in {"all", "dam", "medium_dam"}:
+        records.extend(build_medium_dam_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+
+    if type_key in {"all", "prediction", "forecast", "flood_prediction"}:
+        records.extend(get_latest_flood_predictions(ctx).get("records", []))
+
+    if type_key in {"all", "entity", "uploaded_entity"}:
+        try:
+            import entity_upload_service
+            entity_result = entity_upload_service.get_latest_entity_records(
+                query=query,
+                limit=limit,
+                offset=0,
+            )
+            records.extend(entity_result.get("records", []))
+        except Exception:
+            pass
+
+    return filter_records_api(
+        records,
+        ctx,
+        FLOOD_SEARCHABLE_FIELDS + PREDICTION_SEARCHABLE_FIELDS,
+        target="flood",
+    )
+
+def rebuild_flood_spatial_cache(force_refresh: bool = True) -> Dict[str, Any]:
+    """
+    rebuild cache ทั้งหมดของ flood_spatial_service.py
+    """
+
+    results = {
+        "rainfall_latest": build_rainfall_latest(force_refresh=force_refresh),
+        "waterlevel_latest": build_waterlevel_latest(force_refresh=force_refresh),
+        "large_dam_latest": build_large_dam_latest(force_refresh=force_refresh),
+        "medium_dam_latest": build_medium_dam_latest(force_refresh=force_refresh),
+        "all_long_latest": build_all_long_latest(force_refresh=force_refresh),
+        "flood_station_master": build_flood_station_master(force_refresh=force_refresh),
+        "province_boundaries": build_province_boundaries(force_refresh=force_refresh),
+        "basin_boundaries": build_basin_boundaries(force_refresh=force_refresh),
+        "flood_prediction_files": get_flood_prediction_files(),
+        "flood_prediction_latest": build_flood_prediction_latest(force_refresh=force_refresh),
+        "flood_prediction_summary": get_flood_prediction_summary({"force_refresh": force_refresh}),
+        "flood_prediction_map": get_flood_prediction_map({"force_refresh": force_refresh}),
+        "flood_prediction_location_debug": get_flood_prediction_location_debug({"force_refresh": force_refresh}),
+        "flood_computed_risk": build_flood_computed_risk(force_refresh=force_refresh),
+        "province_risk_summary": build_province_risk_summary(force_refresh=force_refresh),
+        "spatial_join_result": build_spatial_join_result(force_refresh=force_refresh),
+        "company_flood_context": build_company_flood_context(force_refresh=force_refresh),
+        "policy_flood_exposure": build_policy_flood_exposure(force_refresh=force_refresh),
+        "province_risk_exposure": build_province_risk_exposure(force_refresh=force_refresh),
+    }
+
+    return {
+        "rebuilt": True,
+        "results": {
+            key: {
+                "total": value.get("total") if isinstance(value, dict) else None,
+                "cache_used": value.get("cache_used") if isinstance(value, dict) else None,
+                "created_at": value.get("created_at") if isinstance(value, dict) else None,
+            }
+            for key, value in results.items()
+        },
+        "generated_at": now_iso(),
+    }
+def get_flood_dashboard_payload(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    สร้าง payload สำหรับ dashboard_package_service.py
+    """
+
+    ctx = normalize_context(context)
+
+    summary = get_flood_summary(ctx)
+
+    computed = get_flood_computed_risk(
+        {
+            **ctx,
+            "page": 1,
+            "page_size": 20,
+            "sort_by": "risk_score",
+            "sort_dir": "desc",
+        }
+    )
+
+    province_exposure = get_province_risk_exposure(
+        {
+            **ctx,
+            "page": 1,
+            "page_size": 20,
+            "sort_by": "risk_score",
+            "sort_dir": "desc",
+        }
+    )
+
+    policy_exposure = get_policy_flood_exposure(ctx)
+    prediction_summary = get_flood_prediction_summary(ctx)
+    prediction_latest = get_latest_flood_predictions(
+        {
+            **ctx,
+            "page": 1,
+            "page_size": 20,
+            "sort_by": "risk_score",
+            "sort_dir": "desc",
+        }
+    )
+
+    return {
+        "summary": summary,
+        "top_risk_sources": computed.get("records", []),
+        "province_risk_exposure": province_exposure.get("records", []),
+        "policy_flood_exposure": policy_exposure.get("summary", {}),
+        "prediction_summary": prediction_summary.get("summary", {}),
+        "prediction_top_risk": prediction_latest.get("records", []),
+        "risk_counts": summary.get("risk_counts", {}),
+        "source_counts": summary.get("source_counts", {}),
+        "generated_at": now_iso(),
+    }
 
 # ============================================================
 # 15) MODULE STATUS / SELF TEST
@@ -2337,6 +4174,8 @@ def get_flood_spatial_module_status() -> Dict[str, Any]:
     """
     คืนสถานะ module flood_spatial_service.py
     """
+
+    latest_prediction_file = find_prediction_file()
 
     return {
         "module": "flood_spatial_service",
@@ -2349,6 +4188,9 @@ def get_flood_spatial_module_status() -> Dict[str, Any]:
         "master_database_exists": FLOOD_MASTER_DATABASE_PATH.exists(),
         "history_dir": str(FLOOD_HISTORY_DIR),
         "history_exists": FLOOD_HISTORY_DIR.exists(),
+        "prediction_dir": str(getattr(config, "PREDICTION_DATA_DIR", getattr(config, "FLOOD_PREDICTION_DIR", ""))),
+        "latest_prediction_file": str(latest_prediction_file) if latest_prediction_file else None,
+        "latest_prediction_file_exists": latest_prediction_file.exists() if latest_prediction_file else False,
         "cache_keys": CACHE_KEYS,
         "supported_outputs": [
             "rainfall_latest",
@@ -2359,12 +4201,21 @@ def get_flood_spatial_module_status() -> Dict[str, Any]:
             "flood_station_master",
             "province_boundaries",
             "basin_boundaries",
+            "flood_prediction_files",
+            "flood_prediction_latest",
+            "flood_prediction_summary",
+            "flood_prediction_map",
+            "flood_prediction_location_debug",
+            "flood_prediction_risk_distribution",
             "flood_computed_risk",
             "province_risk_summary",
             "spatial_join_result",
             "company_flood_context",
             "policy_flood_exposure",
             "province_risk_exposure",
+            "history",
+            "detail",
+            "search",
         ],
         "risk_levels": RISK_LEVELS,
         "checked_at": now_iso(),

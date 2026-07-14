@@ -1,7 +1,6 @@
 # ============================================================
 # FILE: backend/utils.py
 # TIPX Enterprise Intelligence Dashboard
-# ลำดับไฟล์ที่ 5 / 20
 # ============================================================
 
 """
@@ -57,13 +56,6 @@ backend/utils.py
 """
 
 from __future__ import annotations
-try:
-    import bootstrap
-    BOOTSTRAP_LOADED = True
-except Exception as e:
-    bootstrap = None
-    BOOTSTRAP_LOADED = False
-    BOOTSTRAP_ERROR = str(e)
 import csv
 import hashlib
 import json
@@ -80,7 +72,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import pandas as pd
+import config
+"""
 
+
+"""
 from config import (
     APP_SHORT_NAME,
     APP_VERSION,
@@ -553,27 +549,128 @@ def write_csv(path: Union[str, Path], df: pd.DataFrame, encoding: str = "utf-8-s
     df.to_csv(target, encoding=encoding, index=index)
     return target
 
-
 def read_excel_sheet(
     path: Union[str, Path],
     sheet_name: Union[str, int, None] = 0,
     dtype: Optional[Any] = None,
-) -> pd.DataFrame:
+    use_cache: bool = False,
+    return_meta: bool = False,
+) -> Union[pd.DataFrame, Dict[str, Any]]:
     """
     อ่าน Excel sheet แบบปลอดภัย
 
-    ถ้าอ่านไม่ได้คืน DataFrame ว่าง
+    Default behavior เดิม:
+    - คืน DataFrame
+    - ถ้าอ่านไม่ได้คืน DataFrame ว่าง
+
+    Source behavior ใหม่:
+    - use_cache=True ใช้ file modified time เป็น cache key
+    - return_meta=True คืน dict พร้อม df/meta/errors
     """
 
     p = Path(path)
 
+    source_meta: Dict[str, Any] = {
+        "source": "excel",
+        "source_file": str(p),
+        "sheet_name": sheet_name,
+        "file_exists": p.exists(),
+        "file_modified_at": None,
+        "file_modified_time": None,
+        "cache_used": False,
+        "record_count": 0,
+    }
+
+    if p.exists():
+        try:
+            stat = p.stat()
+            source_meta["file_modified_time"] = stat.st_mtime
+            source_meta["file_modified_at"] = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
+        except Exception:
+            pass
+
     if not p.exists():
-        return pd.DataFrame()
+        empty_df = pd.DataFrame()
+
+        if return_meta:
+            return {
+                "df": empty_df,
+                "meta": source_meta,
+                "errors": [
+                    {
+                        "code": "excel_file_not_found",
+                        "message": f"ไม่พบไฟล์ Excel: {p}",
+                        "path": str(p),
+                    }
+                ],
+            }
+
+        return empty_df
+
+    cache_key = make_excel_cache_key(p, sheet_name=sheet_name, file_modified_time=source_meta.get("file_modified_time"))
+
+    if use_cache and is_cache_valid(cache_key):
+        cached_payload = read_cache(cache_key, default={})
+
+        if isinstance(cached_payload, dict) and isinstance(cached_payload.get("records"), list):
+            cached_df = pd.DataFrame(cached_payload.get("records", []))
+            source_meta.update(cached_payload.get("meta", {}))
+            source_meta["cache_used"] = True
+            source_meta["record_count"] = len(cached_df)
+
+            if return_meta:
+                return {
+                    "df": cached_df,
+                    "meta": source_meta,
+                    "errors": [],
+                }
+
+            return cached_df
 
     try:
-        return pd.read_excel(p, sheet_name=sheet_name, dtype=dtype)
-    except Exception:
-        return pd.DataFrame()
+        df = pd.read_excel(p, sheet_name=sheet_name, dtype=dtype)
+        df = clean_dataframe_common(df)
+        source_meta["record_count"] = len(df)
+
+        if use_cache:
+            write_cache(
+                cache_key,
+                {
+                    "records": dataframe_to_records(df),
+                    "meta": source_meta,
+                },
+                ttl_seconds=int(CACHE_TTL_SECONDS.get("flood", 3600) if isinstance(CACHE_TTL_SECONDS, dict) else 3600),
+                source="excel_source",
+            )
+
+        if return_meta:
+            return {
+                "df": df,
+                "meta": source_meta,
+                "errors": [],
+            }
+
+        return df
+
+    except Exception as exc:
+        empty_df = pd.DataFrame()
+
+        if return_meta:
+            return {
+                "df": empty_df,
+                "meta": source_meta,
+                "errors": [
+                    {
+                        "code": "excel_read_failed",
+                        "message": str(exc),
+                        "type": exc.__class__.__name__,
+                        "path": str(p),
+                        "sheet_name": sheet_name,
+                    }
+                ],
+            }
+
+        return empty_df
 
 
 def read_excel_sheets(
@@ -665,6 +762,514 @@ def read_excel_by_logical_sheet(
 
     return pd.DataFrame()
 
+def file_modified_time(path: Union[str, Path]) -> Optional[float]:
+    """
+    คืนค่า modified time ของไฟล์
+    """
+
+    p = Path(path)
+
+    if not p.exists() or not p.is_file():
+        return None
+
+    try:
+        return p.stat().st_mtime
+    except Exception:
+        return None
+
+
+def file_modified_at(path: Union[str, Path]) -> Optional[str]:
+    """
+    คืนค่า modified time ของไฟล์แบบ ISO string
+    """
+
+    mtime = file_modified_time(path)
+
+    if mtime is None:
+        return None
+
+    try:
+        return datetime.fromtimestamp(mtime).isoformat(timespec="seconds")
+    except Exception:
+        return None
+
+
+def make_excel_cache_key(
+    path: Union[str, Path],
+    sheet_name: Union[str, int, None] = 0,
+    file_modified_time: Optional[float] = None,
+) -> str:
+    """
+    สร้าง cache key สำหรับ Excel sheet โดยผูกกับ file modified time
+    """
+
+    p = Path(path)
+    mtime = file_modified_time
+
+    if mtime is None:
+        mtime = globals()["file_modified_time"](p)
+
+    raw_key = f"excel|{p.resolve() if p.exists() else p}|{sheet_name}|{mtime}"
+    return make_hash_id(raw_key, prefix="excel_cache", length=24)
+
+
+def normalize_column_name(value: Any) -> str:
+    """
+    alias สำหรับ clean_column_name เพื่อรองรับ excel_service contract
+    """
+
+    return clean_column_name(value)
+
+
+def normalize_text(value: Any, default: str = "") -> str:
+    """
+    alias สำหรับ clean_text เพื่อรองรับ excel_service contract
+    """
+
+    return clean_text(value, default=default)
+
+
+def safe_str(value: Any, default: str = "") -> str:
+    """
+    แปลงค่าเป็น string แบบปลอดภัย
+    """
+
+    return clean_text(value, default=default)
+
+
+def safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    """
+    แปลงค่าเป็น float แบบปลอดภัย
+    """
+
+    return to_number(value, default=default)
+
+
+def safe_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+    """
+    แปลงค่าเป็น int แบบปลอดภัย
+    """
+
+    return to_int(value, default=default)
+
+
+def clean_value(value: Any) -> Any:
+    """
+    clean ค่าเดี่ยวสำหรับ serialize records จาก Excel
+    """
+
+    return to_jsonable(value)
+
+
+def clean_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    clean record 1 แถว
+    """
+
+    return {
+        clean_column_name(key): clean_value(value)
+        for key, value in dict(record or {}).items()
+    }
+
+
+def clean_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    clean records หลายแถว
+    """
+
+    return [
+        clean_record(record)
+        for record in records or []
+        if isinstance(record, dict)
+    ]
+
+
+def find_first_existing_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    """
+    หา column แรกที่มีอยู่จริงจาก candidates
+    """
+
+    if df is None or df.empty:
+        return None
+
+    columns = list(df.columns)
+    clean_to_original = {
+        clean_column_name(col): col
+        for col in columns
+    }
+
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+
+        candidate_clean = clean_column_name(candidate)
+        if candidate_clean in clean_to_original:
+            return clean_to_original[candidate_clean]
+
+    return None
+
+
+def first_value_by_columns(row: Union[pd.Series, Dict[str, Any]], candidates: List[str], default: Any = None) -> Any:
+    """
+    คืนค่าแรกที่ไม่ว่างจาก column candidates
+    """
+
+    if row is None:
+        return default
+
+    for candidate in candidates:
+        try:
+            value = row.get(candidate)
+        except Exception:
+            value = None
+
+        if not is_empty_value(value):
+            return value
+
+    return default
+
+
+def limit_dataframe(df: pd.DataFrame, limit: Optional[int] = None, offset: int = 0) -> pd.DataFrame:
+    """
+    จำกัดจำนวนแถว DataFrame ด้วย offset/limit
+    """
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    result = df.copy()
+
+    try:
+        safe_offset = max(0, int(offset or 0))
+    except Exception:
+        safe_offset = 0
+
+    if limit is None:
+        return result.iloc[safe_offset:].copy()
+
+    try:
+        safe_limit = max(0, int(limit or 0))
+    except Exception:
+        safe_limit = 0
+
+    if safe_limit <= 0:
+        return result.iloc[safe_offset:].copy()
+
+    return result.iloc[safe_offset:safe_offset + safe_limit].copy()
+
+
+def filter_by_province(df: pd.DataFrame, province: Optional[Any] = None) -> pd.DataFrame:
+    """
+    filter DataFrame ตาม province/province_model/province_name_th
+    """
+
+    if df is None or df.empty or is_empty_value(province):
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    province_value = normalize_province_name(province)
+
+    if not province_value:
+        return df.copy()
+
+    province_columns = [
+        "province",
+        "province_name",
+        "province_name_th",
+        "province_model",
+        "changwat",
+        "province_th",
+    ]
+
+    result = df.copy()
+    mask = pd.Series([False] * len(result), index=result.index)
+
+    for col in province_columns:
+        if col not in result.columns:
+            continue
+
+        mask = mask | result[col].apply(lambda value: normalize_province_name(value) == province_value)
+
+    return result[mask].copy()
+
+
+def filter_by_risk(df: pd.DataFrame, risk_level: Optional[Any] = None) -> pd.DataFrame:
+    """
+    filter DataFrame ตาม risk level/risk status/warning level
+    """
+
+    if df is None or df.empty or is_empty_value(risk_level):
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    risk_value = normalize_risk_level(risk_level)
+
+    risk_columns = [
+        "risk_level",
+        "risk_status",
+        "flood_risk_level",
+        "warning_level",
+        "warning_level_predict",
+        "risk_group",
+    ]
+
+    result = df.copy()
+    mask = pd.Series([False] * len(result), index=result.index)
+
+    for col in risk_columns:
+        if col not in result.columns:
+            continue
+
+        mask = mask | result[col].apply(lambda value: normalize_risk_level(value) == risk_value)
+
+    return result[mask].copy()
+
+
+def filter_has_location(df: pd.DataFrame, has_location: Optional[Any] = None) -> pd.DataFrame:
+    """
+    filter DataFrame ตามสถานะพิกัด
+    """
+
+    if df is None or df.empty or has_location in (None, ""):
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    expected = to_bool(has_location, default=None)
+
+    if expected is None:
+        return df.copy()
+
+    result = df.copy()
+
+    lat_col = find_first_existing_column(result, ["lat", "latitude"])
+    lon_col = find_first_existing_column(result, ["lon", "longitude"])
+
+    if not lat_col or not lon_col:
+        if expected is False:
+            return result.copy()
+        return result.iloc[0:0].copy()
+
+    mask = result.apply(
+        lambda row: validate_coordinate(row.get(lat_col), row.get(lon_col)).get("valid") is expected,
+        axis=1,
+    )
+
+    return result[mask].copy()
+
+def read_latest_sheet(
+    sheet_name: Union[str, int],
+    use_cache: bool = True,
+    return_meta: bool = False,
+) -> Union[pd.DataFrame, Dict[str, Any]]:
+    """
+    อ่าน sheet จาก latest_database.xlsx
+    """
+
+    logical_sheet = str(sheet_name or "").strip()
+    actual_sheet = getattr(config, "LATEST_SHEETS", {}).get(logical_sheet, sheet_name)
+
+    return read_excel_sheet(
+        getattr(config, "LATEST_EXCEL_FILE", getattr(config, "FLOOD_LATEST_DATABASE_PATH")),
+        sheet_name=actual_sheet,
+        dtype=None,
+        use_cache=use_cache,
+        return_meta=return_meta,
+    )
+
+
+def read_master_sheet(
+    sheet_name: Union[str, int],
+    use_cache: bool = True,
+    return_meta: bool = False,
+) -> Union[pd.DataFrame, Dict[str, Any]]:
+    """
+    อ่าน sheet จาก master_database.xlsx
+    """
+
+    logical_sheet = str(sheet_name or "").strip()
+    actual_sheet = getattr(config, "MASTER_SHEETS", {}).get(logical_sheet, sheet_name)
+
+    return read_excel_sheet(
+        getattr(config, "MASTER_EXCEL_FILE", getattr(config, "FLOOD_MASTER_DATABASE_PATH")),
+        sheet_name=actual_sheet,
+        dtype=None,
+        use_cache=use_cache,
+        return_meta=return_meta,
+    )
+
+
+def read_history_sheet(
+    data_type: Any,
+    year: Union[int, str],
+    month: Union[int, str],
+    sheet_name: Optional[Union[str, int]] = None,
+    use_cache: bool = True,
+    return_meta: bool = False,
+) -> Union[pd.DataFrame, Dict[str, Any]]:
+    """
+    อ่าน history Excel ตาม data_type/year/month
+    """
+
+    history_file = config.get_history_file(data_type, year, month)
+    actual_sheet = sheet_name if sheet_name is not None else config.get_history_sheet(data_type)
+
+    return read_excel_sheet(
+        history_file,
+        sheet_name=actual_sheet,
+        dtype=None,
+        use_cache=use_cache,
+        return_meta=return_meta,
+    )
+
+
+def get_latest_prediction_file() -> Optional[Path]:
+    """
+    คืนไฟล์ prediction ล่าสุด
+    """
+
+    if hasattr(config, "find_latest_prediction_file"):
+        return config.find_latest_prediction_file()
+
+    prediction_dir = getattr(config, "PREDICTION_DATA_DIR", None)
+    prediction_glob = getattr(config, "PREDICTION_FILE_GLOB", "predict_*.xlsx")
+
+    if prediction_dir is None:
+        return None
+
+    base_dir = Path(prediction_dir)
+
+    if not base_dir.exists():
+        return None
+
+    files = sorted(
+        [
+            path
+            for path in base_dir.glob(prediction_glob)
+            if path.is_file()
+        ],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+
+    return files[0] if files else None
+
+
+def read_prediction_file(
+    file_path: Optional[Union[str, Path]] = None,
+    use_cache: bool = True,
+    return_meta: bool = False,
+) -> Union[pd.DataFrame, Dict[str, Any]]:
+    """
+    อ่าน prediction Excel file
+    """
+
+    target_file = Path(file_path) if file_path else get_latest_prediction_file()
+
+    if target_file is None:
+        empty_df = pd.DataFrame()
+        meta = {
+            "source": "excel",
+            "source_file": None,
+            "sheet_name": 0,
+            "file_exists": False,
+            "cache_used": False,
+            "record_count": 0,
+        }
+
+        if return_meta:
+            return {
+                "df": empty_df,
+                "meta": meta,
+                "errors": [
+                    {
+                        "code": "prediction_file_not_found",
+                        "message": "ไม่พบไฟล์ prediction",
+                    }
+                ],
+            }
+
+        return empty_df
+
+    sheet_name = 0
+
+    try:
+        sheet_names = get_excel_sheet_names(target_file)
+        if sheet_names:
+            sheet_name = sheet_names[0]
+    except Exception:
+        sheet_name = 0
+
+    return read_excel_sheet(
+        target_file,
+        sheet_name=sheet_name,
+        dtype=None,
+        use_cache=use_cache,
+        return_meta=return_meta,
+    )
+
+
+def excel_source_payload(
+    df: pd.DataFrame,
+    meta: Optional[Dict[str, Any]] = None,
+    errors: Optional[List[Dict[str, Any]]] = None,
+    message: str = "Excel source records",
+) -> Dict[str, Any]:
+    """
+    สร้าง payload มาตรฐานสำหรับ Excel source
+    """
+
+    records = dataframe_to_records(df)
+
+    return ok_payload(
+        data={
+            "records": records,
+            "total": len(records),
+        },
+        message=message,
+        meta={
+            "source": "excel",
+            "record_count": len(records),
+            **(meta or {}),
+        },
+    ) if not errors else error_payload(
+        message=message,
+        errors=errors,
+        data={
+            "records": records,
+            "total": len(records),
+        },
+        meta={
+            "source": "excel",
+            "record_count": len(records),
+            **(meta or {}),
+        },
+    )
+
+
+def clear_excel_cache() -> Dict[str, Any]:
+    """
+    ลบ cache ที่เกี่ยวกับ Excel source
+    """
+
+    removed: List[str] = []
+
+    patterns = [
+        "excel_cache_*.json",
+        "excel_cache_*_cache_meta.json",
+        "excel_cache_*__cache_meta.json",
+    ]
+
+    ensure_dir(CACHE_DIR)
+
+    for pattern in patterns:
+        for path in CACHE_DIR.glob(pattern):
+            if path.exists() and path.is_file():
+                path.unlink()
+                removed.append(str(path))
+
+    return {
+        "cleared": True,
+        "removed": removed,
+        "count": len(removed),
+        "source": "excel",
+    }
 
 def write_excel(
     path: Union[str, Path],
@@ -2006,6 +2611,9 @@ def get_cache_file_path(cache_key: str) -> Path:
     คืน path cache file จาก cache_key
     """
 
+    if hasattr(config, "get_cache_path"):
+        return config.get_cache_path(cache_key)
+
     safe_key = safe_filename(cache_key, default="cache")
     return CACHE_DIR / f"{safe_key}.json"
 
@@ -2015,8 +2623,9 @@ def get_cache_meta_path(cache_key: str) -> Path:
     คืน path cache metadata
     """
 
-    safe_key = safe_filename(cache_key, default="cache")
-    return CACHE_DIR / f"{safe_key}_{CACHE_METADATA_FILENAME}"
+    cache_path = get_cache_file_path(cache_key)
+    stem = cache_path.stem
+    return cache_path.with_name(f"{stem}_{CACHE_METADATA_FILENAME}")
 
 
 def is_cache_valid(cache_key: str, ttl_seconds: Optional[int] = None) -> bool:
@@ -2077,7 +2686,15 @@ def write_cache(
     cache_path = get_cache_file_path(cache_key)
     meta_path = get_cache_meta_path(cache_key)
 
-    write_json(cache_path, data)
+    temp_cache_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    temp_meta_path = meta_path.with_suffix(meta_path.suffix + ".tmp")
+
+    write_json(temp_cache_path, data)
+
+    temp_cache_path.replace(cache_path)
+
+    registry = getattr(config, "CACHE_REGISTRY", {})
+    registry_item = registry.get(cache_key, {}) if isinstance(registry, dict) else {}
 
     meta = {
         "cache_key": cache_key,
@@ -2085,9 +2702,17 @@ def write_cache(
         "ttl_seconds": ttl_seconds,
         "source": source,
         "path": str(cache_path),
+        "owner_service": registry_item.get("owner_service"),
+        "payload_type": registry_item.get("payload_type"),
+        "depends_on": registry_item.get("depends_on", []),
+        "consumed_by": registry_item.get("consumed_by", []),
+        "critical": registry_item.get("critical", False),
+        "allow_stale": registry_item.get("allow_stale", True),
+        "aliases": registry_item.get("aliases", []),
     }
 
-    write_json(meta_path, meta)
+    write_json(temp_meta_path, meta)
+    temp_meta_path.replace(meta_path)
 
     return {
         "cache_key": cache_key,
@@ -2444,6 +3069,86 @@ def module_ready_payload(module_name: str) -> Dict[str, Any]:
         "checked_at": now_iso(),
     }
 
+# ============================================================
+# 17) DATA SOURCE DISPATCHER HELPERS
+# ============================================================
+
+def get_active_data_source_name() -> str:
+    """
+    คืนชื่อ active data source จาก config
+    """
+
+    if hasattr(config, "get_active_data_source"):
+        return config.get_active_data_source()
+
+    if getattr(config, "USE_EXCEL_DATA_SOURCE", True) and not getattr(config, "USE_MYSQL_DATA_SOURCE", False):
+        return "excel"
+
+    if getattr(config, "USE_MYSQL_DATA_SOURCE", False) and not getattr(config, "USE_EXCEL_DATA_SOURCE", True):
+        return "mysql"
+
+    return "invalid"
+
+
+def source_not_implemented_payload(source_name: str, function_name: str) -> Dict[str, Any]:
+    """
+    payload สำหรับ source ที่ยังไม่ implement
+    """
+
+    return error_payload(
+        message=f"{source_name} data source is not implemented.",
+        data={
+            "source": source_name,
+            "function_name": function_name,
+        },
+        meta={
+            "source": source_name,
+            "function_name": function_name,
+            "status_code": 501,
+        },
+        errors=[
+            {
+                "code": "source_not_implemented",
+                "message": f"{source_name} data source is not implemented for {function_name}",
+            }
+        ],
+    )
+
+
+def get_active_flood_source() -> Dict[str, Any]:
+    """
+    คืน active flood source contract
+
+    ตอนนี้ Excel ใช้งานจริง
+    MySQL เป็น placeholder เท่านั้น
+    """
+
+    source_name = get_active_data_source_name()
+
+    if source_name == "excel":
+        return {
+            "source": "excel",
+            "implemented": True,
+            "read_excel_sheet": read_excel_sheet,
+            "read_latest_sheet": read_latest_sheet,
+            "read_master_sheet": read_master_sheet,
+            "read_history_sheet": read_history_sheet,
+            "read_prediction_file": read_prediction_file,
+            "clear_excel_cache": clear_excel_cache,
+        }
+
+    if source_name == "mysql":
+        return {
+            "source": "mysql",
+            "implemented": False,
+            "message": getattr(config, "DATA_SOURCE_NOT_IMPLEMENTED_MESSAGE", "MySQL data source is not implemented."),
+        }
+
+    return {
+        "source": "invalid",
+        "implemented": False,
+        "message": "Invalid data source configuration.",
+    }
 
 # ============================================================
 # 17) MODULE SUMMARY
@@ -2457,11 +3162,14 @@ def get_utils_summary() -> Dict[str, Any]:
     return {
         "module": "utils",
         "ready": True,
+        "active_data_source": get_active_data_source_name(),
         "groups": [
             "response",
             "file",
             "json",
             "excel",
+            "excel_source",
+            "data_source_dispatcher",
             "cleaning",
             "tax_id",
             "policy",
@@ -2473,6 +3181,15 @@ def get_utils_summary() -> Dict[str, Any]:
             "export",
             "validation",
             "aggregation",
+        ],
+        "excel_source_functions": [
+            "read_excel_sheet",
+            "read_latest_sheet",
+            "read_master_sheet",
+            "read_history_sheet",
+            "read_prediction_file",
+            "get_latest_prediction_file",
+            "clear_excel_cache",
         ],
         "timestamp": now_iso(),
     }

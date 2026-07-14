@@ -1,0 +1,17 @@
+# 1) Ignore specific files
+.env
+config.json
+secret.txt
+
+*.log
+*.tmp
+*.pyc
+__pycache__/
+
+index.html
+*.zip
+
+
+
+
+

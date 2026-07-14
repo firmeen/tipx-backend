@@ -37,13 +37,7 @@ backend/config.py
 """
 
 from __future__ import annotations
-try:
-    import bootstrap
-    BOOTSTRAP_LOADED = True
-except Exception as e:
-    bootstrap = None
-    BOOTSTRAP_LOADED = False
-    BOOTSTRAP_ERROR = str(e)
+
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,6 +66,35 @@ PUBLIC_API_PREFIX: str = "/api/public"
 DEFAULT_ENCODING: str = "utf-8"
 DEFAULT_TIMEZONE: str = "Asia/Bangkok"
 
+FLOOD_APP_NAME: str = "Flood Intelligence Dashboard API"
+FLOOD_APP_DESCRIPTION: str = "Backend API contract for OpenLayers Flood Intelligence Dashboard."
+FLOOD_MODULE_ENABLED: bool = os.getenv("TIPX_FLOOD_MODULE_ENABLED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+}
+
+USE_EXCEL_DATA_SOURCE: bool = os.getenv("TIPX_USE_EXCEL_DATA_SOURCE", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+}
+
+USE_MYSQL_DATA_SOURCE: bool = os.getenv("TIPX_USE_MYSQL_DATA_SOURCE", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+}
+
+DATA_SOURCE_EXCEL: str = "excel"
+DATA_SOURCE_MYSQL: str = "mysql"
+DATA_SOURCE_NOT_IMPLEMENTED_MESSAGE: str = (
+    "MySQL data source is configured but not implemented yet. "
+    "Set TIPX_USE_EXCEL_DATA_SOURCE=true and TIPX_USE_MYSQL_DATA_SOURCE=false."
+)
 
 # ============================================================
 # 2) PROJECT ROOT AND MAIN PATHS
@@ -140,33 +163,117 @@ output_fl/
     └── all_long/
 """
 
+DEFAULT_FLOOD_PIPELINE_BASE_DIR: str = r"C:/Users/afimeenu/project/main"
 DEFAULT_FLOOD_OUTPUT_DIR: str = r"C:/Users/afimeenu/project/flood/output_fl"
+
+FLOOD_PIPELINE_BASE_DIR: Path = Path(
+    os.getenv("TIPX_FLOOD_PIPELINE_BASE_DIR", DEFAULT_FLOOD_PIPELINE_BASE_DIR)
+).expanduser().resolve()
+
+PIPELINE_BASE_DIR: Path = FLOOD_PIPELINE_BASE_DIR
 
 FLOOD_OUTPUT_DIR: Path = Path(
     os.getenv("TIPX_FLOOD_OUTPUT_DIR", DEFAULT_FLOOD_OUTPUT_DIR)
-).expanduser()
+).expanduser().resolve()
 
-FLOOD_LATEST_DIR: Path = FLOOD_OUTPUT_DIR / "latest"
-FLOOD_MASTER_DIR: Path = FLOOD_OUTPUT_DIR / "master"
-FLOOD_HISTORY_DIR: Path = FLOOD_OUTPUT_DIR / "history"
+PIPELINE_OUTPUT_DIR: Path = Path(
+    os.getenv("TIPX_FLOOD_PIPELINE_OUTPUT_DIR", str(FLOOD_OUTPUT_DIR))
+).expanduser().resolve()
 
-FLOOD_LATEST_DATABASE_PATH: Path = FLOOD_LATEST_DIR / "latest_database.xlsx"
-FLOOD_MASTER_DATABASE_PATH: Path = FLOOD_MASTER_DIR / "master_database.xlsx"
+FLOOD_EXCEL_DATABASE_DIR: Path = Path(
+    os.getenv(
+        "TIPX_FLOOD_EXCEL_DATABASE_DIR",
+        str(PIPELINE_OUTPUT_DIR / "excel_database"),
+    )
+).expanduser().resolve()
+
+EXCEL_DATABASE_DIR: Path = FLOOD_EXCEL_DATABASE_DIR
+
+FLOOD_MASTER_DIR: Path = Path(
+    os.getenv(
+        "TIPX_FLOOD_MASTER_DIR",
+        str(FLOOD_EXCEL_DATABASE_DIR / "master"),
+    )
+).expanduser().resolve()
+
+FLOOD_LATEST_DIR: Path = Path(
+    os.getenv(
+        "TIPX_FLOOD_LATEST_DIR",
+        str(FLOOD_EXCEL_DATABASE_DIR / "latest"),
+    )
+).expanduser().resolve()
+
+FLOOD_HISTORY_DIR: Path = Path(
+    os.getenv(
+        "TIPX_FLOOD_HISTORY_DIR",
+        str(FLOOD_EXCEL_DATABASE_DIR / "history"),
+    )
+).expanduser().resolve()
+
+MASTER_EXCEL_DIR: Path = FLOOD_MASTER_DIR
+LATEST_EXCEL_DIR: Path = FLOOD_LATEST_DIR
+HISTORY_EXCEL_DIR: Path = FLOOD_HISTORY_DIR
+
+FLOOD_LATEST_DATABASE_PATH: Path = Path(
+    os.getenv(
+        "TIPX_FLOOD_LATEST_DATABASE_PATH",
+        str(FLOOD_LATEST_DIR / "latest_database.xlsx"),
+    )
+).expanduser().resolve()
+
+FLOOD_MASTER_DATABASE_PATH: Path = Path(
+    os.getenv(
+        "TIPX_FLOOD_MASTER_DATABASE_PATH",
+        str(FLOOD_MASTER_DIR / "master_database.xlsx"),
+    )
+).expanduser().resolve()
+
+LATEST_EXCEL_FILE: Path = FLOOD_LATEST_DATABASE_PATH
+MASTER_EXCEL_FILE: Path = FLOOD_MASTER_DATABASE_PATH
 
 FLOOD_HISTORY_RAINFALL_DIR: Path = FLOOD_HISTORY_DIR / "rainfall"
 FLOOD_HISTORY_RAIN15D_DIR: Path = FLOOD_HISTORY_DIR / "rain15d"
 FLOOD_HISTORY_RAIN_YEARLY_DIR: Path = FLOOD_HISTORY_DIR / "rain_yearly"
 FLOOD_HISTORY_WATERLEVEL_DIR: Path = FLOOD_HISTORY_DIR / "waterlevel"
 FLOOD_HISTORY_DAM_DIR: Path = FLOOD_HISTORY_DIR / "dam"
-FLOOD_HISTORY_LARGE_DAM_DIR: Path = FLOOD_HISTORY_DAM_DIR / "large"
-FLOOD_HISTORY_MEDIUM_DAM_DIR: Path = FLOOD_HISTORY_DAM_DIR / "medium"
+FLOOD_HISTORY_LARGE_DAM_DIR: Path = FLOOD_HISTORY_DIR / "large_dam"
+FLOOD_HISTORY_MEDIUM_DAM_DIR: Path = FLOOD_HISTORY_DIR / "medium_dam"
 FLOOD_HISTORY_ALL_LONG_DIR: Path = FLOOD_HISTORY_DIR / "all_long"
+
+RAINFALL_HISTORY_DIR: Path = FLOOD_HISTORY_RAINFALL_DIR
+RAIN15D_HISTORY_DIR: Path = FLOOD_HISTORY_RAIN15D_DIR
+RAIN_YEARLY_HISTORY_DIR: Path = FLOOD_HISTORY_RAIN_YEARLY_DIR
+WATERLEVEL_HISTORY_DIR: Path = FLOOD_HISTORY_WATERLEVEL_DIR
+LARGE_DAM_HISTORY_DIR: Path = FLOOD_HISTORY_LARGE_DAM_DIR
+MEDIUM_DAM_HISTORY_DIR: Path = FLOOD_HISTORY_MEDIUM_DAM_DIR
+ALL_LONG_HISTORY_DIR: Path = FLOOD_HISTORY_ALL_LONG_DIR
+
+FLOOD_PREDICTION_DIR: Path = Path(
+    os.getenv(
+        "TIPX_FLOOD_PREDICTION_DIR",
+        str(FLOOD_PIPELINE_BASE_DIR / "predict"),
+    )
+).expanduser().resolve()
+
+PREDICTION_DATA_DIR: Path = FLOOD_PREDICTION_DIR
+PREDICTION_FILE_PREFIX: str = "predict"
+PREDICTION_FILE_GLOB: str = "predict_*.xlsx"
+PREDICTION_FILE_PATTERN: str = "predict_YYYY_MM_DD.xlsx"
+PREDICTION_FILE_EXAMPLE: str = "predict_2026_06_16.xlsx"
+
+WEB_DATA_DIR: Path = PROJECT_ROOT / "web_data"
+UPLOAD_DIR: Path = WEB_DATA_DIR / "uploads"
+UPLOAD_ENTITY_DIR: Path = UPLOAD_DIR / "entities"
+UPLOAD_LOG_DIR: Path = WEB_DATA_DIR / "upload_logs"
+UPLOAD_ERROR_REPORT_DIR: Path = WEB_DATA_DIR / "upload_error_reports"
+WEB_CACHE_DIR: Path = WEB_DATA_DIR / "cache"
+WEB_LOG_DIR: Path = WEB_DATA_DIR / "logs"
+ERROR_LOG_PATH: Path = WEB_LOG_DIR / "tipx_backend_error.log"
 
 
 # ============================================================
 # 5) OUTPUT / CACHE FILES
 # ============================================================
-
 CACHE_FILES: Dict[str, str] = {
     "system_status": "system_status.json",
     "input_status": "input_status.json",
@@ -180,6 +287,7 @@ CACHE_FILES: Dict[str, str] = {
 
     "company_location_master": "company_location_master.json",
     "province_branch_coordinate_master": "province_branch_coordinate_master.json",
+    "company_unified_base": "company_unified_base.json",
     "company_unified_master": "company_unified_master.json",
 
     "director_master": "director_master.json",
@@ -188,10 +296,23 @@ CACHE_FILES: Dict[str, str] = {
     "linkage_edges": "linkage_edges.json",
     "shared_director_links": "shared_director_links.json",
     "key_connector_summary": "key_connector_summary.json",
-    "linkage_graph": "linkage_graph.json",
+    "linkage_company_summary": "linkage_company_summary.json",
+    "linkage_graph_payload": "linkage_graph_payload.json",
+    "linkage_graph": "linkage_graph_payload.json",
+    "graph_payload": "linkage_graph_payload.json",
 
     "flood_latest": "flood_latest.json",
     "flood_master": "flood_master.json",
+    "flood_rainfall_latest": "flood_rainfall_latest.json",
+    "flood_waterlevel_latest": "flood_waterlevel_latest.json",
+    "flood_large_dam_latest": "flood_large_dam_latest.json",
+    "flood_medium_dam_latest": "flood_medium_dam_latest.json",
+    "flood_all_long_latest": "flood_all_long_latest.json",
+    "flood_prediction_files": "flood_prediction_files.json",
+    "flood_prediction_latest": "flood_prediction_latest.json",
+    "flood_prediction_summary": "flood_prediction_summary.json",
+    "flood_prediction_map": "flood_prediction_map.json",
+    "flood_prediction_location_debug": "flood_prediction_location_debug.json",
     "flood_computed_risk": "flood_computed_risk.json",
     "flood_summary": "flood_summary.json",
 
@@ -199,11 +320,23 @@ CACHE_FILES: Dict[str, str] = {
     "company_flood_context": "company_flood_context.json",
     "policy_flood_exposure": "policy_flood_exposure.json",
     "province_risk_summary": "province_risk_summary.json",
+    "province_risk_exposure": "province_risk_exposure.json",
+
+    "uploaded_entity_latest": "uploaded_entity_latest.json",
+    "uploaded_entity_map": "uploaded_entity_map.json",
 
     "map_layers": "map_layers.json",
-    "graph_payload": "graph_payload.json",
+    "map_flood": "map_flood.json",
+    "map_prediction": "map_prediction.json",
+    "map_entity": "map_entity.json",
+    "map_boundaries": "map_boundaries.json",
+    "map_selected_context": "map_selected_context.json",
+
     "chart_payload": "chart_payload.json",
+    "chart_summary": "chart_summary.json",
     "dashboard_summary": "dashboard_summary.json",
+    "dashboard_overview": "dashboard_overview.json",
+    "dashboard_province_insights": "dashboard_province_insights.json",
 
     "filter_fields": "filter_fields.json",
     "filter_presets": "filter_presets.json",
@@ -212,6 +345,7 @@ CACHE_FILES: Dict[str, str] = {
     "data_quality_issues": "data_quality_issues.json",
 
     "package_index": "package_index.json",
+    "package_snapshot": "package_snapshot.json",
     "export_history": "export_history.json",
 }
 
@@ -248,45 +382,191 @@ POLICY_SHEET_INDEX_FALLBACK: Dict[str, int] = {
 LINKAGE_SHEET_INDEX_FALLBACK: int = 0
 
 
+SHEET_META_INFO: str = "00_meta_info"
+SHEET_SCRAPE_RUNS: str = "01_scrape_runs"
+SHEET_RAINFALL_LATEST: str = "02_rainfall_latest"
+SHEET_RAINFALL_DAILY_HISTORY: str = "03_rainfall_daily_history"
+SHEET_RAINFALL_YEARLY_SUMMARY: str = "04_rainfall_yearly_summary"
+SHEET_WATERLEVEL_LATEST: str = "05_waterlevel_latest"
+SHEET_WATERLEVEL_HISTORY: str = "06_waterlevel_history_yearly"
+SHEET_LARGE_DAM_LATEST: str = "07_large_dam_latest"
+SHEET_LARGE_DAM_HISTORY: str = "08_large_dam_history_yearly"
+SHEET_MEDIUM_DAM_LATEST: str = "09_medium_dam_latest"
+SHEET_MEDIUM_DAM_HISTORY: str = "10_medium_dam_history_yearly"
+SHEET_PROVINCE_BOUNDARY: str = "11_province_boundary"
+SHEET_BASIN_BOUNDARY: str = "12_basin_boundary"
+SHEET_RAINFALL_STATION_MASTER: str = "13_rainfall_station_master"
+SHEET_WATERLEVEL_STATION_MASTER: str = "14_waterlevel_station_master"
+SHEET_DAM_RESERVOIR_MASTER: str = "15_dam_reservoir_master"
+SHEET_LOCATION_MASTER: str = "16_location_master"
+SHEET_ALL_LONG: str = "17_all_long"
+SHEET_ALL_LONG_LATEST: str = "17_all_long_latest"
+SHEET_ENDPOINT_MASTER: str = "18_endpoint_master"
+SHEET_DATA_QUALITY_LOG: str = "19_data_quality_log"
+SHEET_ERROR_LOG: str = "20_error_log"
+SHEET_RAW_FILE_INDEX: str = "21_raw_file_index"
+SHEET_MOVE_LOG: str = "22_move_log"
+SHEET_TELESTATION_LIST_MASTER: str = "23_telestation_list_master"
+SHEET_DAILY_LOOP_RUNS: str = "24_daily_loop_runs"
+SHEET_DAILY_LOOP_ROUNDS: str = "25_daily_loop_rounds"
+SHEET_RAINFALL_15D_HISTORY: str = "26_rainfall_15d_history"
+SHEET_GAP_DETECTION_LOG: str = "27_gap_detection_log"
+SHEET_GAP_RECOVERY_RUNS: str = "28_gap_recovery_runs"
+SHEET_FLOOD_PREDICTION_LATEST: str = "29_flood_prediction_latest"
+SHEET_FLOOD_PREDICTION_HISTORY: str = "30_flood_prediction_history"
+
 FLOOD_LATEST_SHEETS: Dict[str, str] = {
-    "rainfall_latest": "02_rainfall_latest",
-    "waterlevel_latest": "05_waterlevel_latest",
-    "large_dam_latest": "07_large_dam_latest",
-    "medium_dam_latest": "09_medium_dam_latest",
-    "all_long_latest": "17_all_long_latest",
+    "rainfall_latest": SHEET_RAINFALL_LATEST,
+    "rainfall": SHEET_RAINFALL_LATEST,
+    "rain_24h": SHEET_RAINFALL_LATEST,
+    "waterlevel_latest": SHEET_WATERLEVEL_LATEST,
+    "waterlevel": SHEET_WATERLEVEL_LATEST,
+    "waterlevel_load": SHEET_WATERLEVEL_LATEST,
+    "large_dam_latest": SHEET_LARGE_DAM_LATEST,
+    "large_dam": SHEET_LARGE_DAM_LATEST,
+    "medium_dam_latest": SHEET_MEDIUM_DAM_LATEST,
+    "medium_dam": SHEET_MEDIUM_DAM_LATEST,
+    "dam": SHEET_LARGE_DAM_LATEST,
+    "all_long_latest": SHEET_ALL_LONG_LATEST,
+    "all_long": SHEET_ALL_LONG_LATEST,
 }
 
+LATEST_SHEETS: Dict[str, str] = FLOOD_LATEST_SHEETS
 
 FLOOD_MASTER_SHEETS: Dict[str, str] = {
-    "meta_info": "00_meta_info",
-    "scrape_runs": "01_scrape_runs",
-    "province_boundary": "11_province_boundary",
-    "basin_boundary": "12_basin_boundary",
-    "rainfall_station_master": "13_rainfall_station_master",
-    "waterlevel_station_master": "14_waterlevel_station_master",
-    "dam_reservoir_master": "15_dam_reservoir_master",
-    "location_master": "16_location_master",
-    "endpoint_master": "18_endpoint_master",
-    "data_quality_log": "19_data_quality_log",
-    "error_log": "20_error_log",
-    "raw_file_index": "21_raw_file_index",
-    "move_log": "22_move_log",
-    "telestation_list_master": "23_telestation_list_master",
-    "daily_loop_runs": "24_daily_loop_runs",
-    "daily_loop_rounds": "25_daily_loop_rounds",
+    "meta": SHEET_META_INFO,
+    "meta_info": SHEET_META_INFO,
+    "scrape_runs": SHEET_SCRAPE_RUNS,
+    "province_boundary": SHEET_PROVINCE_BOUNDARY,
+    "basin_boundary": SHEET_BASIN_BOUNDARY,
+    "rainfall_station_master": SHEET_RAINFALL_STATION_MASTER,
+    "waterlevel_station_master": SHEET_WATERLEVEL_STATION_MASTER,
+    "dam_reservoir_master": SHEET_DAM_RESERVOIR_MASTER,
+    "location_master": SHEET_LOCATION_MASTER,
+    "endpoint_master": SHEET_ENDPOINT_MASTER,
+    "data_quality_log": SHEET_DATA_QUALITY_LOG,
+    "error_log": SHEET_ERROR_LOG,
+    "raw_file_index": SHEET_RAW_FILE_INDEX,
+    "move_log": SHEET_MOVE_LOG,
+    "telestation_list_master": SHEET_TELESTATION_LIST_MASTER,
+    "daily_loop_runs": SHEET_DAILY_LOOP_RUNS,
+    "daily_loop_rounds": SHEET_DAILY_LOOP_ROUNDS,
+    "gap_detection_log": SHEET_GAP_DETECTION_LOG,
+    "gap_recovery_runs": SHEET_GAP_RECOVERY_RUNS,
 }
 
+MASTER_SHEETS: Dict[str, str] = FLOOD_MASTER_SHEETS
 
 FLOOD_HISTORY_SHEETS: Dict[str, str] = {
-    "rainfall_daily_history": "03_rainfall_daily_history",
-    "rain15d_history": "26_rainfall_15d_history",
-    "rain_yearly_summary": "04_rainfall_yearly_summary",
-    "waterlevel_history_yearly": "06_waterlevel_history_yearly",
-    "large_dam_history_yearly": "08_large_dam_history_yearly",
-    "medium_dam_history_yearly": "10_medium_dam_history_yearly",
-    "all_long_history": "17_all_long_history",
+    "rainfall_daily_history": SHEET_RAINFALL_DAILY_HISTORY,
+    "rainfall": SHEET_RAINFALL_DAILY_HISTORY,
+    "rain": SHEET_RAINFALL_DAILY_HISTORY,
+    "rainfall_daily": SHEET_RAINFALL_DAILY_HISTORY,
+    "rain_monthly_graph": SHEET_RAINFALL_DAILY_HISTORY,
+
+    "rain15d_history": SHEET_RAINFALL_15D_HISTORY,
+    "rain15d": SHEET_RAINFALL_15D_HISTORY,
+    "rain_15d": SHEET_RAINFALL_15D_HISTORY,
+    "rainfall_15d": SHEET_RAINFALL_15D_HISTORY,
+
+    "rain_yearly_summary": SHEET_RAINFALL_YEARLY_SUMMARY,
+    "rain_yearly": SHEET_RAINFALL_YEARLY_SUMMARY,
+    "rainfall_yearly": SHEET_RAINFALL_YEARLY_SUMMARY,
+    "rain_yearly_graph": SHEET_RAINFALL_YEARLY_SUMMARY,
+
+    "waterlevel_history_yearly": SHEET_WATERLEVEL_HISTORY,
+    "waterlevel": SHEET_WATERLEVEL_HISTORY,
+    "water": SHEET_WATERLEVEL_HISTORY,
+    "waterlevel_history": SHEET_WATERLEVEL_HISTORY,
+    "waterlevel_graph_year": SHEET_WATERLEVEL_HISTORY,
+
+    "large_dam_history_yearly": SHEET_LARGE_DAM_HISTORY,
+    "large_dam": SHEET_LARGE_DAM_HISTORY,
+    "large-dam": SHEET_LARGE_DAM_HISTORY,
+    "dam_large": SHEET_LARGE_DAM_HISTORY,
+    "dam_yearly_graph": SHEET_LARGE_DAM_HISTORY,
+
+    "medium_dam_history_yearly": SHEET_MEDIUM_DAM_HISTORY,
+    "medium_dam": SHEET_MEDIUM_DAM_HISTORY,
+    "medium-dam": SHEET_MEDIUM_DAM_HISTORY,
+    "dam_medium": SHEET_MEDIUM_DAM_HISTORY,
+    "dam_medium_graph": SHEET_MEDIUM_DAM_HISTORY,
+
+    "all_long_history": SHEET_ALL_LONG,
+    "all_long": SHEET_ALL_LONG,
+    "all": SHEET_ALL_LONG,
+    "all_long_latest": SHEET_ALL_LONG,
 }
 
+HISTORY_SHEETS: Dict[str, str] = FLOOD_HISTORY_SHEETS
+
+HISTORY_DIRS: Dict[str, Path] = {
+    "rainfall": RAINFALL_HISTORY_DIR,
+    "rain": RAINFALL_HISTORY_DIR,
+    "rainfall_daily": RAINFALL_HISTORY_DIR,
+    "rain_monthly_graph": RAINFALL_HISTORY_DIR,
+
+    "rain15d": RAIN15D_HISTORY_DIR,
+    "rain_15d": RAIN15D_HISTORY_DIR,
+    "rainfall_15d": RAIN15D_HISTORY_DIR,
+
+    "rain_yearly": RAIN_YEARLY_HISTORY_DIR,
+    "rainfall_yearly": RAIN_YEARLY_HISTORY_DIR,
+    "rain_yearly_graph": RAIN_YEARLY_HISTORY_DIR,
+
+    "waterlevel": WATERLEVEL_HISTORY_DIR,
+    "water": WATERLEVEL_HISTORY_DIR,
+    "waterlevel_history": WATERLEVEL_HISTORY_DIR,
+    "waterlevel_graph_year": WATERLEVEL_HISTORY_DIR,
+
+    "large_dam": LARGE_DAM_HISTORY_DIR,
+    "large-dam": LARGE_DAM_HISTORY_DIR,
+    "dam_large": LARGE_DAM_HISTORY_DIR,
+    "dam_yearly_graph": LARGE_DAM_HISTORY_DIR,
+
+    "medium_dam": MEDIUM_DAM_HISTORY_DIR,
+    "medium-dam": MEDIUM_DAM_HISTORY_DIR,
+    "dam_medium": MEDIUM_DAM_HISTORY_DIR,
+    "dam_medium_graph": MEDIUM_DAM_HISTORY_DIR,
+
+    "all_long": ALL_LONG_HISTORY_DIR,
+    "all": ALL_LONG_HISTORY_DIR,
+    "all_long_history": ALL_LONG_HISTORY_DIR,
+}
+
+HISTORY_FILE_PREFIXES: Dict[str, str] = {
+    "rainfall": "rainfall",
+    "rain": "rainfall",
+    "rainfall_daily": "rainfall",
+    "rain_monthly_graph": "rainfall",
+
+    "rain15d": "rain15d",
+    "rain_15d": "rain15d",
+    "rainfall_15d": "rain15d",
+
+    "rain_yearly": "rain_yearly",
+    "rainfall_yearly": "rain_yearly",
+    "rain_yearly_graph": "rain_yearly",
+
+    "waterlevel": "waterlevel",
+    "water": "waterlevel",
+    "waterlevel_history": "waterlevel",
+    "waterlevel_graph_year": "waterlevel",
+
+    "large_dam": "large_dam",
+    "large-dam": "large_dam",
+    "dam_large": "large_dam",
+    "dam_yearly_graph": "large_dam",
+
+    "medium_dam": "medium_dam",
+    "medium-dam": "medium_dam",
+    "dam_medium": "medium_dam",
+    "dam_medium_graph": "medium_dam",
+
+    "all_long": "all_long",
+    "all": "all_long",
+    "all_long_history": "all_long",
+}
 
 # ============================================================
 # 7) RAW INPUT COLUMN NAMES
@@ -825,20 +1105,253 @@ STANDARD_DIRECTOR_FIELDS: List[str] = [
     "connected_flood_risk_levels",
 ]
 
-
-STANDARD_FLOOD_RISK_FIELDS: List[str] = [
-    "source_type",
-    "source_id",
-    "source_name",
+STANDARD_FLOOD_PREDICTION_FIELDS: List[str] = [
+    "record_key",
+    "source_file",
+    "source_sheet",
+    "source_row",
+    "data_date",
+    "base_date",
+    "target_date",
+    "forecast_horizon_day",
     "province",
-    "basin",
+    "province_model",
+    "station_id",
+    "station_code",
+    "station_name",
+    "station_name_th",
+    "matched_station_id",
+    "matched_station_code",
+    "matched_station_name",
+    "matched_source",
+    "risk_level",
+    "risk_status",
+    "warning_level",
+    "warning_level_predict",
+    "predicted_level_m",
+    "percent_to_bank",
+    "from_bank_m",
+    "latest_value",
+    "latest_unit",
     "lat",
     "lon",
-    "data_datetime",
+    "latitude",
+    "longitude",
+    "has_location",
+    "map_ready",
+    "focus_level",
+    "focus_fallback_reason",
+]
+
+PREDICTION_REQUIRED_COLUMNS: List[str] = [
+    "station_name",
+    "province_model",
+]
+
+PREDICTION_SUPPORTED_COLUMNS: List[str] = [
+    "data_date",
+    "predict_date",
+    "file_date",
+    "base_date",
+    "target_date",
+    "forecast_horizon_day",
+    "horizon",
+    "province",
+    "province_model",
+    "station_id",
+    "station_code",
+    "station_name",
+    "station_name_th",
+    "warning_level",
+    "warning_level_predict",
     "risk_level",
-    "risk_score",
-    "risk_reason",
-    "risk_color",
+    "risk_status",
+    "predicted_level_m",
+    "actual_level_m",
+    "percent_to_bank",
+    "from_bank_m",
+    "diff_from_bank_m",
+    "depth_above_ground_m",
+    "water_depth_above_bed_m",
+]
+
+PREDICTION_NUMERIC_COLUMNS: List[str] = [
+    "forecast_horizon_day",
+    "horizon",
+    "predicted_level_m",
+    "actual_level_m",
+    "percent_to_bank",
+    "from_bank_m",
+    "diff_from_bank_m",
+    "depth_above_ground_m",
+    "water_depth_above_bed_m",
+]
+
+PREDICTION_DATE_COLUMNS: List[str] = [
+    "data_date",
+    "predict_date",
+    "file_date",
+    "base_date",
+    "target_date",
+]
+
+PREDICTION_RISK_NORMALIZE_MAP: Dict[str, str] = {
+    "normal": "Normal",
+    "ปกติ": "Normal",
+    "1.ปกติ": "Normal",
+    "watch": "Watch",
+    "เฝ้าระวัง": "Watch",
+    "2.เฝ้าระวัง": "Watch",
+    "warning": "Warning",
+    "เตือนภัย": "Warning",
+    "เตือน": "Warning",
+    "3.เตือนภัย": "Warning",
+    "critical": "Critical",
+    "วิกฤต": "Critical",
+    "4.วิกฤต": "Critical",
+    "unknown": "Unknown",
+    "ไม่ทราบ": "Unknown",
+    "ไม่มีข้อมูล": "Unknown",
+}
+
+PREDICTION_QUERY_PARAM_ALIASES: Dict[str, List[str]] = {
+    "data_date": [
+        "data_date",
+        "predict_date",
+        "file_date",
+        "prediction_data_date",
+        "prediction_predict_date",
+        "prediction_file_date",
+    ],
+    "province": [
+        "province",
+        "province_model",
+        "prediction_province",
+        "prediction_province_model",
+    ],
+    "risk_level": [
+        "risk",
+        "risk_level",
+        "risk_status",
+        "warning_level",
+        "warning_level_predict",
+        "prediction_risk_level",
+        "prediction_risk_status",
+        "prediction_warning_level",
+        "prediction_warning_level_predict",
+    ],
+    "station": [
+        "station",
+        "station_name",
+        "station_name_th",
+        "station_id",
+        "station_code",
+        "matched_station_id",
+        "matched_station_code",
+        "matched_station_name",
+        "prediction_station",
+        "prediction_station_name",
+        "prediction_station_name_th",
+        "prediction_station_id",
+        "prediction_station_code",
+    ],
+    "base_date": [
+        "base_date",
+        "prediction_base_date",
+    ],
+    "target_date": [
+        "target_date",
+        "prediction_target_date",
+    ],
+    "forecast_horizon_day": [
+        "forecast_horizon_day",
+        "horizon",
+        "prediction_forecast_horizon_day",
+        "prediction_horizon",
+    ],
+}
+
+PREDICTION_RECORD_KEY_PARTS: List[str] = [
+    "station_name",
+    "station_id",
+    "base_date",
+    "target_date",
+    "forecast_horizon_day",
+]
+
+PREDICTION_STATION_MATCH_COLUMNS: List[str] = [
+    "station_id",
+    "station_code",
+    "station_name",
+    "station_name_th",
+    "matched_station_id",
+    "matched_station_code",
+    "matched_station_name",
+]
+
+PREDICTION_LOCATION_MASTER_SOURCES: List[str] = [
+    "waterlevel_station_master",
+    "rainfall_station_master",
+]
+
+UPLOAD_ALLOWED_EXTENSIONS: List[str] = [
+    ".csv",
+    ".xlsx",
+    ".xls",
+]
+
+UPLOAD_MAX_CONTENT_LENGTH_MB: int = int(os.getenv("TIPX_UPLOAD_MAX_CONTENT_LENGTH_MB", "100"))
+
+UPLOAD_CSV_ENCODING_CANDIDATES: List[str] = [
+    "utf-8-sig",
+    "utf-8",
+    "cp874",
+    "tis-620",
+]
+
+HIDDEN_EMPTY_VALUES: List[str] = [
+    "",
+    "-",
+    "--",
+    "---",
+    "n/a",
+    "na",
+    "nan",
+    "none",
+    "null",
+    "nil",
+    "#n/a",
+    "#na",
+    "ไม่ระบุ",
+    "ไม่มี",
+    "ไม่พบข้อมูล",
+]
+
+ENTITY_REQUIRED_COLUMNS: List[str] = [
+    "entity_id",
+    "entity_type",
+    "entity_name_th",
+    "province_name_th",
+    "latitude",
+    "longitude",
+]
+
+ENTITY_SUPPORTED_COLUMNS: List[str] = [
+    "entity_id",
+    "entity_type",
+    "entity_name_th",
+    "entity_name_en",
+    "province_name_th",
+    "province_name_en",
+    "district_name_th",
+    "subdistrict_name_th",
+    "latitude",
+    "longitude",
+    "risk_group",
+    "description",
+    "contact",
+    "source",
+    "note",
 ]
 
 
@@ -986,10 +1499,78 @@ MAP_MAX_ZOOM: int = DEFAULT_MAP_MAX_ZOOM
 MAP_BASE_TILE_URL: str = "https://{a-c}.tile.openstreetmap.org/{z}/{x}/{y}.png"
 MAP_BASE_ATTRIBUTION: str = "OpenStreetMap contributors"
 
+DEFAULT_ACTIVE_LAYERS: List[str] = [
+    "rainfall",
+    "waterlevel",
+    "dam",
+    "prediction",
+    "entity",
+    "province_boundary",
+    "basin_boundary",
+]
+
+SUPPORTED_LAYERS: List[str] = [
+    "rainfall",
+    "waterlevel",
+    "large_dam",
+    "medium_dam",
+    "dam",
+    "prediction",
+    "forecast",
+    "flood_prediction",
+    "entity",
+    "province_boundary",
+    "basin_boundary",
+    "province_boundaries",
+    "basin_boundaries",
+    "company_points",
+    "flood_points",
+    "policy_exposure",
+    "linkage_lines",
+    "branch_points",
+    "heatmap",
+    "cluster",
+    "label",
+]
+
+LAYER_DISPLAY_NAMES: Dict[str, str] = {
+    "rainfall": "Rain",
+    "waterlevel": "Water Level",
+    "large_dam": "Large Dam",
+    "medium_dam": "Medium Dam",
+    "dam": "Dam",
+    "prediction": "Flood Prediction",
+    "forecast": "Flood Prediction",
+    "flood_prediction": "Flood Prediction",
+    "entity": "Uploaded Entities",
+    "province_boundary": "Province Boundary",
+    "basin_boundary": "Basin Boundary",
+    "province_boundaries": "Province Boundaries",
+    "basin_boundaries": "Basin Boundaries",
+    "company_points": "Company Points",
+    "flood_points": "Flood Points",
+    "policy_exposure": "Policy Exposure",
+    "linkage_lines": "Linkage Lines",
+    "branch_points": "Branch Points",
+    "heatmap": "Flood Risk Heatmap",
+}
+
 MAP_LAYER_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "province_boundary": {
+        "layer_name": "Province Boundary",
+        "visible": True,
+        "opacity": 0.45,
+        "z_index": 0,
+    },
+    "basin_boundary": {
+        "layer_name": "Basin Boundary",
+        "visible": False,
+        "opacity": 0.45,
+        "z_index": 1,
+    },
     "province_boundaries": {
         "layer_name": "Province Boundaries",
-        "visible": False,
+        "visible": True,
         "opacity": 0.45,
         "z_index": 0,
     },
@@ -1005,35 +1586,65 @@ MAP_LAYER_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "opacity": 0.65,
         "z_index": 2,
     },
+    "rainfall": {
+        "layer_name": "Rain",
+        "visible": True,
+        "opacity": 0.9,
+        "z_index": 3,
+    },
+    "waterlevel": {
+        "layer_name": "Water Level",
+        "visible": True,
+        "opacity": 0.9,
+        "z_index": 4,
+    },
+    "dam": {
+        "layer_name": "Dam",
+        "visible": True,
+        "opacity": 0.9,
+        "z_index": 5,
+    },
+    "prediction": {
+        "layer_name": "Flood Prediction",
+        "visible": True,
+        "opacity": 0.95,
+        "z_index": 6,
+    },
+    "entity": {
+        "layer_name": "Uploaded Entities",
+        "visible": True,
+        "opacity": 0.95,
+        "z_index": 7,
+    },
     "flood_points": {
         "layer_name": "Flood Points",
         "visible": True,
         "opacity": 0.85,
-        "z_index": 3,
+        "z_index": 8,
     },
     "policy_exposure": {
         "layer_name": "Policy Exposure",
         "visible": True,
         "opacity": 0.9,
-        "z_index": 4,
+        "z_index": 9,
     },
     "company_points": {
         "layer_name": "Company Points",
         "visible": True,
         "opacity": 1.0,
-        "z_index": 5,
+        "z_index": 10,
     },
     "branch_points": {
         "layer_name": "Branch Points",
         "visible": True,
         "opacity": 0.9,
-        "z_index": 6,
+        "z_index": 11,
     },
     "linkage_lines": {
         "layer_name": "Linkage Lines",
         "visible": False,
         "opacity": 0.65,
-        "z_index": 7,
+        "z_index": 12,
     },
 }
 
@@ -1461,6 +2072,156 @@ CACHE_TTL_SECONDS: Dict[str, int] = {
 
 CACHE_METADATA_FILENAME: str = "_cache_meta.json"
 
+CACHE_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "company_unified_base": {
+        "filename": CACHE_FILES["company_unified_base"],
+        "owner_service": "company_policy_service",
+        "builder_function": "build_company_unified_base",
+        "payload_type": "records",
+        "depends_on": ["policy_fact", "company_location_master", "province_branch_coordinate_master"],
+        "consumed_by": ["linkage_service", "flood_spatial_service"],
+        "ttl_group": "company",
+        "critical": True,
+        "allow_stale": True,
+        "aliases": [],
+    },
+    "company_unified_master": {
+        "filename": CACHE_FILES["company_unified_master"],
+        "owner_service": "company_policy_service",
+        "builder_function": "build_company_unified_master",
+        "payload_type": "records",
+        "depends_on": ["company_unified_base", "linkage_graph_payload", "spatial_join_result"],
+        "consumed_by": ["map_graph_service", "dashboard_package_service", "data_quality", "security"],
+        "ttl_group": "company",
+        "critical": True,
+        "allow_stale": True,
+        "aliases": [],
+    },
+    "linkage_graph_payload": {
+        "filename": CACHE_FILES["linkage_graph_payload"],
+        "owner_service": "linkage_service",
+        "builder_function": "build_linkage_graph_payload",
+        "payload_type": "graph",
+        "depends_on": ["company_unified_base", "director_company_pairs", "shared_director_links"],
+        "consumed_by": ["map_graph_service", "dashboard_package_service", "security"],
+        "ttl_group": "graph",
+        "critical": False,
+        "allow_stale": True,
+        "aliases": ["linkage_graph", "graph_payload"],
+    },
+    "flood_rainfall_latest": {
+        "filename": CACHE_FILES["flood_rainfall_latest"],
+        "owner_service": "flood_spatial_service",
+        "builder_function": "get_latest_rainfall",
+        "payload_type": "records",
+        "depends_on": [],
+        "consumed_by": ["map_graph_service", "dashboard_package_service", "data_quality"],
+        "ttl_group": "flood",
+        "critical": False,
+        "allow_stale": True,
+        "aliases": ["rainfall_latest"],
+    },
+    "flood_waterlevel_latest": {
+        "filename": CACHE_FILES["flood_waterlevel_latest"],
+        "owner_service": "flood_spatial_service",
+        "builder_function": "get_latest_waterlevel",
+        "payload_type": "records",
+        "depends_on": [],
+        "consumed_by": ["map_graph_service", "dashboard_package_service", "data_quality"],
+        "ttl_group": "flood",
+        "critical": False,
+        "allow_stale": True,
+        "aliases": ["waterlevel_latest"],
+    },
+    "flood_large_dam_latest": {
+        "filename": CACHE_FILES["flood_large_dam_latest"],
+        "owner_service": "flood_spatial_service",
+        "builder_function": "get_latest_large_dam",
+        "payload_type": "records",
+        "depends_on": [],
+        "consumed_by": ["map_graph_service", "dashboard_package_service", "data_quality"],
+        "ttl_group": "flood",
+        "critical": False,
+        "allow_stale": True,
+        "aliases": ["large_dam_latest"],
+    },
+    "flood_medium_dam_latest": {
+        "filename": CACHE_FILES["flood_medium_dam_latest"],
+        "owner_service": "flood_spatial_service",
+        "builder_function": "get_latest_medium_dam",
+        "payload_type": "records",
+        "depends_on": [],
+        "consumed_by": ["map_graph_service", "dashboard_package_service", "data_quality"],
+        "ttl_group": "flood",
+        "critical": False,
+        "allow_stale": True,
+        "aliases": ["medium_dam_latest"],
+    },
+    "flood_prediction_latest": {
+        "filename": CACHE_FILES["flood_prediction_latest"],
+        "owner_service": "flood_spatial_service",
+        "builder_function": "get_latest_flood_predictions",
+        "payload_type": "records",
+        "depends_on": ["flood_master"],
+        "consumed_by": ["map_graph_service", "dashboard_package_service", "data_quality"],
+        "ttl_group": "flood",
+        "critical": False,
+        "allow_stale": True,
+        "aliases": ["prediction_latest", "forecast_latest"],
+    },
+    "uploaded_entity_latest": {
+        "filename": CACHE_FILES["uploaded_entity_latest"],
+        "owner_service": "entity_upload_service",
+        "builder_function": "get_latest_entity_records",
+        "payload_type": "records",
+        "depends_on": [],
+        "consumed_by": ["map_graph_service", "dashboard_package_service", "data_quality"],
+        "ttl_group": "map",
+        "critical": False,
+        "allow_stale": True,
+        "aliases": ["entity_latest"],
+    },
+    "map_layers": {
+        "filename": CACHE_FILES["map_layers"],
+        "owner_service": "map_graph_service",
+        "builder_function": "get_map_layers",
+        "payload_type": "map",
+        "depends_on": [
+            "company_unified_master",
+            "flood_rainfall_latest",
+            "flood_waterlevel_latest",
+            "flood_large_dam_latest",
+            "flood_medium_dam_latest",
+            "flood_prediction_latest",
+            "uploaded_entity_latest",
+            "linkage_graph_payload",
+        ],
+        "consumed_by": ["dashboard_package_service", "security"],
+        "ttl_group": "map",
+        "critical": False,
+        "allow_stale": True,
+        "aliases": [],
+    },
+    "dashboard_province_insights": {
+        "filename": CACHE_FILES["dashboard_province_insights"],
+        "owner_service": "dashboard_package_service",
+        "builder_function": "get_dashboard_province_insights",
+        "payload_type": "dashboard",
+        "depends_on": [
+            "flood_prediction_latest",
+            "flood_rainfall_latest",
+            "flood_waterlevel_latest",
+            "flood_large_dam_latest",
+            "flood_medium_dam_latest",
+        ],
+        "consumed_by": ["api_routes", "security"],
+        "ttl_group": "dashboard",
+        "critical": False,
+        "allow_stale": True,
+        "aliases": [],
+    },
+}
+
 
 # ============================================================
 # 18) API SETTINGS
@@ -1485,6 +2246,8 @@ CORS_ENABLED: bool = os.getenv("TIPX_CORS_ENABLED", "true").strip().lower() in {
 }
 
 CORS_ALLOW_ORIGINS: List[str] = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
     "http://localhost:5000",
     "http://127.0.0.1:5000",
     "http://localhost:5173",
@@ -1499,16 +2262,42 @@ MAX_CONTENT_LENGTH_MB: int = 100
 
 
 # ============================================================
-# 19) SECURITY SETTINGS
+# 19) AUTH / SECURITY SETTINGS
 # ============================================================
 
 """
-security.py จะใช้ค่ากลุ่มนี้
+security.py และ backend/auth/* จะใช้ค่ากลุ่มนี้
 
-หมายเหตุ:
-ระบบนี้เป็น local/internal dashboard ก่อน
-แต่เตรียมโครงสร้างสำหรับ package external viewer ไว้ด้วย
+ระบบ auth รอบนี้เป็น Fixed Auth System:
+- admin  = 1 account
+- user   = 1 account
+- viewer = 1 account
+
+รองรับ:
+- password login
+- password hash
+- JWT Bearer token
+- backend role guard
+- frontend route guard
+- protect internal /api
+- simple audit log
+- MySQL auth storage
+
+ยังไม่รองรับ:
+- OAuth
+- API key
+- session table
+- refresh token
+- forgot password
+- user registration
+- admin create user
+- field-level permission
+- CSRF เต็มระบบ
 """
+
+# ------------------------------------------------------------
+# legacy / package security
+# ------------------------------------------------------------
 
 SECRET_KEY: str = os.getenv("TIPX_SECRET_KEY", "tipx-development-secret-key-change-in-production")
 
@@ -1522,6 +2311,443 @@ PUBLIC_PACKAGE_READ_ONLY: bool = True
 
 MASK_TAX_ID_VISIBLE_LAST_DIGITS: int = 4
 MASK_DIRECTOR_VISIBLE_FIRST_CHARS: int = 2
+
+
+# ------------------------------------------------------------
+# MySQL auth database
+# ------------------------------------------------------------
+
+MYSQL_HOST: str = os.getenv("MYSQL_HOST", "127.0.0.1")
+MYSQL_PORT: int = int(os.getenv("MYSQL_PORT", "3307"))
+MYSQL_USER: str = os.getenv("MYSQL_USER", "tipx")
+MYSQL_PASSWORD: str = os.getenv("MYSQL_PASSWORD", "tipx1722569")
+MYSQL_DATABASE: str = os.getenv("MYSQL_DATABASE", "tipx_login")
+MYSQL_CHARSET: str = os.getenv("MYSQL_CHARSET", "utf8mb4")
+MYSQL_CONNECT_TIMEOUT_SECONDS: int = int(os.getenv("MYSQL_CONNECT_TIMEOUT_SECONDS", "10"))
+
+AUTH_MYSQL_TABLE_USERS: str = os.getenv("AUTH_MYSQL_TABLE_USERS", "auth_users")
+AUTH_MYSQL_TABLE_AUDIT_LOGS: str = os.getenv("AUTH_MYSQL_TABLE_AUDIT_LOGS", "auth_audit_logs")
+
+AUTH_DB_AUTO_CREATE: bool = os.getenv("AUTH_DB_AUTO_CREATE", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+}
+
+AUTH_DB_AUTO_SEED: bool = os.getenv("AUTH_DB_AUTO_SEED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+}
+
+
+# ------------------------------------------------------------
+# Auth enable / fixed users
+# ------------------------------------------------------------
+
+AUTH_ENABLED: bool = os.getenv("AUTH_ENABLED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+}
+
+AUTH_FIXED_USERS_ENABLED: bool = True
+AUTH_ALLOW_REGISTRATION: bool = False
+AUTH_ALLOW_ADMIN_CREATE_USER: bool = False
+AUTH_ALLOW_FORGOT_PASSWORD: bool = False
+AUTH_ALLOW_REFRESH_TOKEN: bool = False
+AUTH_ALLOW_OAUTH: bool = False
+AUTH_ALLOW_API_KEY: bool = False
+AUTH_ALLOW_SESSION_TABLE: bool = False
+
+AUTH_ADMIN_USERNAME: str = os.getenv("AUTH_ADMIN_USERNAME", "admin")
+AUTH_ADMIN_PASSWORD: str = os.getenv("AUTH_ADMIN_PASSWORD", "change-me-admin")
+
+AUTH_USER_USERNAME: str = os.getenv("AUTH_USER_USERNAME", "user")
+AUTH_USER_PASSWORD: str = os.getenv("AUTH_USER_PASSWORD", "change-me-user")
+
+AUTH_VIEWER_USERNAME: str = os.getenv("AUTH_VIEWER_USERNAME", "viewer")
+AUTH_VIEWER_PASSWORD: str = os.getenv("AUTH_VIEWER_PASSWORD", "change-me-viewer")
+
+AUTH_ROLES: List[str] = [
+    "admin",
+    "user",
+    "viewer",
+]
+
+AUTH_ROLE_LEVEL: Dict[str, int] = {
+    "viewer": 10,
+    "user": 50,
+    "admin": 100,
+}
+
+AUTH_FIXED_USERS: List[Dict[str, Any]] = [
+    {
+        "username": AUTH_ADMIN_USERNAME,
+        "password": AUTH_ADMIN_PASSWORD,
+        "role": "admin",
+        "display_name": "TIPX Admin",
+        "is_active": True,
+        "fixed": True,
+    },
+    {
+        "username": AUTH_USER_USERNAME,
+        "password": AUTH_USER_PASSWORD,
+        "role": "user",
+        "display_name": "TIPX User",
+        "is_active": True,
+        "fixed": True,
+    },
+    {
+        "username": AUTH_VIEWER_USERNAME,
+        "password": AUTH_VIEWER_PASSWORD,
+        "role": "viewer",
+        "display_name": "TIPX Viewer",
+        "is_active": True,
+        "fixed": True,
+    },
+]
+
+AUTH_FIXED_USERNAMES: List[str] = [
+    AUTH_ADMIN_USERNAME,
+    AUTH_USER_USERNAME,
+    AUTH_VIEWER_USERNAME,
+]
+
+
+# ------------------------------------------------------------
+# Password hash
+# ------------------------------------------------------------
+
+PASSWORD_HASH_SCHEME: str = os.getenv("PASSWORD_HASH_SCHEME", "pbkdf2_sha256")
+PASSWORD_HASH_ITERATIONS: int = int(os.getenv("PASSWORD_HASH_ITERATIONS", "260000"))
+PASSWORD_HASH_SALT_BYTES: int = int(os.getenv("PASSWORD_HASH_SALT_BYTES", "16"))
+PASSWORD_HASH_PEPPER: str = os.getenv("PASSWORD_HASH_PEPPER", "")
+
+
+# ------------------------------------------------------------
+# JWT
+# ------------------------------------------------------------
+
+JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", os.getenv("TIPX_JWT_SECRET_KEY", SECRET_KEY))
+JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "480"))
+JWT_ISSUER: str = os.getenv("JWT_ISSUER", APP_SHORT_NAME)
+JWT_AUDIENCE: str = os.getenv("JWT_AUDIENCE", "tipx-web")
+JWT_CLOCK_SKEW_SECONDS: int = int(os.getenv("JWT_CLOCK_SKEW_SECONDS", "30"))
+
+AUTH_TOKEN_TYPE: str = "Bearer"
+AUTH_HEADER_NAME: str = "Authorization"
+AUTH_TOKEN_PREFIX: str = "Bearer "
+AUTH_USER_STATE_KEY: str = "user"
+
+
+# ------------------------------------------------------------
+# Backend API guard
+# ------------------------------------------------------------
+
+AUTH_PROTECT_INTERNAL_API: bool = True
+AUTH_PROTECTED_API_PREFIX: str = API_PREFIX
+AUTH_SKIP_OPTIONS_REQUEST: bool = True
+
+AUTH_PUBLIC_EXACT_PATHS: List[str] = [
+    "/",
+    "/health",
+    "/status",
+    "/favicon.ico",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    f"{API_PREFIX}/health",
+    f"{API_PREFIX}/status",
+    f"{API_PREFIX}/auth/login",
+    f"{API_PREFIX}/auth/status",
+]
+
+AUTH_PUBLIC_PREFIXES: List[str] = [
+    "/static",
+    "/assets",
+    "/frontend",
+    "/external_viewer",
+    f"{PUBLIC_API_PREFIX}",
+    f"{API_PREFIX}/public",
+    f"{API_PREFIX}{PUBLIC_API_PREFIX}",
+]
+
+AUTH_AUTHENTICATED_EXACT_PATHS: List[str] = [
+    f"{API_PREFIX}/auth/me",
+    f"{API_PREFIX}/auth/logout",
+]
+
+AUTH_DEFAULT_READ_ROLES: List[str] = [
+    "admin",
+    "user",
+    "viewer",
+]
+
+AUTH_DEFAULT_WRITE_ROLES: List[str] = [
+    "admin",
+    "user",
+]
+
+AUTH_DEFAULT_ADMIN_ROLES: List[str] = [
+    "admin",
+]
+
+AUTH_ROLE_ROUTE_RULES: List[Dict[str, Any]] = [
+    {
+        "name": "auth_me",
+        "methods": ["GET"],
+        "path_prefix": f"{API_PREFIX}/auth/me",
+        "roles": ["admin", "user", "viewer"],
+        "audit_action": "auth_me",
+    },
+    {
+        "name": "auth_logout",
+        "methods": ["POST"],
+        "path_prefix": f"{API_PREFIX}/auth/logout",
+        "roles": ["admin", "user", "viewer"],
+        "audit_action": "logout",
+    },
+    {
+        "name": "admin_api",
+        "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+        "path_prefix": f"{API_PREFIX}/admin",
+        "roles": ["admin"],
+        "audit_action": "admin_api",
+    },
+    {
+        "name": "cache_api",
+        "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+        "path_prefix": f"{API_PREFIX}/cache",
+        "roles": ["admin"],
+        "audit_action": "cache_admin",
+    },
+    {
+        "name": "upload_clear",
+        "methods": ["POST", "DELETE"],
+        "path_prefix": f"{API_PREFIX}/upload/entities/clear",
+        "roles": ["admin"],
+        "audit_action": "clear_upload",
+    },
+    {
+        "name": "upload_delete",
+        "methods": ["DELETE"],
+        "path_prefix": f"{API_PREFIX}/upload",
+        "roles": ["admin"],
+        "audit_action": "delete_upload",
+    },
+    {
+        "name": "upload_entities",
+        "methods": ["POST"],
+        "path_prefix": f"{API_PREFIX}/upload/entities",
+        "roles": ["admin", "user"],
+        "audit_action": "upload_entities",
+    },
+    {
+        "name": "package_generate",
+        "methods": ["POST"],
+        "path_prefix": f"{API_PREFIX}/packages/generate",
+        "roles": ["admin", "user"],
+        "audit_action": "package_generate",
+    },
+    {
+        "name": "package_preview",
+        "methods": ["POST"],
+        "path_prefix": f"{API_PREFIX}/packages/preview",
+        "roles": ["admin", "user"],
+        "audit_action": "package_preview",
+    },
+    {
+        "name": "package_manage",
+        "methods": ["POST", "PUT", "PATCH", "DELETE"],
+        "path_prefix": f"{API_PREFIX}/packages",
+        "roles": ["admin", "user"],
+        "audit_action": "package_manage",
+    },
+    {
+        "name": "filter_apply",
+        "methods": ["POST"],
+        "path_prefix": f"{API_PREFIX}/filter",
+        "roles": ["admin", "user", "viewer"],
+        "audit_action": "filter_apply",
+    },
+    {
+        "name": "internal_read_api",
+        "methods": ["GET"],
+        "path_prefix": f"{API_PREFIX}",
+        "roles": ["admin", "user", "viewer"],
+        "audit_action": "read_api",
+    },
+    {
+        "name": "internal_write_api",
+        "methods": ["POST", "PUT", "PATCH"],
+        "path_prefix": f"{API_PREFIX}",
+        "roles": ["admin", "user"],
+        "audit_action": "write_api",
+    },
+    {
+        "name": "internal_delete_api",
+        "methods": ["DELETE"],
+        "path_prefix": f"{API_PREFIX}",
+        "roles": ["admin"],
+        "audit_action": "delete_api",
+    },
+]
+
+
+# ------------------------------------------------------------
+# Frontend route guard contract
+# ------------------------------------------------------------
+
+FRONTEND_AUTH_ENABLED: bool = AUTH_ENABLED
+FRONTEND_LOGIN_PATH: str = "/login"
+FRONTEND_DEFAULT_AFTER_LOGIN_PATH: str = "/dashboard"
+
+FRONTEND_ROLE_HOME_PATHS: Dict[str, str] = {
+    "admin": "/admin",
+    "user": "/dashboard",
+    "viewer": "/dashboard",
+}
+
+FRONTEND_PUBLIC_ROUTES: List[str] = [
+    "/login",
+    "/public",
+    "/external-viewer",
+]
+
+FRONTEND_ROLE_ROUTE_RULES: List[Dict[str, Any]] = [
+    {
+        "path_prefix": "/admin",
+        "roles": ["admin"],
+    },
+    {
+        "path_prefix": "/settings",
+        "roles": ["admin"],
+    },
+    {
+        "path_prefix": "/cache",
+        "roles": ["admin"],
+    },
+    {
+        "path_prefix": "/upload",
+        "roles": ["admin", "user"],
+    },
+    {
+        "path_prefix": "/packages/generate",
+        "roles": ["admin", "user"],
+    },
+    {
+        "path_prefix": "/dashboard",
+        "roles": ["admin", "user", "viewer"],
+    },
+    {
+        "path_prefix": "/map",
+        "roles": ["admin", "user", "viewer"],
+    },
+    {
+        "path_prefix": "/companies",
+        "roles": ["admin", "user", "viewer"],
+    },
+    {
+        "path_prefix": "/policy",
+        "roles": ["admin", "user", "viewer"],
+    },
+    {
+        "path_prefix": "/linkage",
+        "roles": ["admin", "user", "viewer"],
+    },
+    {
+        "path_prefix": "/flood",
+        "roles": ["admin", "user", "viewer"],
+    },
+]
+
+
+# ------------------------------------------------------------
+# Audit log
+# ------------------------------------------------------------
+
+AUDIT_ENABLED: bool = os.getenv("AUDIT_ENABLED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+}
+
+AUDIT_LOG_SUCCESS_READS: bool = os.getenv("AUDIT_LOG_SUCCESS_READS", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+}
+
+AUDIT_LOG_REQUEST_BODY: bool = False
+AUDIT_LOG_RESPONSE_BODY: bool = False
+AUDIT_LOG_IP_ADDRESS: bool = True
+AUDIT_LOG_USER_AGENT: bool = True
+
+AUDIT_ACTION_PATH_RULES: List[Dict[str, Any]] = [
+    {
+        "action": "login_success",
+        "methods": ["POST"],
+        "path_prefix": f"{API_PREFIX}/auth/login",
+    },
+    {
+        "action": "logout",
+        "methods": ["POST"],
+        "path_prefix": f"{API_PREFIX}/auth/logout",
+    },
+    {
+        "action": "cache_rebuild",
+        "methods": ["POST"],
+        "path_prefix": f"{API_PREFIX}/cache/rebuild",
+    },
+    {
+        "action": "cache_clear",
+        "methods": ["POST"],
+        "path_prefix": f"{API_PREFIX}/cache/clear",
+    },
+    {
+        "action": "upload_entities",
+        "methods": ["POST"],
+        "path_prefix": f"{API_PREFIX}/upload/entities",
+    },
+    {
+        "action": "clear_upload",
+        "methods": ["POST", "DELETE"],
+        "path_prefix": f"{API_PREFIX}/upload/entities/clear",
+    },
+    {
+        "action": "package_preview",
+        "methods": ["POST"],
+        "path_prefix": f"{API_PREFIX}/packages/preview",
+    },
+    {
+        "action": "package_generate",
+        "methods": ["POST"],
+        "path_prefix": f"{API_PREFIX}/packages/generate",
+    },
+    {
+        "action": "package_download",
+        "methods": ["GET"],
+        "path_prefix": f"{API_PREFIX}/packages",
+        "path_contains": "/download",
+    },
+    {
+        "action": "admin_errors_view",
+        "methods": ["GET"],
+        "path_prefix": f"{API_PREFIX}/admin/errors",
+    },
+    {
+        "action": "admin_data_quality_view",
+        "methods": ["GET"],
+        "path_prefix": f"{API_PREFIX}/admin/data-quality",
+    },
+]
 
 
 # ============================================================
@@ -1541,6 +2767,97 @@ ENABLE_DATA_QUALITY_LOG: bool = True
 # 21) DATACLASS CONFIG OBJECTS
 # ============================================================
 
+@dataclass(frozen=True)
+class AuthMySQLConfig:
+    host: str = MYSQL_HOST
+    port: int = MYSQL_PORT
+    user: str = MYSQL_USER
+    password: str = MYSQL_PASSWORD
+    database: str = MYSQL_DATABASE
+    charset: str = MYSQL_CHARSET
+    connect_timeout_seconds: int = MYSQL_CONNECT_TIMEOUT_SECONDS
+    users_table: str = AUTH_MYSQL_TABLE_USERS
+    audit_logs_table: str = AUTH_MYSQL_TABLE_AUDIT_LOGS
+    auto_create: bool = AUTH_DB_AUTO_CREATE
+    auto_seed: bool = AUTH_DB_AUTO_SEED
+
+
+@dataclass(frozen=True)
+class AuthJWTConfig:
+    secret_key: str = JWT_SECRET_KEY
+    algorithm: str = JWT_ALGORITHM
+    expire_minutes: int = JWT_EXPIRE_MINUTES
+    issuer: str = JWT_ISSUER
+    audience: str = JWT_AUDIENCE
+    clock_skew_seconds: int = JWT_CLOCK_SKEW_SECONDS
+    token_type: str = AUTH_TOKEN_TYPE
+    header_name: str = AUTH_HEADER_NAME
+
+
+@dataclass(frozen=True)
+class AuthPasswordConfig:
+    hash_scheme: str = PASSWORD_HASH_SCHEME
+    iterations: int = PASSWORD_HASH_ITERATIONS
+    salt_bytes: int = PASSWORD_HASH_SALT_BYTES
+    pepper: str = PASSWORD_HASH_PEPPER
+
+
+@dataclass(frozen=True)
+class AuthRouteGuardConfig:
+    protect_internal_api: bool = AUTH_PROTECT_INTERNAL_API
+    protected_api_prefix: str = AUTH_PROTECTED_API_PREFIX
+    skip_options_request: bool = AUTH_SKIP_OPTIONS_REQUEST
+    public_exact_paths: List[str] = field(default_factory=lambda: list(AUTH_PUBLIC_EXACT_PATHS))
+    public_prefixes: List[str] = field(default_factory=lambda: list(AUTH_PUBLIC_PREFIXES))
+    authenticated_exact_paths: List[str] = field(default_factory=lambda: list(AUTH_AUTHENTICATED_EXACT_PATHS))
+    default_read_roles: List[str] = field(default_factory=lambda: list(AUTH_DEFAULT_READ_ROLES))
+    default_write_roles: List[str] = field(default_factory=lambda: list(AUTH_DEFAULT_WRITE_ROLES))
+    default_admin_roles: List[str] = field(default_factory=lambda: list(AUTH_DEFAULT_ADMIN_ROLES))
+    role_route_rules: List[Dict[str, Any]] = field(default_factory=lambda: list(AUTH_ROLE_ROUTE_RULES))
+
+
+@dataclass(frozen=True)
+class AuthFrontendConfig:
+    enabled: bool = FRONTEND_AUTH_ENABLED
+    login_path: str = FRONTEND_LOGIN_PATH
+    default_after_login_path: str = FRONTEND_DEFAULT_AFTER_LOGIN_PATH
+    role_home_paths: Dict[str, str] = field(default_factory=lambda: dict(FRONTEND_ROLE_HOME_PATHS))
+    public_routes: List[str] = field(default_factory=lambda: list(FRONTEND_PUBLIC_ROUTES))
+    role_route_rules: List[Dict[str, Any]] = field(default_factory=lambda: list(FRONTEND_ROLE_ROUTE_RULES))
+
+
+@dataclass(frozen=True)
+class AuditConfig:
+    enabled: bool = AUDIT_ENABLED
+    log_success_reads: bool = AUDIT_LOG_SUCCESS_READS
+    log_request_body: bool = AUDIT_LOG_REQUEST_BODY
+    log_response_body: bool = AUDIT_LOG_RESPONSE_BODY
+    log_ip_address: bool = AUDIT_LOG_IP_ADDRESS
+    log_user_agent: bool = AUDIT_LOG_USER_AGENT
+    action_path_rules: List[Dict[str, Any]] = field(default_factory=lambda: list(AUDIT_ACTION_PATH_RULES))
+
+
+@dataclass(frozen=True)
+class AuthConfig:
+    enabled: bool = AUTH_ENABLED
+    fixed_users_enabled: bool = AUTH_FIXED_USERS_ENABLED
+    allow_registration: bool = AUTH_ALLOW_REGISTRATION
+    allow_admin_create_user: bool = AUTH_ALLOW_ADMIN_CREATE_USER
+    allow_forgot_password: bool = AUTH_ALLOW_FORGOT_PASSWORD
+    allow_refresh_token: bool = AUTH_ALLOW_REFRESH_TOKEN
+    allow_oauth: bool = AUTH_ALLOW_OAUTH
+    allow_api_key: bool = AUTH_ALLOW_API_KEY
+    allow_session_table: bool = AUTH_ALLOW_SESSION_TABLE
+    roles: List[str] = field(default_factory=lambda: list(AUTH_ROLES))
+    role_level: Dict[str, int] = field(default_factory=lambda: dict(AUTH_ROLE_LEVEL))
+    fixed_users: List[Dict[str, Any]] = field(default_factory=lambda: list(AUTH_FIXED_USERS))
+    fixed_usernames: List[str] = field(default_factory=lambda: list(AUTH_FIXED_USERNAMES))
+    mysql: AuthMySQLConfig = field(default_factory=AuthMySQLConfig)
+    jwt: AuthJWTConfig = field(default_factory=AuthJWTConfig)
+    password: AuthPasswordConfig = field(default_factory=AuthPasswordConfig)
+    route_guard: AuthRouteGuardConfig = field(default_factory=AuthRouteGuardConfig)
+    frontend: AuthFrontendConfig = field(default_factory=AuthFrontendConfig)
+    audit: AuditConfig = field(default_factory=AuditConfig)
 @dataclass(frozen=True)
 class PathConfig:
     project_root: Path = PROJECT_ROOT
@@ -1563,12 +2880,29 @@ class PathConfig:
     export_history_dir: Path = EXPORT_HISTORY_DIR
     data_quality_output_dir: Path = DATA_QUALITY_OUTPUT_DIR
 
+    flood_pipeline_base_dir: Path = FLOOD_PIPELINE_BASE_DIR
+    pipeline_base_dir: Path = PIPELINE_BASE_DIR
+    pipeline_output_dir: Path = PIPELINE_OUTPUT_DIR
+
     flood_output_dir: Path = FLOOD_OUTPUT_DIR
+    flood_excel_database_dir: Path = FLOOD_EXCEL_DATABASE_DIR
+    excel_database_dir: Path = EXCEL_DATABASE_DIR
     flood_latest_dir: Path = FLOOD_LATEST_DIR
     flood_master_dir: Path = FLOOD_MASTER_DIR
     flood_history_dir: Path = FLOOD_HISTORY_DIR
     flood_latest_database_path: Path = FLOOD_LATEST_DATABASE_PATH
     flood_master_database_path: Path = FLOOD_MASTER_DATABASE_PATH
+
+    flood_prediction_dir: Path = FLOOD_PREDICTION_DIR
+    prediction_data_dir: Path = PREDICTION_DATA_DIR
+
+    web_data_dir: Path = WEB_DATA_DIR
+    upload_dir: Path = UPLOAD_DIR
+    upload_entity_dir: Path = UPLOAD_ENTITY_DIR
+    upload_log_dir: Path = UPLOAD_LOG_DIR
+    upload_error_report_dir: Path = UPLOAD_ERROR_REPORT_DIR
+    web_cache_dir: Path = WEB_CACHE_DIR
+    web_log_dir: Path = WEB_LOG_DIR
 
 
 @dataclass(frozen=True)
@@ -1581,6 +2915,11 @@ class SheetConfig:
     flood_latest_sheets: Dict[str, str] = field(default_factory=lambda: dict(FLOOD_LATEST_SHEETS))
     flood_master_sheets: Dict[str, str] = field(default_factory=lambda: dict(FLOOD_MASTER_SHEETS))
     flood_history_sheets: Dict[str, str] = field(default_factory=lambda: dict(FLOOD_HISTORY_SHEETS))
+    latest_sheets: Dict[str, str] = field(default_factory=lambda: dict(LATEST_SHEETS))
+    master_sheets: Dict[str, str] = field(default_factory=lambda: dict(MASTER_SHEETS))
+    history_sheets: Dict[str, str] = field(default_factory=lambda: dict(HISTORY_SHEETS))
+    history_dirs: Dict[str, Path] = field(default_factory=lambda: dict(HISTORY_DIRS))
+    history_file_prefixes: Dict[str, str] = field(default_factory=lambda: dict(HISTORY_FILE_PREFIXES))
 
 
 @dataclass(frozen=True)
@@ -1607,6 +2946,7 @@ class CacheConfig:
     enabled: bool = CACHE_ENABLED
     ttl_seconds: Dict[str, int] = field(default_factory=lambda: dict(CACHE_TTL_SECONDS))
     cache_files: Dict[str, str] = field(default_factory=lambda: dict(CACHE_FILES))
+    cache_registry: Dict[str, Dict[str, Any]] = field(default_factory=lambda: dict(CACHE_REGISTRY))
     metadata_filename: str = CACHE_METADATA_FILENAME
 
 # ============================================================
@@ -1690,6 +3030,7 @@ class AppConfig:
     map: MapConfig = field(default_factory=MapConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
     package: PackageConfig = field(default_factory=PackageConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
 
 
 CONFIG = AppConfig()
@@ -1711,29 +3052,373 @@ REQUIRED_DIRECTORIES: List[Path] = [
     PACKAGE_ZIP_DIR,
     EXPORT_HISTORY_DIR,
     DATA_QUALITY_OUTPUT_DIR,
+
+    WEB_DATA_DIR,
+    UPLOAD_DIR,
+    UPLOAD_ENTITY_DIR,
+    UPLOAD_LOG_DIR,
+    UPLOAD_ERROR_REPORT_DIR,
+    WEB_CACHE_DIR,
+    WEB_LOG_DIR,
+
+    FLOOD_OUTPUT_DIR,
+    FLOOD_EXCEL_DATABASE_DIR,
+    FLOOD_LATEST_DIR,
+    FLOOD_MASTER_DIR,
+    FLOOD_HISTORY_DIR,
+    FLOOD_HISTORY_RAINFALL_DIR,
+    FLOOD_HISTORY_RAIN15D_DIR,
+    FLOOD_HISTORY_RAIN_YEARLY_DIR,
+    FLOOD_HISTORY_WATERLEVEL_DIR,
+    FLOOD_HISTORY_LARGE_DAM_DIR,
+    FLOOD_HISTORY_MEDIUM_DAM_DIR,
+    FLOOD_HISTORY_ALL_LONG_DIR,
+    FLOOD_PREDICTION_DIR,
 ]
 
 
-def ensure_directories() -> List[str]:
+def ensure_directories() -> None:
     """
-    สร้าง folder พื้นฐานที่ระบบ TIPX ต้องใช้
+    สร้าง directory พื้นฐานของระบบ
 
-    Return:
-        List[str]: รายชื่อ folder ที่ถูกสร้างหรือมีอยู่แล้ว
+    เรียกตอน import config เพื่อให้ service อื่นใช้ path ได้ทันที
     """
 
-    created_or_existing: List[str] = []
+    directories = [
+        INPUT_DIR,
+        CACHE_DIR,
+        OUTPUT_DIR,
+        LOG_DIR,
+        EXPORT_DIR,
+        PACKAGE_DIR,
+        PACKAGE_ZIP_DIR,
+        EXPORT_HISTORY_DIR,
+        DATA_QUALITY_OUTPUT_DIR,
+        POLICY_INPUT_DIR,
+        LINKAGE_INPUT_DIR,
+        FLOOD_OUTPUT_DIR,
+        FLOOD_EXCEL_DATABASE_DIR,
+        FLOOD_LATEST_DIR,
+        FLOOD_MASTER_DIR,
+        FLOOD_HISTORY_DIR,
+        FLOOD_HISTORY_RAINFALL_DIR,
+        FLOOD_HISTORY_RAIN15D_DIR,
+        FLOOD_HISTORY_RAIN_YEARLY_DIR,
+        FLOOD_HISTORY_WATERLEVEL_DIR,
+        FLOOD_HISTORY_DAM_DIR,
+        FLOOD_HISTORY_LARGE_DAM_DIR,
+        FLOOD_HISTORY_MEDIUM_DAM_DIR,
+        FLOOD_HISTORY_ALL_LONG_DIR,
+        FLOOD_PREDICTION_DIR,
+        WEB_DATA_DIR,
+        UPLOAD_DIR,
+        UPLOAD_ENTITY_DIR,
+        UPLOAD_LOG_DIR,
+        UPLOAD_ERROR_REPORT_DIR,
+        WEB_CACHE_DIR,
+        WEB_LOG_DIR,
+    ]
 
-    for directory in REQUIRED_DIRECTORIES:
+    for directory in directories:
         directory.mkdir(parents=True, exist_ok=True)
-        created_or_existing.append(str(directory))
-
-    return created_or_existing
 
 
 # ============================================================
 # 23) PATH HELPERS
 # ============================================================
+
+def validate_data_source_config() -> Dict[str, Any]:
+    errors: List[Dict[str, Any]] = []
+    warnings: List[Dict[str, Any]] = []
+
+    if USE_EXCEL_DATA_SOURCE and USE_MYSQL_DATA_SOURCE:
+        errors.append(
+            {
+                "code": "data_source_conflict",
+                "message": "เปิด USE_EXCEL_DATA_SOURCE และ USE_MYSQL_DATA_SOURCE พร้อมกันไม่ได้",
+                "excel_enabled": USE_EXCEL_DATA_SOURCE,
+                "mysql_enabled": USE_MYSQL_DATA_SOURCE,
+            }
+        )
+
+    if not USE_EXCEL_DATA_SOURCE and not USE_MYSQL_DATA_SOURCE:
+        errors.append(
+            {
+                "code": "data_source_missing",
+                "message": "ต้องเปิด data source อย่างน้อย 1 ตัว",
+                "excel_enabled": USE_EXCEL_DATA_SOURCE,
+                "mysql_enabled": USE_MYSQL_DATA_SOURCE,
+            }
+        )
+
+    if USE_MYSQL_DATA_SOURCE:
+        warnings.append(
+            {
+                "code": "mysql_not_implemented",
+                "message": DATA_SOURCE_NOT_IMPLEMENTED_MESSAGE,
+                "mysql_enabled": USE_MYSQL_DATA_SOURCE,
+            }
+        )
+
+    active_source = None
+
+    if USE_EXCEL_DATA_SOURCE and not USE_MYSQL_DATA_SOURCE:
+        active_source = DATA_SOURCE_EXCEL
+
+    if USE_MYSQL_DATA_SOURCE and not USE_EXCEL_DATA_SOURCE:
+        active_source = DATA_SOURCE_MYSQL
+
+    status = "ok"
+
+    if warnings:
+        status = "warning"
+
+    if errors:
+        status = "error"
+
+    return {
+        "status": status,
+        "active_source": active_source,
+        "excel_enabled": USE_EXCEL_DATA_SOURCE,
+        "mysql_enabled": USE_MYSQL_DATA_SOURCE,
+        "mysql_implemented": False,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+def get_active_data_source() -> str:
+    validation = validate_data_source_config()
+
+    if validation["status"] == "error":
+        return "invalid"
+
+    return str(validation.get("active_source") or "invalid")
+
+
+def normalize_history_data_type(data_type: Any) -> str:
+    text = str(data_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+    aliases = {
+        "rain": "rainfall",
+        "rainfall_daily": "rainfall",
+        "rain_monthly_graph": "rainfall",
+        "rain_15d": "rain15d",
+        "rainfall_15d": "rain15d",
+        "rainfall_yearly": "rain_yearly",
+        "rain_yearly_graph": "rain_yearly",
+        "water": "waterlevel",
+        "waterlevel_history": "waterlevel",
+        "waterlevel_graph_year": "waterlevel",
+        "large-dam": "large_dam",
+        "dam_large": "large_dam",
+        "dam_yearly_graph": "large_dam",
+        "medium-dam": "medium_dam",
+        "dam_medium": "medium_dam",
+        "dam_medium_graph": "medium_dam",
+        "all": "all_long",
+        "all_long_history": "all_long",
+    }
+
+    return aliases.get(text, text)
+
+
+def get_history_sheet(data_type: Any) -> str:
+    data_type_key = normalize_history_data_type(data_type)
+    sheet_name = HISTORY_SHEETS.get(data_type_key)
+
+    if sheet_name:
+        return sheet_name
+
+    return HISTORY_SHEETS.get(str(data_type or "").strip(), SHEET_ALL_LONG)
+
+
+def get_history_dir(data_type: Any) -> Path:
+    data_type_key = normalize_history_data_type(data_type)
+    history_dir = HISTORY_DIRS.get(data_type_key)
+
+    if history_dir:
+        return history_dir
+
+    return FLOOD_HISTORY_DIR
+
+
+def get_history_file_prefix(data_type: Any) -> str:
+    data_type_key = normalize_history_data_type(data_type)
+    return HISTORY_FILE_PREFIXES.get(data_type_key, data_type_key or "history")
+
+
+def get_history_file(data_type: Any, year: int | str, month: int | str) -> Path:
+    data_type_key = normalize_history_data_type(data_type)
+    history_dir = get_history_dir(data_type_key)
+    prefix = get_history_file_prefix(data_type_key)
+
+    try:
+        safe_year = int(year)
+    except Exception:
+        safe_year = 0
+
+    try:
+        safe_month = int(month)
+    except Exception:
+        safe_month = 0
+
+    if safe_year <= 0:
+        safe_year_text = str(year).strip()
+    else:
+        safe_year_text = f"{safe_year:04d}"
+
+    if safe_month <= 0:
+        safe_month_text = str(month).strip()
+    else:
+        safe_month_text = f"{safe_month:02d}"
+
+    return history_dir / f"{prefix}_{safe_year_text}_{safe_month_text}.xlsx"
+
+
+def find_latest_prediction_file() -> Optional[Path]:
+    if not FLOOD_PREDICTION_DIR.exists():
+        return None
+
+    files = sorted(
+        [
+            path
+            for path in FLOOD_PREDICTION_DIR.glob(PREDICTION_FILE_GLOB)
+            if path.is_file()
+        ],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+
+    if not files:
+        return None
+
+    return files[0]
+
+
+def allowed_upload_file(filename: str) -> bool:
+    suffix = Path(str(filename or "")).suffix.lower()
+    return suffix in set(UPLOAD_ALLOWED_EXTENSIONS)
+
+def get_auth_config_summary() -> Dict[str, Any]:
+    """
+    คืน auth config แบบ safe ไม่เปิด password / secret / token
+    """
+
+    return {
+        "enabled": AUTH_ENABLED,
+        "fixed_users_enabled": AUTH_FIXED_USERS_ENABLED,
+        "roles": list(AUTH_ROLES),
+        "fixed_usernames": list(AUTH_FIXED_USERNAMES),
+        "mysql": {
+            "host": MYSQL_HOST,
+            "port": MYSQL_PORT,
+            "user": MYSQL_USER,
+            "database": MYSQL_DATABASE,
+            "charset": MYSQL_CHARSET,
+            "users_table": AUTH_MYSQL_TABLE_USERS,
+            "audit_logs_table": AUTH_MYSQL_TABLE_AUDIT_LOGS,
+            "password_configured": bool(MYSQL_PASSWORD),
+            "auto_create": AUTH_DB_AUTO_CREATE,
+            "auto_seed": AUTH_DB_AUTO_SEED,
+        },
+        "jwt": {
+            "algorithm": JWT_ALGORITHM,
+            "expire_minutes": JWT_EXPIRE_MINUTES,
+            "issuer": JWT_ISSUER,
+            "audience": JWT_AUDIENCE,
+            "secret_configured": bool(JWT_SECRET_KEY),
+        },
+        "route_guard": {
+            "protect_internal_api": AUTH_PROTECT_INTERNAL_API,
+            "protected_api_prefix": AUTH_PROTECTED_API_PREFIX,
+            "public_exact_paths": list(AUTH_PUBLIC_EXACT_PATHS),
+            "public_prefixes": list(AUTH_PUBLIC_PREFIXES),
+            "role_route_rules": list(AUTH_ROLE_ROUTE_RULES),
+        },
+        "frontend": {
+            "enabled": FRONTEND_AUTH_ENABLED,
+            "login_path": FRONTEND_LOGIN_PATH,
+            "default_after_login_path": FRONTEND_DEFAULT_AFTER_LOGIN_PATH,
+            "role_home_paths": dict(FRONTEND_ROLE_HOME_PATHS),
+            "public_routes": list(FRONTEND_PUBLIC_ROUTES),
+            "role_route_rules": list(FRONTEND_ROLE_ROUTE_RULES),
+        },
+        "audit": {
+            "enabled": AUDIT_ENABLED,
+            "log_success_reads": AUDIT_LOG_SUCCESS_READS,
+            "action_path_rules": list(AUDIT_ACTION_PATH_RULES),
+        },
+    }
+
+def get_supported_config() -> Dict[str, Any]:
+    return get_config_summary()
+
+
+def get_runtime_paths() -> Dict[str, Any]:
+    paths = get_system_path_status()
+    latest_prediction_file = find_latest_prediction_file()
+
+    paths.update(
+        {
+            "master_excel_file": str(MASTER_EXCEL_FILE),
+            "latest_excel_file": str(LATEST_EXCEL_FILE),
+            "history_excel_dir": str(HISTORY_EXCEL_DIR),
+            "prediction_data_dir": str(PREDICTION_DATA_DIR),
+            "latest_prediction_file": str(latest_prediction_file) if latest_prediction_file else None,
+            "latest_prediction_file_exists": latest_prediction_file.exists() if latest_prediction_file else False,
+            "latest_prediction_file_modified_time": (
+                latest_prediction_file.stat().st_mtime if latest_prediction_file else None
+            ),
+            "upload_entity_dir": str(UPLOAD_ENTITY_DIR),
+        }
+    )
+
+    return paths
+
+
+def get_path_status() -> Dict[str, bool]:
+    return {
+        "project_root_exists": PROJECT_ROOT.exists(),
+        "backend_dir_exists": BACKEND_DIR.exists(),
+        "frontend_dir_exists": FRONTEND_DIR.exists(),
+        "input_dir_exists": INPUT_DIR.exists(),
+        "cache_dir_exists": CACHE_DIR.exists(),
+        "output_dir_exists": OUTPUT_DIR.exists(),
+        "package_dir_exists": PACKAGE_DIR.exists(),
+        "flood_output_dir_exists": FLOOD_OUTPUT_DIR.exists(),
+        "flood_excel_database_dir_exists": FLOOD_EXCEL_DATABASE_DIR.exists(),
+        "master_excel_file_exists": MASTER_EXCEL_FILE.exists(),
+        "latest_excel_file_exists": LATEST_EXCEL_FILE.exists(),
+        "history_excel_dir_exists": HISTORY_EXCEL_DIR.exists(),
+        "prediction_data_dir_exists": PREDICTION_DATA_DIR.exists(),
+        "upload_entity_dir_exists": UPLOAD_ENTITY_DIR.exists(),
+        "web_log_dir_exists": WEB_LOG_DIR.exists(),
+        "auth_enabled": AUTH_ENABLED,
+        "auth_mysql_host_configured": bool(MYSQL_HOST),
+        "auth_mysql_port_configured": bool(MYSQL_PORT),
+        "auth_mysql_user_configured": bool(MYSQL_USER),
+        "auth_mysql_password_configured": bool(MYSQL_PASSWORD),
+        "auth_mysql_database_configured": bool(MYSQL_DATABASE),
+    }
+
+def validate_startup_paths() -> List[str]:
+    warnings: List[str] = []
+    validation = validate_basic_config()
+
+    for item in validation.get("warnings", []):
+        code = item.get("code", "warning")
+        message = item.get("message", "")
+        path = item.get("path")
+        warnings.append(f"{code}: {message}" + (f" ({path})" if path else ""))
+
+    for item in validation.get("errors", []):
+        code = item.get("code", "error")
+        message = item.get("message", "")
+        path = item.get("path")
+        warnings.append(f"{code}: {message}" + (f" ({path})" if path else ""))
+
+    return warnings
 
 def get_cache_path(cache_key: str) -> Path:
     """
@@ -1748,10 +3433,18 @@ def get_cache_path(cache_key: str) -> Path:
             path เต็มของ cache file
     """
 
-    filename = CACHE_FILES.get(cache_key)
+    normalized_key = str(cache_key or "").strip()
+
+    for registry_key, registry_item in CACHE_REGISTRY.items():
+        aliases = registry_item.get("aliases", [])
+        if normalized_key == registry_key or normalized_key in aliases:
+            filename = registry_item.get("filename") or CACHE_FILES.get(registry_key)
+            return CACHE_DIR / str(filename)
+
+    filename = CACHE_FILES.get(normalized_key)
 
     if not filename:
-        safe_key = str(cache_key).strip().replace("/", "_").replace("\\", "_")
+        safe_key = normalized_key.replace("/", "_").replace("\\", "_")
         filename = f"{safe_key}.json"
 
     return CACHE_DIR / filename
@@ -1817,6 +3510,8 @@ def get_input_file_status() -> Dict[str, Any]:
     - data_quality.py
     """
 
+    latest_prediction_file = find_latest_prediction_file()
+
     return {
         "policy": {
             "expected_path": str(POLICY_INPUT_PATH),
@@ -1828,15 +3523,36 @@ def get_input_file_status() -> Dict[str, Any]:
             "exists": LINKAGE_INPUT_PATH.exists(),
             "filename": LINKAGE_INPUT_FILENAME,
         },
+        "data_source": validate_data_source_config(),
         "flood": {
             "output_dir": str(FLOOD_OUTPUT_DIR),
             "output_dir_exists": FLOOD_OUTPUT_DIR.exists(),
+            "pipeline_base_dir": str(FLOOD_PIPELINE_BASE_DIR),
+            "pipeline_base_dir_exists": FLOOD_PIPELINE_BASE_DIR.exists(),
+            "pipeline_output_dir": str(PIPELINE_OUTPUT_DIR),
+            "pipeline_output_dir_exists": PIPELINE_OUTPUT_DIR.exists(),
+            "excel_database_dir": str(FLOOD_EXCEL_DATABASE_DIR),
+            "excel_database_dir_exists": FLOOD_EXCEL_DATABASE_DIR.exists(),
             "latest_database_path": str(FLOOD_LATEST_DATABASE_PATH),
             "latest_database_exists": FLOOD_LATEST_DATABASE_PATH.exists(),
             "master_database_path": str(FLOOD_MASTER_DATABASE_PATH),
             "master_database_exists": FLOOD_MASTER_DATABASE_PATH.exists(),
             "history_dir": str(FLOOD_HISTORY_DIR),
             "history_dir_exists": FLOOD_HISTORY_DIR.exists(),
+            "prediction_dir": str(FLOOD_PREDICTION_DIR),
+            "prediction_dir_exists": FLOOD_PREDICTION_DIR.exists(),
+            "latest_prediction_file": str(latest_prediction_file) if latest_prediction_file else None,
+            "latest_prediction_file_exists": latest_prediction_file.exists() if latest_prediction_file else False,
+        },
+        "upload": {
+            "upload_dir": str(UPLOAD_DIR),
+            "upload_dir_exists": UPLOAD_DIR.exists(),
+            "upload_entity_dir": str(UPLOAD_ENTITY_DIR),
+            "upload_entity_dir_exists": UPLOAD_ENTITY_DIR.exists(),
+            "upload_log_dir": str(UPLOAD_LOG_DIR),
+            "upload_log_dir_exists": UPLOAD_LOG_DIR.exists(),
+            "upload_error_report_dir": str(UPLOAD_ERROR_REPORT_DIR),
+            "upload_error_report_dir_exists": UPLOAD_ERROR_REPORT_DIR.exists(),
         },
     }
 
@@ -1857,14 +3573,35 @@ def get_system_path_status() -> Dict[str, Any]:
         "package_dir": str(PACKAGE_DIR),
         "log_dir": str(LOG_DIR),
         "data_quality_output_dir": str(DATA_QUALITY_OUTPUT_DIR),
-    }
 
+        "flood_pipeline_base_dir": str(FLOOD_PIPELINE_BASE_DIR),
+        "pipeline_base_dir": str(PIPELINE_BASE_DIR),
+        "pipeline_output_dir": str(PIPELINE_OUTPUT_DIR),
+        "flood_output_dir": str(FLOOD_OUTPUT_DIR),
+        "flood_excel_database_dir": str(FLOOD_EXCEL_DATABASE_DIR),
+        "excel_database_dir": str(EXCEL_DATABASE_DIR),
+        "flood_latest_dir": str(FLOOD_LATEST_DIR),
+        "flood_master_dir": str(FLOOD_MASTER_DIR),
+        "flood_history_dir": str(FLOOD_HISTORY_DIR),
+        "flood_latest_database_path": str(FLOOD_LATEST_DATABASE_PATH),
+        "flood_master_database_path": str(FLOOD_MASTER_DATABASE_PATH),
+        "flood_prediction_dir": str(FLOOD_PREDICTION_DIR),
+        "prediction_data_dir": str(PREDICTION_DATA_DIR),
+
+        "web_data_dir": str(WEB_DATA_DIR),
+        "upload_dir": str(UPLOAD_DIR),
+        "upload_entity_dir": str(UPLOAD_ENTITY_DIR),
+        "upload_log_dir": str(UPLOAD_LOG_DIR),
+        "upload_error_report_dir": str(UPLOAD_ERROR_REPORT_DIR),
+        "web_cache_dir": str(WEB_CACHE_DIR),
+        "web_log_dir": str(WEB_LOG_DIR),
+    }
 
 def get_config_summary() -> Dict[str, Any]:
     """
     คืน summary config สำหรับ API /api/config
 
-    ไม่คืนค่า secret โดยตรง
+    ไม่คืนค่า secret/password/token โดยตรง
     """
 
     return {
@@ -1877,13 +3614,76 @@ def get_config_summary() -> Dict[str, Any]:
             "debug": DEBUG,
             "testing": TESTING,
             "timezone": DEFAULT_TIMEZONE,
+            "flood_app_name": FLOOD_APP_NAME,
+            "flood_module_enabled": FLOOD_MODULE_ENABLED,
         },
+        "data_source": validate_data_source_config(),
         "api": {
             "api_prefix": API_PREFIX,
             "public_api_prefix": PUBLIC_API_PREFIX,
             "cors_enabled": CORS_ENABLED,
+            "cors_allow_origins": CORS_ALLOW_ORIGINS,
             "json_as_ascii": JSON_AS_ASCII,
             "json_sort_keys": JSON_SORT_KEYS,
+        },
+        "auth": {
+            "enabled": AUTH_ENABLED,
+            "fixed_users_enabled": AUTH_FIXED_USERS_ENABLED,
+            "fixed_usernames": list(AUTH_FIXED_USERNAMES),
+            "roles": list(AUTH_ROLES),
+            "role_level": dict(AUTH_ROLE_LEVEL),
+            "mysql": {
+                "host": MYSQL_HOST,
+                "port": MYSQL_PORT,
+                "user": MYSQL_USER,
+                "database": MYSQL_DATABASE,
+                "charset": MYSQL_CHARSET,
+                "users_table": AUTH_MYSQL_TABLE_USERS,
+                "audit_logs_table": AUTH_MYSQL_TABLE_AUDIT_LOGS,
+                "auto_create": AUTH_DB_AUTO_CREATE,
+                "auto_seed": AUTH_DB_AUTO_SEED,
+                "password_configured": bool(MYSQL_PASSWORD),
+            },
+            "jwt": {
+                "algorithm": JWT_ALGORITHM,
+                "expire_minutes": JWT_EXPIRE_MINUTES,
+                "issuer": JWT_ISSUER,
+                "audience": JWT_AUDIENCE,
+                "clock_skew_seconds": JWT_CLOCK_SKEW_SECONDS,
+                "secret_configured": bool(JWT_SECRET_KEY),
+                "secret_uses_default": JWT_SECRET_KEY == "tipx-development-secret-key-change-in-production",
+            },
+            "password_hash": {
+                "scheme": PASSWORD_HASH_SCHEME,
+                "iterations": PASSWORD_HASH_ITERATIONS,
+                "salt_bytes": PASSWORD_HASH_SALT_BYTES,
+                "pepper_configured": bool(PASSWORD_HASH_PEPPER),
+            },
+            "route_guard": {
+                "protect_internal_api": AUTH_PROTECT_INTERNAL_API,
+                "protected_api_prefix": AUTH_PROTECTED_API_PREFIX,
+                "public_exact_path_count": len(AUTH_PUBLIC_EXACT_PATHS),
+                "public_prefix_count": len(AUTH_PUBLIC_PREFIXES),
+                "role_rule_count": len(AUTH_ROLE_ROUTE_RULES),
+                "skip_options_request": AUTH_SKIP_OPTIONS_REQUEST,
+            },
+            "frontend": {
+                "enabled": FRONTEND_AUTH_ENABLED,
+                "login_path": FRONTEND_LOGIN_PATH,
+                "default_after_login_path": FRONTEND_DEFAULT_AFTER_LOGIN_PATH,
+                "role_home_paths": FRONTEND_ROLE_HOME_PATHS,
+                "public_routes": FRONTEND_PUBLIC_ROUTES,
+                "role_route_rule_count": len(FRONTEND_ROLE_ROUTE_RULES),
+            },
+            "audit": {
+                "enabled": AUDIT_ENABLED,
+                "log_success_reads": AUDIT_LOG_SUCCESS_READS,
+                "log_request_body": AUDIT_LOG_REQUEST_BODY,
+                "log_response_body": AUDIT_LOG_RESPONSE_BODY,
+                "log_ip_address": AUDIT_LOG_IP_ADDRESS,
+                "log_user_agent": AUDIT_LOG_USER_AGENT,
+                "action_rule_count": len(AUDIT_ACTION_PATH_RULES),
+            },
         },
         "paths": get_system_path_status(),
         "inputs": get_input_file_status(),
@@ -1891,6 +3691,21 @@ def get_config_summary() -> Dict[str, Any]:
             "enabled": CACHE_ENABLED,
             "ttl_seconds": CACHE_TTL_SECONDS,
             "cache_dir": str(CACHE_DIR),
+            "cache_registry_keys": sorted(CACHE_REGISTRY.keys()),
+        },
+        "flood": {
+            "latest_sheets": FLOOD_LATEST_SHEETS,
+            "master_sheets": FLOOD_MASTER_SHEETS,
+            "history_sheets": FLOOD_HISTORY_SHEETS,
+            "history_dirs": {key: str(value) for key, value in HISTORY_DIRS.items()},
+            "prediction_file_glob": PREDICTION_FILE_GLOB,
+            "prediction_file_pattern": PREDICTION_FILE_PATTERN,
+        },
+        "upload": {
+            "allowed_extensions": UPLOAD_ALLOWED_EXTENSIONS,
+            "max_content_length_mb": UPLOAD_MAX_CONTENT_LENGTH_MB,
+            "entity_required_columns": ENTITY_REQUIRED_COLUMNS,
+            "entity_supported_columns": ENTITY_SUPPORTED_COLUMNS,
         },
         "dashboard": {
             "default_page": DASHBOARD_DEFAULT_PAGE,
@@ -1903,6 +3718,9 @@ def get_config_summary() -> Dict[str, Any]:
             "default_zoom": DEFAULT_MAP_ZOOM,
             "min_zoom": DEFAULT_MAP_MIN_ZOOM,
             "max_zoom": DEFAULT_MAP_MAX_ZOOM,
+            "default_active_layers": DEFAULT_ACTIVE_LAYERS,
+            "supported_layers": SUPPORTED_LAYERS,
+            "layer_display_names": LAYER_DISPLAY_NAMES,
         },
         "graph": {
             "default_mode": GRAPH_DEFAULT_MODE,
@@ -1919,11 +3737,9 @@ def get_config_summary() -> Dict[str, Any]:
         },
     }
 
-
 # ============================================================
 # 25) VALIDATION HELPERS
 # ============================================================
-
 def validate_basic_config() -> Dict[str, Any]:
     """
     ตรวจ config พื้นฐาน
@@ -1938,6 +3754,14 @@ def validate_basic_config() -> Dict[str, Any]:
 
     errors: List[Dict[str, Any]] = []
     warnings: List[Dict[str, Any]] = []
+
+    data_source_status = validate_data_source_config()
+
+    if data_source_status["status"] == "error":
+        errors.extend(data_source_status.get("errors", []))
+
+    if data_source_status["status"] == "warning":
+        warnings.extend(data_source_status.get("warnings", []))
 
     if not PROJECT_ROOT.exists():
         errors.append(
@@ -1975,32 +3799,207 @@ def validate_basic_config() -> Dict[str, Any]:
             }
         )
 
-    if not FLOOD_OUTPUT_DIR.exists():
-        warnings.append(
-            {
-                "code": "flood_output_dir_missing",
-                "message": "ไม่พบ Flood Output Directory",
-                "path": str(FLOOD_OUTPUT_DIR),
-            }
-        )
+    if USE_EXCEL_DATA_SOURCE:
+        if not FLOOD_OUTPUT_DIR.exists():
+            warnings.append(
+                {
+                    "code": "flood_output_dir_missing",
+                    "message": "ไม่พบ Flood Output Directory",
+                    "path": str(FLOOD_OUTPUT_DIR),
+                }
+            )
 
-    if not FLOOD_LATEST_DATABASE_PATH.exists():
-        warnings.append(
-            {
-                "code": "flood_latest_database_missing",
-                "message": "ไม่พบ latest_database.xlsx",
-                "path": str(FLOOD_LATEST_DATABASE_PATH),
-            }
-        )
+        if not FLOOD_EXCEL_DATABASE_DIR.exists():
+            warnings.append(
+                {
+                    "code": "flood_excel_database_dir_missing",
+                    "message": "ไม่พบ Flood Excel Database Directory",
+                    "path": str(FLOOD_EXCEL_DATABASE_DIR),
+                }
+            )
 
-    if not FLOOD_MASTER_DATABASE_PATH.exists():
-        warnings.append(
-            {
-                "code": "flood_master_database_missing",
-                "message": "ไม่พบ master_database.xlsx",
-                "path": str(FLOOD_MASTER_DATABASE_PATH),
-            }
-        )
+        if not FLOOD_LATEST_DATABASE_PATH.exists():
+            warnings.append(
+                {
+                    "code": "flood_latest_database_missing",
+                    "message": "ไม่พบ latest_database.xlsx",
+                    "path": str(FLOOD_LATEST_DATABASE_PATH),
+                }
+            )
+
+        if not FLOOD_MASTER_DATABASE_PATH.exists():
+            warnings.append(
+                {
+                    "code": "flood_master_database_missing",
+                    "message": "ไม่พบ master_database.xlsx",
+                    "path": str(FLOOD_MASTER_DATABASE_PATH),
+                }
+            )
+
+        if not FLOOD_HISTORY_DIR.exists():
+            warnings.append(
+                {
+                    "code": "flood_history_dir_missing",
+                    "message": "ไม่พบ Flood History Directory",
+                    "path": str(FLOOD_HISTORY_DIR),
+                }
+            )
+
+        if not FLOOD_PREDICTION_DIR.exists():
+            warnings.append(
+                {
+                    "code": "flood_prediction_dir_missing",
+                    "message": "ไม่พบ Flood Prediction Directory",
+                    "path": str(FLOOD_PREDICTION_DIR),
+                }
+            )
+
+    if AUTH_ENABLED:
+        if not MYSQL_HOST:
+            errors.append(
+                {
+                    "code": "auth_mysql_host_missing",
+                    "message": "MYSQL_HOST is required when AUTH_ENABLED=true",
+                }
+            )
+
+        if not MYSQL_PORT:
+            errors.append(
+                {
+                    "code": "auth_mysql_port_missing",
+                    "message": "MYSQL_PORT is required when AUTH_ENABLED=true",
+                }
+            )
+
+        if not MYSQL_USER:
+            errors.append(
+                {
+                    "code": "auth_mysql_user_missing",
+                    "message": "MYSQL_USER is required when AUTH_ENABLED=true",
+                }
+            )
+
+        if not MYSQL_PASSWORD:
+            errors.append(
+                {
+                    "code": "auth_mysql_password_missing",
+                    "message": "MYSQL_PASSWORD is required when AUTH_ENABLED=true",
+                }
+            )
+
+        if not MYSQL_DATABASE:
+            errors.append(
+                {
+                    "code": "auth_mysql_database_missing",
+                    "message": "MYSQL_DATABASE is required when AUTH_ENABLED=true",
+                }
+            )
+
+        if JWT_SECRET_KEY in {
+            "",
+            "tipx-development-secret-key-change-in-production",
+        }:
+            warnings.append(
+                {
+                    "code": "jwt_secret_key_default",
+                    "message": "JWT_SECRET_KEY ยังเป็นค่า default ควรเปลี่ยนใน production",
+                }
+            )
+
+        if SECRET_KEY == "tipx-development-secret-key-change-in-production":
+            warnings.append(
+                {
+                    "code": "secret_key_default",
+                    "message": "TIPX_SECRET_KEY ยังเป็นค่า default ควรเปลี่ยนใน production",
+                }
+            )
+
+        if PASSWORD_HASH_SCHEME != "pbkdf2_sha256":
+            warnings.append(
+                {
+                    "code": "password_hash_scheme_not_default",
+                    "message": f"PASSWORD_HASH_SCHEME={PASSWORD_HASH_SCHEME}",
+                }
+            )
+
+        if PASSWORD_HASH_ITERATIONS < 100000:
+            warnings.append(
+                {
+                    "code": "password_hash_iterations_low",
+                    "message": "PASSWORD_HASH_ITERATIONS ควรมากกว่า 100000",
+                    "actual": PASSWORD_HASH_ITERATIONS,
+                }
+            )
+
+        fixed_user_roles = [
+            item.get("role")
+            for item in AUTH_FIXED_USERS
+            if isinstance(item, dict)
+        ]
+
+        for required_role in AUTH_ROLES:
+            if required_role not in fixed_user_roles:
+                errors.append(
+                    {
+                        "code": "auth_fixed_user_role_missing",
+                        "message": f"ไม่พบ fixed user สำหรับ role={required_role}",
+                    }
+                )
+
+        for fixed_user in AUTH_FIXED_USERS:
+            username = fixed_user.get("username") if isinstance(fixed_user, dict) else ""
+            password = fixed_user.get("password") if isinstance(fixed_user, dict) else ""
+            role = fixed_user.get("role") if isinstance(fixed_user, dict) else ""
+
+            if not username:
+                errors.append(
+                    {
+                        "code": "auth_fixed_username_missing",
+                        "message": f"fixed user role={role} ไม่มี username",
+                    }
+                )
+
+            if not password:
+                errors.append(
+                    {
+                        "code": "auth_fixed_password_missing",
+                        "message": f"fixed user username={username} ไม่มี password",
+                    }
+                )
+
+            if str(password).startswith("change-me-"):
+                warnings.append(
+                    {
+                        "code": "auth_fixed_password_default",
+                        "message": f"password ของ fixed user username={username} ยังเป็นค่า default",
+                    }
+                )
+
+            if role not in AUTH_ROLES:
+                errors.append(
+                    {
+                        "code": "auth_fixed_role_invalid",
+                        "message": f"fixed user username={username} มี role ไม่ถูกต้อง",
+                        "actual": role,
+                        "allowed_roles": AUTH_ROLES,
+                    }
+                )
+
+        if not AUTH_ROLE_ROUTE_RULES:
+            warnings.append(
+                {
+                    "code": "auth_role_route_rules_empty",
+                    "message": "AUTH_ROLE_ROUTE_RULES ว่าง ทำให้ role guard คุม route ไม่ละเอียด",
+                }
+            )
+
+        if AUDIT_ENABLED and not AUTH_MYSQL_TABLE_AUDIT_LOGS:
+            errors.append(
+                {
+                    "code": "audit_table_missing",
+                    "message": "AUTH_MYSQL_TABLE_AUDIT_LOGS is required when AUDIT_ENABLED=true",
+                }
+            )
 
     status = "ok"
 
@@ -2016,17 +4015,15 @@ def validate_basic_config() -> Dict[str, Any]:
         "warnings": warnings,
     }
 
-
 # ============================================================
 # 26) FLASK CONFIG CLASS
 # ============================================================
 
 class FlaskConfig:
     """
-    Config class สำหรับ Flask app
+    Legacy config class สำหรับ Flask transition
 
-    ใช้ใน app.py:
-        app.config.from_object(FlaskConfig)
+    คงไว้ชั่วคราวระหว่าง migration ไป FastAPI
     """
 
     SECRET_KEY = SECRET_KEY
@@ -2040,6 +4037,7 @@ class FlaskConfig:
     MAX_CONTENT_LENGTH = MAX_CONTENT_LENGTH_MB * 1024 * 1024
 
     TIPX_APP_NAME = APP_NAME
+    TIPX_APP_SHORT_NAME = APP_SHORT_NAME
     TIPX_APP_VERSION = APP_VERSION
     TIPX_ENV = DEFAULT_ENV
 
@@ -2055,9 +4053,42 @@ class FlaskConfig:
 
     TIPX_POLICY_INPUT_PATH = str(POLICY_INPUT_PATH)
     TIPX_LINKAGE_INPUT_PATH = str(LINKAGE_INPUT_PATH)
+
+    TIPX_USE_EXCEL_DATA_SOURCE = USE_EXCEL_DATA_SOURCE
+    TIPX_USE_MYSQL_DATA_SOURCE = USE_MYSQL_DATA_SOURCE
+    TIPX_ACTIVE_DATA_SOURCE = get_active_data_source()
+
     TIPX_FLOOD_OUTPUT_DIR = str(FLOOD_OUTPUT_DIR)
+    TIPX_FLOOD_EXCEL_DATABASE_DIR = str(FLOOD_EXCEL_DATABASE_DIR)
+    TIPX_FLOOD_LATEST_DATABASE_PATH = str(FLOOD_LATEST_DATABASE_PATH)
+    TIPX_FLOOD_MASTER_DATABASE_PATH = str(FLOOD_MASTER_DATABASE_PATH)
+    TIPX_FLOOD_HISTORY_DIR = str(FLOOD_HISTORY_DIR)
+    TIPX_FLOOD_PREDICTION_DIR = str(FLOOD_PREDICTION_DIR)
+
+    TIPX_UPLOAD_ENTITY_DIR = str(UPLOAD_ENTITY_DIR)
 
     TIPX_CACHE_ENABLED = CACHE_ENABLED
+
+    TIPX_AUTH_ENABLED = AUTH_ENABLED
+    TIPX_AUTH_FIXED_USERS_ENABLED = AUTH_FIXED_USERS_ENABLED
+    TIPX_AUTH_ROLES = AUTH_ROLES
+    TIPX_AUTH_PUBLIC_EXACT_PATHS = AUTH_PUBLIC_EXACT_PATHS
+    TIPX_AUTH_PUBLIC_PREFIXES = AUTH_PUBLIC_PREFIXES
+    TIPX_AUTH_ROLE_ROUTE_RULES = AUTH_ROLE_ROUTE_RULES
+
+    TIPX_MYSQL_HOST = MYSQL_HOST
+    TIPX_MYSQL_PORT = MYSQL_PORT
+    TIPX_MYSQL_USER = MYSQL_USER
+    TIPX_MYSQL_DATABASE = MYSQL_DATABASE
+    TIPX_MYSQL_CHARSET = MYSQL_CHARSET
+
+    TIPX_JWT_ALGORITHM = JWT_ALGORITHM
+    TIPX_JWT_EXPIRE_MINUTES = JWT_EXPIRE_MINUTES
+    TIPX_JWT_ISSUER = JWT_ISSUER
+    TIPX_JWT_AUDIENCE = JWT_AUDIENCE
+
+    TIPX_AUDIT_ENABLED = AUDIT_ENABLED
+    TIPX_AUDIT_ACTION_PATH_RULES = AUDIT_ACTION_PATH_RULES
 
 
 # ============================================================

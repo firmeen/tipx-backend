@@ -171,6 +171,130 @@ class DatasetSchema:
     supports_search: bool = True
     supports_export: bool = True
 
+@dataclass(frozen=True)
+class DataSourceConfigSchema:
+    active_source: str = "excel"
+    excel_enabled: bool = True
+    mysql_enabled: bool = False
+    excel_paths: Dict[str, str] = dc_field(default_factory=dict)
+    mysql_status: str = "placeholder_not_implemented"
+    validation: Dict[str, Any] = dc_field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FloodLatestRecord:
+    source_type: str
+    source_id: str
+    source_name: str = ""
+    province: str = ""
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    latest_value: Optional[float] = None
+    latest_unit: str = ""
+    risk_level: str = "Unknown"
+    risk_reason: str = ""
+    data_datetime: str = ""
+
+
+@dataclass(frozen=True)
+class FloodPredictionRecord:
+    record_key: str
+    station_name: str = ""
+    station_id: str = ""
+    station_code: str = ""
+    matched_station_id: str = ""
+    matched_station_code: str = ""
+    matched_station_name: str = ""
+    province: str = ""
+    province_model: str = ""
+    base_date: str = ""
+    target_date: str = ""
+    forecast_horizon_day: Optional[int] = None
+    risk_level: str = "Unknown"
+    risk_status: str = ""
+    warning_level: str = ""
+    warning_level_predict: str = ""
+    predicted_level_m: Optional[float] = None
+    latest_value: Optional[float] = None
+    latest_unit: str = ""
+    percent_to_bank: Optional[float] = None
+    from_bank_m: Optional[float] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    map_ready: bool = False
+    focus_level: str = ""
+    focus_fallback: str = ""
+    focus_fallback_reason: str = ""
+
+
+@dataclass(frozen=True)
+class UploadedEntityRecord:
+    upload_id: str = ""
+    entity_id: str = ""
+    entity_type: str = ""
+    entity_name_th: str = ""
+    entity_name_en: str = ""
+    province_name_th: str = ""
+    province: str = ""
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    risk_group: str = "Unknown"
+    risk_level: str = "Unknown"
+    source_type: str = "uploaded_entity"
+    map_ready: bool = False
+    has_location: bool = False
+    is_displayable: bool = False
+    validation_reasons: List[str] = dc_field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class MapLayerPayloadSchema:
+    layer_id: str
+    layer_name: str = ""
+    layer_type: str = "point"
+    visible: bool = True
+    opacity: float = 1.0
+    z_index: int = 0
+    records: List[Dict[str, Any]] = dc_field(default_factory=list)
+    features: Dict[str, Any] = dc_field(default_factory=lambda: {"type": "FeatureCollection", "features": []})
+    feature_collection: Dict[str, Any] = dc_field(default_factory=lambda: {"type": "FeatureCollection", "features": []})
+    total: int = 0
+    record_count: int = 0
+    style: Dict[str, Any] = dc_field(default_factory=dict)
+    meta: Dict[str, Any] = dc_field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DashboardProvinceInsightsSchema:
+    prediction_risk_top3: List[Dict[str, Any]] = dc_field(default_factory=list)
+    rainfall_top5: List[Dict[str, Any]] = dc_field(default_factory=list)
+    waterlevel_top5: List[Dict[str, Any]] = dc_field(default_factory=list)
+    reservoir_top5: List[Dict[str, Any]] = dc_field(default_factory=list)
+    filters: Dict[str, Any] = dc_field(default_factory=dict)
+    generated_at: str = ""
+
+
+@dataclass(frozen=True)
+class CacheRegistryItemSchema:
+    cache_key: str
+    owner_service: str = ""
+    payload_type: str = "json"
+    depends_on: List[str] = dc_field(default_factory=list)
+    consumed_by: List[str] = dc_field(default_factory=list)
+    critical: bool = False
+    allow_stale: bool = False
+    aliases: List[str] = dc_field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RebuildPhaseResultSchema:
+    phase: str
+    status: str = "pending"
+    outputs: Dict[str, Any] = dc_field(default_factory=dict)
+    errors: List[Dict[str, Any]] = dc_field(default_factory=list)
+    warnings: List[Dict[str, Any]] = dc_field(default_factory=list)
+    duration_ms: Optional[int] = None
+
 
 # ============================================================
 # 3) STANDARD API RESPONSE SCHEMA
@@ -235,6 +359,53 @@ def make_api_schema_example() -> Dict[str, Any]:
 # ============================================================
 # 4) FIELD DICTIONARY
 # ============================================================
+
+RUNTIME_FILTER_TARGETS: List[str] = [
+    "company",
+    "policy",
+    "linkage",
+    "director",
+    "flood",
+    "spatial",
+    "map",
+    "dashboard",
+    "data_quality",
+    "package",
+    "flood_rainfall_latest",
+    "flood_waterlevel_latest",
+    "flood_dam_latest",
+    "flood_prediction_latest",
+    "flood_prediction_map",
+    "uploaded_entity_latest",
+    "map_layers",
+    "dashboard_province_insights",
+    "prediction_map_view",
+    "entity_overlay_view",
+    "flood_dashboard_view",
+    "province_insight_view",
+]
+
+INTERNAL_NON_EXPORTABLE_FIELDS: set[str] = {
+    "source_file",
+    "source_file_path",
+    "internal_path",
+    "cache_file",
+    "cache_path",
+    "raw_file_path",
+    "upload_dir",
+    "saved_file",
+    "error_report_file",
+    "debug_traceback",
+    "raw_record",
+    "raw_records",
+    "raw_row",
+    "raw_rows",
+    "raw_payload",
+    "raw_sheet",
+    "raw_sheet_name",
+    "source_row",
+    "source_sheet",
+}
 
 FIELD_DEFINITIONS: Dict[str, FieldDefinition] = {
     # --------------------------------------------------------
@@ -925,6 +1096,1139 @@ FIELD_DEFINITIONS: Dict[str, FieldDefinition] = {
     ),
 }
 
+FIELD_DEFINITIONS.update(
+    {
+        "data_source": FieldDefinition(
+            name="data_source",
+            label="Data Source",
+            description="active data source ของ runtime",
+            dtype="string",
+            group="data_source",
+            source="config",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+            example="excel",
+        ),
+        "source_file_modified_at": FieldDefinition(
+            name="source_file_modified_at",
+            label="Source File Modified At",
+            description="เวลาที่ source file ถูกแก้ไขล่าสุด",
+            dtype="datetime",
+            group="data_source",
+            source="source_layer",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "source_type": FieldDefinition(
+            name="source_type",
+            label="Source Type",
+            description="ชนิด source ของ record เช่น rainfall/waterlevel/dam/prediction/entity",
+            dtype="string",
+            group="source_flag",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "source_id": FieldDefinition(
+            name="source_id",
+            label="Source ID",
+            description="รหัส source record",
+            dtype="string",
+            group="source_flag",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "source_name": FieldDefinition(
+            name="source_name",
+            label="Source Name",
+            description="ชื่อ source record",
+            dtype="string",
+            group="source_flag",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "latitude": FieldDefinition(
+            name="latitude",
+            label="Latitude",
+            description="ละติจูดมาตรฐานสำหรับ map/table",
+            dtype="number",
+            group="location",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "longitude": FieldDefinition(
+            name="longitude",
+            label="Longitude",
+            description="ลองจิจูดมาตรฐานสำหรับ map/table",
+            dtype="number",
+            group="location",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "latest_value": FieldDefinition(
+            name="latest_value",
+            label="Latest Value",
+            description="ค่าล่าสุดที่ normalize แล้วสำหรับ rainfall/waterlevel/dam/prediction",
+            dtype="number",
+            group="flood",
+            source="flood",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "latest_unit": FieldDefinition(
+            name="latest_unit",
+            label="Latest Unit",
+            description="หน่วยของ latest_value",
+            dtype="string",
+            group="flood",
+            source="flood",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "risk_level": FieldDefinition(
+            name="risk_level",
+            label="Risk Level",
+            description="ระดับความเสี่ยงมาตรฐาน",
+            dtype="string",
+            group="flood",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+            allowed_values=RISK_LEVELS,
+        ),
+        "risk_status": FieldDefinition(
+            name="risk_status",
+            label="Risk Status",
+            description="สถานะความเสี่ยงจาก source",
+            dtype="string",
+            group="flood",
+            source="flood",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+            allowed_values=RISK_LEVELS,
+        ),
+        "risk_reason": FieldDefinition(
+            name="risk_reason",
+            label="Risk Reason",
+            description="เหตุผลการจัดระดับความเสี่ยง",
+            dtype="string",
+            group="flood",
+            source="computed",
+            searchable=True,
+            exportable=True,
+        ),
+        "data_datetime": FieldDefinition(
+            name="data_datetime",
+            label="Data Datetime",
+            description="วันเวลาของข้อมูล source",
+            dtype="datetime",
+            group="flood",
+            source="flood",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "data_date": FieldDefinition(
+            name="data_date",
+            label="Data Date",
+            description="วันที่ของข้อมูล source",
+            dtype="date",
+            group="flood",
+            source="flood",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "prediction_record_key": FieldDefinition(
+            name="prediction_record_key",
+            label="Prediction Record Key",
+            description="record key ของ prediction",
+            dtype="string",
+            group="prediction",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "record_key": FieldDefinition(
+            name="record_key",
+            label="Record Key",
+            description="record key กลางของ runtime record",
+            dtype="string",
+            group="general",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "station_id": FieldDefinition(
+            name="station_id",
+            label="Station ID",
+            description="รหัสสถานีจาก source",
+            dtype="string",
+            group="flood",
+            source="flood",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "station_code": FieldDefinition(
+            name="station_code",
+            label="Station Code",
+            description="รหัสสถานีแบบ code",
+            dtype="string",
+            group="flood",
+            source="flood",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "station_name": FieldDefinition(
+            name="station_name",
+            label="Station Name",
+            description="ชื่อสถานี",
+            dtype="string",
+            group="flood",
+            source="flood",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "matched_station_id": FieldDefinition(
+            name="matched_station_id",
+            label="Matched Station ID",
+            description="รหัสสถานีที่ match จาก station master",
+            dtype="string",
+            group="prediction",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "matched_station_code": FieldDefinition(
+            name="matched_station_code",
+            label="Matched Station Code",
+            description="station code ที่ match จาก station master",
+            dtype="string",
+            group="prediction",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "matched_station_name": FieldDefinition(
+            name="matched_station_name",
+            label="Matched Station Name",
+            description="ชื่อสถานีที่ match จาก station master",
+            dtype="string",
+            group="prediction",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "province_model": FieldDefinition(
+            name="province_model",
+            label="Province Model",
+            description="จังหวัดที่ model/prediction ระบุ",
+            dtype="string",
+            group="prediction",
+            source="prediction",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "base_date": FieldDefinition(
+            name="base_date",
+            label="Base Date",
+            description="วันที่ฐานของ prediction",
+            dtype="date",
+            group="prediction",
+            source="prediction",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "target_date": FieldDefinition(
+            name="target_date",
+            label="Target Date",
+            description="วันที่ forecast target",
+            dtype="date",
+            group="prediction",
+            source="prediction",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "forecast_horizon_day": FieldDefinition(
+            name="forecast_horizon_day",
+            label="Forecast Horizon Day",
+            description="จำนวนวันล่วงหน้าของ forecast",
+            dtype="integer",
+            group="prediction",
+            source="prediction",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "warning_level": FieldDefinition(
+            name="warning_level",
+            label="Warning Level",
+            description="ระดับเตือนภัยจาก source",
+            dtype="string",
+            group="flood",
+            source="flood",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "warning_level_predict": FieldDefinition(
+            name="warning_level_predict",
+            label="Warning Level Predict",
+            description="ระดับเตือนภัยที่ prediction คาดการณ์",
+            dtype="string",
+            group="prediction",
+            source="prediction",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "predicted_level_m": FieldDefinition(
+            name="predicted_level_m",
+            label="Predicted Level",
+            description="ระดับน้ำที่คาดการณ์ หน่วยเมตร",
+            dtype="number",
+            group="prediction",
+            source="prediction",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+            unit="m",
+        ),
+        "percent_to_bank": FieldDefinition(
+            name="percent_to_bank",
+            label="Percent To Bank",
+            description="เปอร์เซ็นต์เทียบระดับตลิ่ง",
+            dtype="number",
+            group="prediction",
+            source="prediction",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+            unit="%",
+        ),
+        "from_bank_m": FieldDefinition(
+            name="from_bank_m",
+            label="From Bank",
+            description="ระยะจากระดับตลิ่ง หน่วยเมตร",
+            dtype="number",
+            group="prediction",
+            source="prediction",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+            unit="m",
+        ),
+        "map_ready": FieldDefinition(
+            name="map_ready",
+            label="Map Ready",
+            description="พร้อมแสดงบน map หรือไม่",
+            dtype="boolean",
+            group="map",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "focus_level": FieldDefinition(
+            name="focus_level",
+            label="Focus Level",
+            description="ระดับ focus map เช่น station/province_boundary",
+            dtype="string",
+            group="map",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "focus_fallback": FieldDefinition(
+            name="focus_fallback",
+            label="Focus Fallback",
+            description="fallback สำหรับ frontend map focus",
+            dtype="string",
+            group="map",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "focus_fallback_reason": FieldDefinition(
+            name="focus_fallback_reason",
+            label="Focus Fallback Reason",
+            description="เหตุผลที่ใช้ focus fallback",
+            dtype="string",
+            group="map",
+            source="computed",
+            searchable=True,
+            exportable=True,
+        ),
+        "upload_id": FieldDefinition(
+            name="upload_id",
+            label="Upload ID",
+            description="รหัส upload ของ uploaded entity",
+            dtype="string",
+            group="entity",
+            source="uploaded_entity",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "entity_id": FieldDefinition(
+            name="entity_id",
+            label="Entity ID",
+            description="รหัส entity จากไฟล์ upload",
+            dtype="string",
+            group="entity",
+            source="uploaded_entity",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "entity_type": FieldDefinition(
+            name="entity_type",
+            label="Entity Type",
+            description="ประเภท entity จากไฟล์ upload",
+            dtype="string",
+            group="entity",
+            source="uploaded_entity",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "entity_name_th": FieldDefinition(
+            name="entity_name_th",
+            label="Entity Name TH",
+            description="ชื่อ entity ภาษาไทย",
+            dtype="string",
+            group="entity",
+            source="uploaded_entity",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "entity_name_en": FieldDefinition(
+            name="entity_name_en",
+            label="Entity Name EN",
+            description="ชื่อ entity ภาษาอังกฤษ",
+            dtype="string",
+            group="entity",
+            source="uploaded_entity",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "province_name_th": FieldDefinition(
+            name="province_name_th",
+            label="Province Name TH",
+            description="ชื่อจังหวัดภาษาไทยจาก uploaded entity",
+            dtype="string",
+            group="entity",
+            source="uploaded_entity",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "risk_group": FieldDefinition(
+            name="risk_group",
+            label="Risk Group",
+            description="กลุ่มความเสี่ยงของ uploaded entity",
+            dtype="string",
+            group="entity",
+            source="uploaded_entity",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "is_displayable": FieldDefinition(
+            name="is_displayable",
+            label="Is Displayable",
+            description="uploaded entity แสดงผลบน map ได้หรือไม่",
+            dtype="boolean",
+            group="entity",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "validation_reasons": FieldDefinition(
+            name="validation_reasons",
+            label="Validation Reasons",
+            description="เหตุผล validation ของ uploaded entity",
+            dtype="array",
+            group="entity",
+            source="computed",
+            searchable=True,
+            exportable=True,
+        ),
+        "layer_id": FieldDefinition(
+            name="layer_id",
+            label="Layer ID",
+            description="รหัส layer",
+            dtype="string",
+            group="map",
+            source="map",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "layer_type": FieldDefinition(
+            name="layer_type",
+            label="Layer Type",
+            description="ประเภท layer",
+            dtype="string",
+            group="map",
+            source="map",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "visible": FieldDefinition(
+            name="visible",
+            label="Visible",
+            description="สถานะการแสดงผล layer",
+            dtype="boolean",
+            group="map",
+            source="map",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "opacity": FieldDefinition(
+            name="opacity",
+            label="Opacity",
+            description="ค่าความโปร่งใสของ layer",
+            dtype="number",
+            group="map",
+            source="map",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "cache_key": FieldDefinition(
+            name="cache_key",
+            label="Cache Key",
+            description="ชื่อ cache key",
+            dtype="string",
+            group="cache",
+            source="cache_registry",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "owner_service": FieldDefinition(
+            name="owner_service",
+            label="Owner Service",
+            description="service เจ้าของ cache",
+            dtype="string",
+            group="cache",
+            source="cache_registry",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "payload_type": FieldDefinition(
+            name="payload_type",
+            label="Payload Type",
+            description="ชนิด payload ของ cache",
+            dtype="string",
+            group="cache",
+            source="cache_registry",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "critical": FieldDefinition(
+            name="critical",
+            label="Critical Cache",
+            description="เป็น cache สำคัญหรือไม่",
+            dtype="boolean",
+            group="cache",
+            source="cache_registry",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "allow_stale": FieldDefinition(
+            name="allow_stale",
+            label="Allow Stale",
+            description="อนุญาตให้ใช้ cache stale หรือไม่",
+            dtype="boolean",
+            group="cache",
+            source="cache_registry",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "phase": FieldDefinition(
+            name="phase",
+            label="Rebuild Phase",
+            description="ชื่อ rebuild phase",
+            dtype="string",
+            group="cache",
+            source="rebuild",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "status": FieldDefinition(
+            name="status",
+            label="Status",
+            description="สถานะทั่วไปของ payload/phase",
+            dtype="string",
+            group="general",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "duration_ms": FieldDefinition(
+            name="duration_ms",
+            label="Duration MS",
+            description="เวลา execute phase หน่วย ms",
+            dtype="integer",
+            group="cache",
+            source="rebuild",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+    }
+)
+
+FIELD_DEFINITIONS.update(
+    {
+        "active_source": FieldDefinition(
+            name="active_source",
+            label="Active Source",
+            description="data source ที่ใช้งานจริงใน runtime",
+            dtype="string",
+            group="data_source",
+            source="config",
+            required=True,
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+            example="excel",
+        ),
+        "excel_enabled": FieldDefinition(
+            name="excel_enabled",
+            label="Excel Enabled",
+            description="สถานะเปิดใช้งาน Excel data source",
+            dtype="boolean",
+            group="data_source",
+            source="config",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "mysql_enabled": FieldDefinition(
+            name="mysql_enabled",
+            label="MySQL Enabled",
+            description="สถานะเปิดใช้งาน MySQL data source",
+            dtype="boolean",
+            group="data_source",
+            source="config",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "excel_paths": FieldDefinition(
+            name="excel_paths",
+            label="Excel Paths",
+            description="summary path ของ Excel source แบบ public-safe",
+            dtype="object",
+            group="data_source",
+            source="config",
+            exportable=True,
+        ),
+        "mysql_status": FieldDefinition(
+            name="mysql_status",
+            label="MySQL Status",
+            description="สถานะ MySQL placeholder",
+            dtype="string",
+            group="data_source",
+            source="config",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "validation": FieldDefinition(
+            name="validation",
+            label="Validation",
+            description="validation result ของ config/source/cache",
+            dtype="object",
+            group="data_quality",
+            source="computed",
+            exportable=True,
+        ),
+        "layer_name": FieldDefinition(
+            name="layer_name",
+            label="Layer Name",
+            description="ชื่อ layer สำหรับ frontend map",
+            dtype="string",
+            group="map",
+            source="map",
+            filterable=True,
+            sortable=True,
+            searchable=True,
+            exportable=True,
+        ),
+        "z_index": FieldDefinition(
+            name="z_index",
+            label="Z Index",
+            description="ลำดับการซ้อน layer บน map",
+            dtype="integer",
+            group="map",
+            source="map",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "record_count": FieldDefinition(
+            name="record_count",
+            label="Record Count",
+            description="จำนวน record ใน payload",
+            dtype="integer",
+            group="general",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "feature_collection": FieldDefinition(
+            name="feature_collection",
+            label="Feature Collection",
+            description="GeoJSON FeatureCollection ของ map layer",
+            dtype="object",
+            group="map",
+            source="map",
+            exportable=True,
+        ),
+        "features": FieldDefinition(
+            name="features",
+            label="Features",
+            description="GeoJSON features หรือ feature collection",
+            dtype="array",
+            group="map",
+            source="map",
+            exportable=True,
+        ),
+        "records": FieldDefinition(
+            name="records",
+            label="Records",
+            description="records ใน payload",
+            dtype="array",
+            group="general",
+            source="computed",
+            exportable=True,
+        ),
+        "total": FieldDefinition(
+            name="total",
+            label="Total",
+            description="จำนวนรวมของ records",
+            dtype="integer",
+            group="general",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "style": FieldDefinition(
+            name="style",
+            label="Style",
+            description="style object ของ map layer",
+            dtype="object",
+            group="map",
+            source="map",
+            exportable=True,
+        ),
+        "meta": FieldDefinition(
+            name="meta",
+            label="Meta",
+            description="metadata ของ payload",
+            dtype="object",
+            group="general",
+            source="computed",
+            exportable=True,
+        ),
+        "summary": FieldDefinition(
+            name="summary",
+            label="Summary",
+            description="summary object ของ payload",
+            dtype="object",
+            group="dashboard",
+            source="computed",
+            exportable=True,
+        ),
+        "filters": FieldDefinition(
+            name="filters",
+            label="Filters",
+            description="filter context ที่ใช้สร้าง payload",
+            dtype="object",
+            group="dashboard",
+            source="computed",
+            exportable=True,
+        ),
+        "generated_at": FieldDefinition(
+            name="generated_at",
+            label="Generated At",
+            description="เวลาที่สร้าง payload",
+            dtype="datetime",
+            group="general",
+            source="computed",
+            filterable=True,
+            sortable=True,
+            exportable=True,
+        ),
+        "prediction_risk_top3": FieldDefinition(
+            name="prediction_risk_top3",
+            label="Prediction Risk Top 3",
+            description="จังหวัดเสี่ยงสูงสุดจาก prediction",
+            dtype="array",
+            group="dashboard",
+            source="dashboard",
+            exportable=True,
+        ),
+        "rainfall_top5": FieldDefinition(
+            name="rainfall_top5",
+            label="Rainfall Top 5",
+            description="จังหวัดหรือสถานีฝนสูงสุด 5 อันดับ",
+            dtype="array",
+            group="dashboard",
+            source="dashboard",
+            exportable=True,
+        ),
+        "waterlevel_top5": FieldDefinition(
+            name="waterlevel_top5",
+            label="Waterlevel Top 5",
+            description="จังหวัดหรือสถานีระดับน้ำสูงสุด 5 อันดับ",
+            dtype="array",
+            group="dashboard",
+            source="dashboard",
+            exportable=True,
+        ),
+        "reservoir_top5": FieldDefinition(
+            name="reservoir_top5",
+            label="Reservoir Top 5",
+            description="เขื่อนหรืออ่างเก็บน้ำสำคัญ 5 อันดับ",
+            dtype="array",
+            group="dashboard",
+            source="dashboard",
+            exportable=True,
+        ),
+        "depends_on": FieldDefinition(
+            name="depends_on",
+            label="Depends On",
+            description="cache dependency upstream",
+            dtype="array",
+            group="cache",
+            source="cache_registry",
+            exportable=True,
+        ),
+        "consumed_by": FieldDefinition(
+            name="consumed_by",
+            label="Consumed By",
+            description="service downstream ที่ใช้ cache นี้",
+            dtype="array",
+            group="cache",
+            source="cache_registry",
+            exportable=True,
+        ),
+        "aliases": FieldDefinition(
+            name="aliases",
+            label="Aliases",
+            description="cache key alias",
+            dtype="array",
+            group="cache",
+            source="cache_registry",
+            exportable=True,
+        ),
+        "outputs": FieldDefinition(
+            name="outputs",
+            label="Outputs",
+            description="outputs ของ rebuild phase",
+            dtype="object",
+            group="cache",
+            source="rebuild",
+            exportable=True,
+        ),
+        "errors": FieldDefinition(
+            name="errors",
+            label="Errors",
+            description="errors ของ payload หรือ rebuild phase",
+            dtype="array",
+            group="data_quality",
+            source="computed",
+            exportable=True,
+        ),
+        "warnings": FieldDefinition(
+            name="warnings",
+            label="Warnings",
+            description="warnings ของ payload หรือ rebuild phase",
+            dtype="array",
+            group="data_quality",
+            source="computed",
+            exportable=True,
+        ),
+        **{
+            field_name: FieldDefinition(
+                name=field_name,
+                label=field_name.replace("_", " ").title(),
+                description="internal path/debug/raw field ห้าม export public default",
+                dtype="string",
+                group="internal",
+                source="internal",
+                filterable=False,
+                sortable=False,
+                searchable=False,
+                exportable=False,
+                visible_default=False,
+                sensitive=True,
+            )
+            for field_name in INTERNAL_NON_EXPORTABLE_FIELDS
+        },
+    }
+)
+
+DATA_SOURCE_CONFIG_SCHEMA: Dict[str, Any] = asdict(
+    DataSourceConfigSchema(
+        active_source="excel",
+        excel_enabled=True,
+        mysql_enabled=False,
+        excel_paths={
+            "latest": "latest_database.xlsx",
+            "master": "master_database.xlsx",
+            "history": "history/",
+            "prediction": "predict/",
+            "upload": "upload/",
+        },
+        mysql_status="placeholder_not_implemented",
+        validation={
+            "allow_multiple_active_sources": False,
+            "mysql_implemented": False,
+            "mysql_allowed_in_current_phase": False,
+        },
+    )
+)
+
+FLOOD_LATEST_RECORD_SCHEMA: Dict[str, Any] = asdict(
+    FloodLatestRecord(
+        source_type="rainfall",
+        source_id="station_id",
+        source_name="Station Name",
+        province="น่าน",
+        latitude=18.7,
+        longitude=100.7,
+        latest_value=120.0,
+        latest_unit="mm",
+        risk_level="Warning",
+        risk_reason="rainfall threshold",
+        data_datetime="2026-07-01T08:00:00",
+    )
+)
+
+FLOOD_PREDICTION_RECORD_SCHEMA: Dict[str, Any] = asdict(
+    FloodPredictionRecord(
+        record_key="prediction|1373690|2026-07-01|2026-07-03|2",
+        station_name="Station Name",
+        station_id="1373690",
+        station_code="ST001",
+        matched_station_id="1373690",
+        matched_station_code="ST001",
+        matched_station_name="Station Name",
+        province="น่าน",
+        province_model="น่าน",
+        base_date="2026-07-01",
+        target_date="2026-07-03",
+        forecast_horizon_day=2,
+        risk_level="Warning",
+        risk_status="Warning",
+        warning_level="Watch",
+        warning_level_predict="Warning",
+        predicted_level_m=4.2,
+        latest_value=4.2,
+        latest_unit="m",
+        percent_to_bank=85.0,
+        from_bank_m=0.35,
+        latitude=18.7,
+        longitude=100.7,
+        map_ready=True,
+        focus_level="station",
+        focus_fallback="station",
+        focus_fallback_reason="matched_station_master",
+    )
+)
+
+UPLOADED_ENTITY_RECORD_SCHEMA: Dict[str, Any] = asdict(
+    UploadedEntityRecord(
+        upload_id="UP_20260701_000001",
+        entity_id="E001",
+        entity_type="shop",
+        entity_name_th="ร้านตัวอย่าง",
+        entity_name_en="Example Shop",
+        province_name_th="น่าน",
+        province="น่าน",
+        latitude=18.7,
+        longitude=100.7,
+        risk_group="Watch",
+        risk_level="Watch",
+        source_type="uploaded_entity",
+        map_ready=True,
+        has_location=True,
+        is_displayable=True,
+        validation_reasons=[],
+    )
+)
+
+MAP_LAYER_PAYLOAD_SCHEMA: Dict[str, Any] = asdict(
+    MapLayerPayloadSchema(
+        layer_id="prediction",
+        layer_name="Flood Prediction",
+        layer_type="point",
+        visible=True,
+        opacity=1.0,
+        z_index=5,
+        records=[],
+        features={
+            "type": "FeatureCollection",
+            "features": [],
+        },
+        feature_collection={
+            "type": "FeatureCollection",
+            "features": [],
+        },
+        total=0,
+        record_count=0,
+        style={
+            "renderer": "point",
+            "risk_field": "risk_level",
+            "color_field": "risk_level",
+            "size_field": "latest_value",
+            "label_field": "station_name",
+            "focus_fallback": True,
+        },
+        meta={
+            "source": "excel",
+            "degraded": False,
+            "errors": [],
+        },
+    )
+)
+
+MERGED_MAP_LAYERS_SCHEMA: Dict[str, Any] = {
+    "rainfall": MAP_LAYER_PAYLOAD_SCHEMA,
+    "waterlevel": MAP_LAYER_PAYLOAD_SCHEMA,
+    "dam": MAP_LAYER_PAYLOAD_SCHEMA,
+    "prediction": MAP_LAYER_PAYLOAD_SCHEMA,
+    "entity": MAP_LAYER_PAYLOAD_SCHEMA,
+    "province_boundary": MAP_LAYER_PAYLOAD_SCHEMA,
+    "basin_boundary": MAP_LAYER_PAYLOAD_SCHEMA,
+    "province_boundaries": MAP_LAYER_PAYLOAD_SCHEMA,
+    "basin_boundaries": MAP_LAYER_PAYLOAD_SCHEMA,
+    "company_points": MAP_LAYER_PAYLOAD_SCHEMA,
+    "flood_points": MAP_LAYER_PAYLOAD_SCHEMA,
+    "policy_exposure": MAP_LAYER_PAYLOAD_SCHEMA,
+    "linkage_lines": MAP_LAYER_PAYLOAD_SCHEMA,
+    "branch_points": MAP_LAYER_PAYLOAD_SCHEMA,
+    "heatmap": MAP_LAYER_PAYLOAD_SCHEMA,
+}
+
+DASHBOARD_PROVINCE_INSIGHTS_SCHEMA: Dict[str, Any] = asdict(
+    DashboardProvinceInsightsSchema(
+        prediction_risk_top3=[],
+        rainfall_top5=[],
+        waterlevel_top5=[],
+        reservoir_top5=[],
+        filters={},
+        generated_at="2026-07-01T08:00:00",
+    )
+)
+
+CACHE_REGISTRY_ITEM_SCHEMA: Dict[str, Any] = asdict(
+    CacheRegistryItemSchema(
+        cache_key="flood_prediction_latest",
+        owner_service="flood_spatial_service",
+        payload_type="records",
+        depends_on=["flood_master_station_index"],
+        consumed_by=["map_graph_service", "dashboard_package_service", "data_quality", "filter_engine"],
+        critical=True,
+        allow_stale=False,
+        aliases=["prediction_latest", "forecast_latest"],
+    )
+)
+
+REBUILD_PHASE_RESULT_SCHEMA: Dict[str, Any] = asdict(
+    RebuildPhaseResultSchema(
+        phase="spatial_prediction_entity",
+        status="success",
+        outputs={
+            "flood_prediction_latest": {"total": 0},
+            "flood_prediction_map": {"total": 0},
+            "uploaded_entity_latest": {"total": 0},
+        },
+        errors=[],
+        warnings=[],
+        duration_ms=0,
+    )
+)
 
 # ============================================================
 # 5) INPUT SCHEMA
@@ -1132,6 +2436,70 @@ FLOOD_INPUT_SCHEMA: Dict[str, SheetSchema] = {
     ),
 }
 
+FLOOD_INPUT_SCHEMA.update(
+    {
+        "prediction_latest": SheetSchema(
+            key="prediction_latest",
+            display_name="predict_*.xlsx",
+            description="ไฟล์ prediction ล่าสุด ใช้สร้าง prediction latest/map/location-debug/risk-distribution",
+            required_columns=[
+                "station_id",
+                "base_date",
+                "target_date",
+                "forecast_horizon_day",
+            ],
+            optional_columns=[
+                "station_name",
+                "station_code",
+                "matched_station_id",
+                "matched_station_code",
+                "province",
+                "province_model",
+                "warning_level",
+                "warning_level_predict",
+                "risk_level",
+                "predicted_level_m",
+                "latest_value",
+                "latest_unit",
+                "percent_to_bank",
+                "from_bank_m",
+                "latitude",
+                "longitude",
+                "map_ready",
+                "focus_level",
+                "focus_fallback",
+                "focus_fallback_reason",
+            ],
+            source_type="excel",
+        ),
+        "uploaded_entity": SheetSchema(
+            key="uploaded_entity",
+            display_name="uploaded_entity.csv",
+            description="ไฟล์ uploaded entity overlay จากผู้ใช้ ใช้เฉพาะ displayable records สำหรับ public map",
+            required_columns=[
+                "entity_id",
+                "entity_type",
+                "entity_name_th",
+                "province_name_th",
+                "latitude",
+                "longitude",
+            ],
+            optional_columns=[
+                "upload_id",
+                "entity_name_en",
+                "province",
+                "risk_group",
+                "risk_level",
+                "source_type",
+                "map_ready",
+                "has_location",
+                "is_displayable",
+                "validation_reasons",
+            ],
+            source_type="csv_upload",
+        ),
+    }
+)
 
 # ============================================================
 # 6) OUTPUT DATASET SCHEMA
@@ -1433,6 +2801,440 @@ DATASET_SCHEMAS: Dict[str, DatasetSchema] = {
     ),
 }
 
+DATASET_SCHEMAS.update(
+    {
+        "data_source_config": DatasetSchema(
+            key="data_source_config",
+            display_name="Data Source Config",
+            description="runtime data source config สำหรับ Excel/MySQL placeholder",
+            primary_key="active_source",
+            fields=[
+                "data_source",
+                "active_source",
+                "excel_enabled",
+                "mysql_enabled",
+                "excel_paths",
+                "mysql_status",
+                "validation",
+            ],
+            required_fields=[
+                "active_source",
+            ],
+            supports_filter=False,
+            supports_search=False,
+            supports_export=True,
+        ),
+        "flood_rainfall_latest": DatasetSchema(
+            key="flood_rainfall_latest",
+            display_name="Flood Rainfall Latest",
+            description="rainfall latest normalized records",
+            primary_key="source_id",
+            fields=[
+                "source_type",
+                "source_id",
+                "source_name",
+                "province",
+                "latitude",
+                "longitude",
+                "latest_value",
+                "latest_unit",
+                "risk_level",
+                "risk_reason",
+                "data_datetime",
+                "source_file_modified_at",
+            ],
+            required_fields=[
+                "source_type",
+                "source_id",
+                "risk_level",
+            ],
+            default_sort="latest_value",
+            default_sort_dir="desc",
+        ),
+        "flood_waterlevel_latest": DatasetSchema(
+            key="flood_waterlevel_latest",
+            display_name="Flood Waterlevel Latest",
+            description="waterlevel latest normalized records",
+            primary_key="source_id",
+            fields=[
+                "source_type",
+                "source_id",
+                "source_name",
+                "province",
+                "latitude",
+                "longitude",
+                "latest_value",
+                "latest_unit",
+                "risk_level",
+                "risk_reason",
+                "data_datetime",
+                "source_file_modified_at",
+            ],
+            required_fields=[
+                "source_type",
+                "source_id",
+                "risk_level",
+            ],
+            default_sort="risk_level",
+            default_sort_dir="desc",
+        ),
+        "flood_dam_latest": DatasetSchema(
+            key="flood_dam_latest",
+            display_name="Flood Dam Latest",
+            description="large/medium dam latest normalized records",
+            primary_key="source_id",
+            fields=[
+                "source_type",
+                "source_id",
+                "source_name",
+                "province",
+                "latitude",
+                "longitude",
+                "latest_value",
+                "latest_unit",
+                "risk_level",
+                "risk_reason",
+                "data_datetime",
+                "source_file_modified_at",
+            ],
+            required_fields=[
+                "source_type",
+                "source_id",
+                "risk_level",
+            ],
+            default_sort="latest_value",
+            default_sort_dir="desc",
+        ),
+        "flood_prediction_latest": DatasetSchema(
+            key="flood_prediction_latest",
+            display_name="Flood Prediction Latest",
+            description="prediction latest enriched from station master",
+            primary_key="record_key",
+            fields=[
+                "record_key",
+                "prediction_record_key",
+                "station_name",
+                "station_id",
+                "station_code",
+                "matched_station_id",
+                "matched_station_code",
+                "matched_station_name",
+                "province",
+                "province_model",
+                "base_date",
+                "target_date",
+                "forecast_horizon_day",
+                "risk_level",
+                "warning_level_predict",
+                "predicted_level_m",
+                "percent_to_bank",
+                "from_bank_m",
+                "latitude",
+                "longitude",
+                "map_ready",
+                "focus_level",
+                "focus_fallback",
+                "focus_fallback_reason",
+            ],
+            required_fields=[
+                "record_key",
+                "target_date",
+                "forecast_horizon_day",
+                "risk_level",
+            ],
+            default_sort="risk_level",
+            default_sort_dir="desc",
+        ),
+        "flood_prediction_map": DatasetSchema(
+            key="flood_prediction_map",
+            display_name="Flood Prediction Map",
+            description="prediction records ready for map layer",
+            primary_key="record_key",
+            fields=[
+                "record_key",
+                "source_type",
+                "station_name",
+                "matched_station_id",
+                "province",
+                "risk_level",
+                "base_date",
+                "target_date",
+                "forecast_horizon_day",
+                "map_ready",
+                "focus_level",
+                "focus_fallback",
+                "latitude",
+                "longitude",
+            ],
+            required_fields=[
+                "record_key",
+                "risk_level",
+                "map_ready",
+            ],
+            default_sort="risk_level",
+            default_sort_dir="desc",
+        ),
+        "uploaded_entity_latest": DatasetSchema(
+            key="uploaded_entity_latest",
+            display_name="Uploaded Entity Latest",
+            description="uploaded entity overlay latest records",
+            primary_key="entity_id",
+            fields=[
+                "upload_id",
+                "entity_id",
+                "entity_type",
+                "entity_name_th",
+                "entity_name_en",
+                "province_name_th",
+                "province",
+                "latitude",
+                "longitude",
+                "risk_group",
+                "risk_level",
+                "is_displayable",
+                "map_ready",
+                "source_type",
+                "validation_reasons",
+            ],
+            required_fields=[
+                "entity_id",
+                "entity_type",
+                "entity_name_th",
+                "province_name_th",
+            ],
+            default_sort="entity_name_th",
+        ),
+        "dashboard_province_insights": DatasetSchema(
+            key="dashboard_province_insights",
+            display_name="Dashboard Province Insights",
+            description="top prediction/rainfall/waterlevel/reservoir insights for dashboard",
+            primary_key=None,
+            fields=[
+                "prediction_risk_top3",
+                "rainfall_top5",
+                "waterlevel_top5",
+                "reservoir_top5",
+                "filters",
+                "generated_at",
+            ],
+            supports_search=False,
+            supports_filter=True,
+            supports_export=True,
+        ),
+        "cache_registry": DatasetSchema(
+            key="cache_registry",
+            display_name="Cache Registry",
+            description="cache dependency registry",
+            primary_key="cache_key",
+            fields=[
+                "cache_key",
+                "owner_service",
+                "payload_type",
+                "depends_on",
+                "consumed_by",
+                "critical",
+                "allow_stale",
+                "aliases",
+            ],
+            required_fields=[
+                "cache_key",
+                "owner_service",
+            ],
+            default_sort="cache_key",
+        ),
+        "rebuild_phase_result": DatasetSchema(
+            key="rebuild_phase_result",
+            display_name="Rebuild Phase Result",
+            description="result payload ของ staged rebuild phase",
+            primary_key="phase",
+            fields=[
+                "phase",
+                "status",
+                "outputs",
+                "errors",
+                "warnings",
+                "duration_ms",
+            ],
+            required_fields=[
+                "phase",
+                "status",
+            ],
+            default_sort="phase",
+        ),
+    }
+)
+
+DATASET_SCHEMAS.update(
+    {
+        "company_unified_base": DatasetSchema(
+            key="company_unified_base",
+            display_name="Company Unified Base",
+            description="ข้อมูลบริษัทกลางก่อน enrich linkage/flood/data_quality ใช้เป็น upstream ของ linkage/spatial",
+            primary_key="tax_id_norm",
+            fields=[
+                "tax_id_raw",
+                "tax_id_norm",
+                "tax_id_valid",
+                "tax_id_issue",
+                "company_name",
+                "business_type_objective",
+                "business_type_tsic",
+                "company_size",
+                "wtip",
+                "most_recent_asset_val",
+                "most_recent_income_val",
+                "registered_capital",
+                "province",
+                "district",
+                "subdistrict",
+                "lat",
+                "lon",
+                "latitude",
+                "longitude",
+                "location_source",
+                "location_quality",
+                "has_policy",
+                "has_linkage",
+                "has_location",
+                "total_premium",
+                "total_loss",
+                "total_suminsure",
+                "loss_ratio",
+                "loss_ratio_band",
+                "boardlist",
+            ],
+            required_fields=[
+                "tax_id_norm",
+                "company_name",
+            ],
+            default_sort="company_name",
+        ),
+        "map_layers": DatasetSchema(
+            key="map_layers",
+            display_name="Merged Map Layers",
+            description="Merged OpenLayers payload รวม enterprise + flood dashboard layers",
+            primary_key=None,
+            fields=[
+                "layers",
+                "layers_by_id",
+                "layer_list",
+                "layers_list",
+                "legacy_layers",
+                "layer_order",
+                "summary",
+                "meta",
+                "map",
+                "center",
+                "zoom",
+                "min_zoom",
+                "max_zoom",
+                "base_tile_url",
+                "base_attribution",
+            ],
+            required_fields=[
+                "layers",
+                "layer_order",
+                "summary",
+                "meta",
+            ],
+            supports_search=False,
+            supports_filter=True,
+            supports_export=True,
+        ),
+        "map_layer_payload": DatasetSchema(
+            key="map_layer_payload",
+            display_name="Map Layer Payload",
+            description="Payload ของ layer เดี่ยวใน merged map",
+            primary_key="layer_id",
+            fields=[
+                "layer_id",
+                "layer_name",
+                "layer_type",
+                "visible",
+                "opacity",
+                "z_index",
+                "records",
+                "features",
+                "feature_collection",
+                "total",
+                "record_count",
+                "style",
+                "meta",
+            ],
+            required_fields=[
+                "layer_id",
+                "layer_type",
+                "features",
+                "meta",
+            ],
+            supports_search=False,
+            supports_filter=True,
+            supports_export=True,
+        ),
+        "data_source_config": DatasetSchema(
+            key="data_source_config",
+            display_name="Data Source Config",
+            description="runtime data source config สำหรับ Excel/MySQL placeholder",
+            primary_key="active_source",
+            fields=[
+                "active_source",
+                "data_source",
+                "excel_enabled",
+                "mysql_enabled",
+                "excel_paths",
+                "mysql_status",
+                "validation",
+            ],
+            required_fields=[
+                "active_source",
+            ],
+            supports_filter=False,
+            supports_search=False,
+            supports_export=True,
+        ),
+        "cache_registry": DatasetSchema(
+            key="cache_registry",
+            display_name="Cache Registry",
+            description="cache dependency registry",
+            primary_key="cache_key",
+            fields=[
+                "cache_key",
+                "owner_service",
+                "payload_type",
+                "depends_on",
+                "consumed_by",
+                "critical",
+                "allow_stale",
+                "aliases",
+            ],
+            required_fields=[
+                "cache_key",
+                "owner_service",
+            ],
+            default_sort="cache_key",
+        ),
+        "rebuild_phase_result": DatasetSchema(
+            key="rebuild_phase_result",
+            display_name="Rebuild Phase Result",
+            description="result payload ของ staged rebuild phase",
+            primary_key="phase",
+            fields=[
+                "phase",
+                "status",
+                "outputs",
+                "errors",
+                "warnings",
+                "duration_ms",
+            ],
+            required_fields=[
+                "phase",
+                "status",
+            ],
+            default_sort="phase",
+        ),
+    }
+)
+
 
 # ============================================================
 # 7) FILTER SCHEMA
@@ -1547,31 +3349,139 @@ class GeoJSONFeatureCollectionSchema:
     type: str = "FeatureCollection"
     features: List[Dict[str, Any]] = dc_field(default_factory=list)
 
-
 MAP_LAYER_SCHEMA: Dict[str, Any] = {
     "layer_id": "string",
     "layer_name": "string",
-    "layer_type": "point|line|polygon|heatmap|cluster",
+    "layer_type": "point|line|polygon|heatmap|cluster|boundary",
     "visible": "boolean",
-    "record_count": "integer",
+    "opacity": "number",
+    "z_index": "integer",
+    "records": [],
+    "features": {
+        "type": "FeatureCollection",
+        "features": [],
+    },
     "feature_collection": {
         "type": "FeatureCollection",
         "features": [],
     },
+    "total": "integer",
+    "record_count": "integer",
     "style": {
+        "renderer": "point|line|polygon|heatmap",
         "color_field": "string",
         "size_field": "string",
         "risk_field": "string",
+        "label_field": "string",
+    },
+    "meta": {
+        "source": "excel",
+        "filters": {},
+        "counts": {},
+        "record_count": 0,
+        "skipped_invalid_coordinates": 0,
+        "degraded": False,
+        "errors": [],
+        "generated_at": "",
+        "cache_used": False,
+    },
+}
+
+
+MERGED_MAP_LAYERS_PAYLOAD_SCHEMA: Dict[str, Any] = {
+    "map": {
+        "center": [],
+        "zoom": "integer",
+        "min_zoom": "integer",
+        "max_zoom": "integer",
+        "base_tile_url": "string",
+        "base_attribution": "string",
+    },
+    "center": [],
+    "zoom": "integer",
+    "min_zoom": "integer",
+    "max_zoom": "integer",
+    "base_tile_url": "string",
+    "base_attribution": "string",
+    "layers": MERGED_MAP_LAYERS_SCHEMA,
+    "layers_by_id": MERGED_MAP_LAYERS_SCHEMA,
+    "layer_order": [
+        "province_boundary",
+        "basin_boundary",
+        "rainfall",
+        "waterlevel",
+        "dam",
+        "prediction",
+        "entity",
+        "flood_points",
+        "policy_exposure",
+        "company_points",
+        "branch_points",
+        "heatmap",
+        "linkage_lines",
+    ],
+    "layer_list": [],
+    "layers_list": [],
+    "legacy_layers": [],
+    "summary": {
+        "layer_count": 0,
+        "canonical_layer_count": 0,
+        "feature_count": 0,
+        "record_count": 0,
+        "record_count_by_layer": {},
+        "enabled_layers": [],
+        "compatibility_layers": [],
+        "degraded_layer_ids": [],
+        "generated_at": "",
+        "degraded": False,
+    },
+    "meta": {
+        "source": "excel",
+        "filters": {},
+        "counts": {},
+        "record_count_by_layer": {},
+        "upstream_cache_keys": [],
+        "degraded": False,
+        "degraded_layer_ids": [],
+        "errors": [],
+        "generated_at": "",
+        "cache_used": False,
     },
 }
 
 
 MAP_FEATURE_PROPERTY_SCHEMA: Dict[str, str] = {
     "feature_id": "string",
-    "feature_type": "company|rainfall|waterlevel|dam|branch|province|basin|linkage_line",
+    "feature_type": "company|flood_source|rainfall|waterlevel|dam|prediction|entity|branch|province|basin|linkage_line|heatmap|policy_exposure",
+    "object_type": "company|flood|prediction|entity|boundary|linkage",
+    "source_type": "string",
     "tax_id_norm": "string",
     "company_name": "string",
     "province": "string",
+    "station_id": "string",
+    "station_code": "string",
+    "station_name": "string",
+    "matched_station_id": "string",
+    "matched_station_code": "string",
+    "matched_station_name": "string",
+    "entity_id": "string",
+    "entity_type": "string",
+    "entity_name_th": "string",
+    "risk_level": "string",
+    "risk_status": "string",
+    "warning_level": "string",
+    "warning_level_predict": "string",
+    "risk_group": "string",
+    "latest_value": "number",
+    "latest_unit": "string",
+    "map_ready": "boolean",
+    "focus_level": "string",
+    "focus_fallback": "string",
+    "focus_fallback_reason": "string",
+    "latitude": "number",
+    "longitude": "number",
+    "lat": "number",
+    "lon": "number",
     "premium": "number",
     "suminsure": "number",
     "loss_ratio": "number",
@@ -1583,7 +3493,6 @@ MAP_FEATURE_PROPERTY_SCHEMA: Dict[str, str] = {
     "marker_outline": "string",
     "marker_shape": "string",
 }
-
 
 # ============================================================
 # 9) GRAPH SCHEMA
@@ -1657,6 +3566,11 @@ DASHBOARD_SUMMARY_SCHEMA: Dict[str, Any] = {
     "top_companies": [],
     "top_directors": [],
     "risk_insights": [],
+    "province_insights": DASHBOARD_PROVINCE_INSIGHTS_SCHEMA,
+    "prediction_risk_top3": [],
+    "rainfall_top5": [],
+    "waterlevel_top5": [],
+    "reservoir_top5": [],
     "data_quality": {},
     "freshness": {},
 }
@@ -1733,22 +3647,53 @@ PACKAGE_SNAPSHOT_SCHEMA: Dict[str, Any] = {
         "policy_summary": {},
         "policy_table": [],
         "linkage_graph": GRAPH_PAYLOAD_SCHEMA,
-        "map_layers": {},
+        "map": MERGED_MAP_LAYERS_PAYLOAD_SCHEMA,
+        "map_layers": MERGED_MAP_LAYERS_PAYLOAD_SCHEMA,
         "charts": {},
         "tables": {},
         "filter_options": {},
         "data_quality": {},
+        "prediction": [],
+        "flood_prediction": [],
+        "flood_prediction_latest": [],
+        "flood_prediction_map": {
+            "type": "FeatureCollection",
+            "features": [],
+            "total": 0,
+            "meta": {},
+        },
+        "entity": [],
+        "uploaded_entity": [],
+        "uploaded_entity_latest": [],
     },
+    "checksum_components": [
+        "summary",
+        "map",
+        "map_layers",
+        "charts",
+        "tables",
+        "data_quality",
+        "prediction",
+        "flood_prediction",
+        "flood_prediction_latest",
+        "flood_prediction_map",
+        "entity",
+        "uploaded_entity",
+        "uploaded_entity_latest",
+    ],
 }
 
 
 PUBLIC_PACKAGE_SCHEMA: Dict[str, Any] = {
     "meta": PACKAGE_META_SCHEMA,
     "summary": {},
-    "map": {},
+    "map": MERGED_MAP_LAYERS_PAYLOAD_SCHEMA,
     "charts": {},
     "tables": {},
     "filter_options": {},
+    "data_quality": {},
+    "prediction": [],
+    "entity": [],
 }
 
 
@@ -1907,6 +3852,41 @@ FIELD_GROUPS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+FIELD_GROUPS.update(
+    {
+        "data_source": {
+            "label": "Data Source",
+            "description": "ข้อมูล runtime data source และ source freshness",
+            "order": 15,
+        },
+        "prediction": {
+            "label": "Prediction",
+            "description": "ข้อมูล flood prediction และ map focus fallback",
+            "order": 16,
+        },
+        "entity": {
+            "label": "Uploaded Entity",
+            "description": "ข้อมูล uploaded entity overlay",
+            "order": 17,
+        },
+        "map": {
+            "label": "Map",
+            "description": "ข้อมูล map layer และ map readiness",
+            "order": 18,
+        },
+        "dashboard": {
+            "label": "Dashboard",
+            "description": "ข้อมูล dashboard summary และ province insights",
+            "order": 19,
+        },
+        "cache": {
+            "label": "Cache / Rebuild",
+            "description": "ข้อมูล cache registry และ staged rebuild",
+            "order": 20,
+        },
+    }
+)
+
 
 # ============================================================
 # 15) TABLE VIEW SCHEMA
@@ -2054,6 +4034,123 @@ TABLE_VIEW_SCHEMAS: Dict[str, Dict[str, Any]] = {
 }
 
 
+TABLE_VIEW_SCHEMAS.update(
+    {
+        "flood_prediction_latest": {
+            "dataset": "flood_prediction_latest",
+            "title": "Flood Prediction Latest",
+            "primary_key": "record_key",
+            "columns": [
+                "record_key",
+                "province",
+                "province_model",
+                "station_name",
+                "matched_station_id",
+                "risk_level",
+                "warning_level_predict",
+                "base_date",
+                "target_date",
+                "forecast_horizon_day",
+                "predicted_level_m",
+                "percent_to_bank",
+                "from_bank_m",
+                "map_ready",
+                "focus_level",
+            ],
+            "default_visible_columns": [
+                "province",
+                "station_name",
+                "risk_level",
+                "target_date",
+                "forecast_horizon_day",
+                "map_ready",
+            ],
+            "row_actions": [
+                "focus_map",
+                "view_station_detail",
+                "add_to_package",
+            ],
+        },
+        "uploaded_entity_latest": {
+            "dataset": "uploaded_entity_latest",
+            "title": "Uploaded Entity Latest",
+            "primary_key": "entity_id",
+            "columns": [
+                "upload_id",
+                "entity_id",
+                "entity_type",
+                "entity_name_th",
+                "entity_name_en",
+                "province_name_th",
+                "latitude",
+                "longitude",
+                "risk_group",
+                "is_displayable",
+                "validation_reasons",
+            ],
+            "default_visible_columns": [
+                "entity_name_th",
+                "entity_type",
+                "province_name_th",
+                "risk_group",
+                "is_displayable",
+            ],
+            "row_actions": [
+                "focus_map",
+                "view_entity_detail",
+            ],
+        },
+        "dashboard_province_insights": {
+            "dataset": "dashboard_province_insights",
+            "title": "Dashboard Province Insights",
+            "primary_key": None,
+            "columns": [
+                "prediction_risk_top3",
+                "rainfall_top5",
+                "waterlevel_top5",
+                "reservoir_top5",
+                "filters",
+                "generated_at",
+            ],
+            "default_visible_columns": [
+                "prediction_risk_top3",
+                "rainfall_top5",
+                "waterlevel_top5",
+                "reservoir_top5",
+            ],
+            "row_actions": [
+                "focus_province",
+                "switch_mode",
+            ],
+        },
+        "cache_registry": {
+            "dataset": "cache_registry",
+            "title": "Cache Registry",
+            "primary_key": "cache_key",
+            "columns": [
+                "cache_key",
+                "owner_service",
+                "payload_type",
+                "depends_on",
+                "consumed_by",
+                "critical",
+                "allow_stale",
+                "aliases",
+            ],
+            "default_visible_columns": [
+                "cache_key",
+                "owner_service",
+                "critical",
+                "allow_stale",
+            ],
+            "row_actions": [
+                "view_cache_status",
+            ],
+        },
+    }
+)
+
+
 # ============================================================
 # 16) API ROUTE CATALOG
 # ============================================================
@@ -2063,14 +4160,16 @@ API_ROUTE_CATALOG: Dict[str, List[Dict[str, Any]]] = {
         {"method": "GET", "path": f"{API_PREFIX}/health", "description": "ตรวจสุขภาพระบบ"},
         {"method": "GET", "path": f"{API_PREFIX}/status", "description": "สถานะระบบ"},
         {"method": "GET", "path": f"{API_PREFIX}/config", "description": "config summary"},
-        {"method": "GET", "path": f"{API_PREFIX}/routes", "description": "รายการ API routes"},
+        {"method": "GET", "path": f"{API_PREFIX}/routes", "description": "registered routes + schema catalog"},
         {"method": "GET", "path": f"{API_PREFIX}/paths", "description": "สถานะ path"},
         {"method": "GET", "path": f"{API_PREFIX}/inputs", "description": "สถานะ input file"},
+        {"method": "GET", "path": f"{API_PREFIX}/schema", "description": "frontend schema bundle"},
     ],
     "company": [
         {"method": "GET", "path": f"{API_PREFIX}/companies", "description": "รายการบริษัท"},
         {"method": "GET", "path": f"{API_PREFIX}/companies/<tax_id>", "description": "รายละเอียดบริษัท"},
         {"method": "GET", "path": f"{API_PREFIX}/companies/summary", "description": "summary บริษัท"},
+        {"method": "GET", "path": f"{API_PREFIX}/companies/ranking/income", "description": "ranking บริษัทตามรายได้"},
     ],
     "policy": [
         {"method": "GET", "path": f"{API_PREFIX}/policy/summary", "description": "policy summary"},
@@ -2089,13 +4188,64 @@ API_ROUTE_CATALOG: Dict[str, List[Dict[str, Any]]] = {
         {"method": "GET", "path": f"{API_PREFIX}/flood/summary", "description": "flood summary"},
         {"method": "GET", "path": f"{API_PREFIX}/flood/rainfall/latest", "description": "rainfall latest"},
         {"method": "GET", "path": f"{API_PREFIX}/flood/waterlevel/latest", "description": "waterlevel latest"},
+        {"method": "GET", "path": f"{API_PREFIX}/flood/dam/latest", "description": "dam latest"},
         {"method": "GET", "path": f"{API_PREFIX}/flood/computed-risk", "description": "computed flood risk"},
+        {"method": "GET", "path": f"{API_PREFIX}/latest/rainfall", "description": "rainfall latest alias"},
+        {"method": "GET", "path": f"{API_PREFIX}/latest/waterlevel", "description": "waterlevel latest alias"},
+        {"method": "GET", "path": f"{API_PREFIX}/latest/dam", "description": "dam latest alias"},
+        {"method": "GET", "path": f"{API_PREFIX}/history/rainfall", "description": "rainfall history"},
+        {"method": "GET", "path": f"{API_PREFIX}/history/rain15d", "description": "rain15d history"},
+        {"method": "GET", "path": f"{API_PREFIX}/history/rain-yearly", "description": "rain yearly history"},
+        {"method": "GET", "path": f"{API_PREFIX}/history/waterlevel", "description": "waterlevel history"},
+        {"method": "GET", "path": f"{API_PREFIX}/history/dam", "description": "dam history"},
+        {"method": "GET", "path": f"{API_PREFIX}/history/all-long", "description": "all long history"},
+    ],
+    "prediction": [
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/contract", "description": "prediction contract"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/latest", "description": "latest flood predictions"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/summary", "description": "prediction summary"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/map", "description": "prediction map layer data"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/location-debug", "description": "prediction location match debug"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/station/<station_id>", "description": "prediction station detail"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/risk-distribution", "description": "prediction risk distribution"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/search", "description": "prediction search"},
+        {"method": "GET", "path": f"{API_PREFIX}/forecast/latest", "description": "forecast latest alias"},
+        {"method": "GET", "path": f"{API_PREFIX}/forecast/map", "description": "forecast map alias"},
+    ],
+    "upload": [
+        {"method": "POST", "path": f"{API_PREFIX}/upload/entities", "description": "upload entity CSV"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/entities/latest", "description": "latest entity records"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/entities/map", "description": "latest entity map features"},
+        {"method": "DELETE", "path": f"{API_PREFIX}/upload/entities/latest", "description": "clear latest entity"},
+        {"method": "POST", "path": f"{API_PREFIX}/upload/entities/clear", "description": "clear latest entity alias"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/logs", "description": "upload logs"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/result/<upload_id>", "description": "upload result"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/result/<upload_id>/displayable", "description": "displayable upload rows"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/result/<upload_id>/not-displayable", "description": "not-displayable upload rows"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/result/<upload_id>/error-report", "description": "upload error report"},
     ],
     "map": [
-        {"method": "GET", "path": f"{API_PREFIX}/map/layers", "description": "OpenLayers layers"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/layers", "description": "OpenLayers merged layers"},
         {"method": "GET", "path": f"{API_PREFIX}/map/companies", "description": "company markers"},
         {"method": "GET", "path": f"{API_PREFIX}/map/flood", "description": "flood markers"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/rainfall", "description": "rainfall map layer"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/waterlevel", "description": "waterlevel map layer"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/dam", "description": "dam map layer"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/prediction", "description": "prediction map layer"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/entities", "description": "uploaded entity map layer"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/boundaries", "description": "province/basin boundary layers"},
         {"method": "GET", "path": f"{API_PREFIX}/map/linkage-lines", "description": "linkage line layer"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/boundary/province", "description": "province boundary layer"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/boundary/basin", "description": "basin boundary layer"},
+    ],
+    "dashboard": [
+        {"method": "GET", "path": f"{API_PREFIX}/summary", "description": "dashboard summary"},
+        {"method": "GET", "path": f"{API_PREFIX}/dashboard/overview", "description": "dashboard overview"},
+        {"method": "GET", "path": f"{API_PREFIX}/dashboard/province-insights", "description": "province insight cards/ranking"},
+        {"method": "GET", "path": f"{API_PREFIX}/dashboard/freshness", "description": "data freshness"},
+        {"method": "GET", "path": f"{API_PREFIX}/charts/risk-distribution", "description": "risk distribution chart"},
+        {"method": "GET", "path": f"{API_PREFIX}/charts/province-comparison", "description": "province comparison chart"},
+        {"method": "GET", "path": f"{API_PREFIX}/charts/station-ranking", "description": "station ranking chart"},
     ],
     "filter": [
         {"method": "GET", "path": f"{API_PREFIX}/filter/fields", "description": "filter fields"},
@@ -2103,14 +4253,160 @@ API_ROUTE_CATALOG: Dict[str, List[Dict[str, Any]]] = {
         {"method": "POST", "path": f"{API_PREFIX}/filter/preview", "description": "preview filter"},
         {"method": "POST", "path": f"{API_PREFIX}/filter/apply", "description": "apply filter"},
     ],
+    "data_quality": [
+        {"method": "GET", "path": f"{API_PREFIX}/data-quality/summary", "description": "data quality summary"},
+        {"method": "GET", "path": f"{API_PREFIX}/data-quality/flood", "description": "flood data quality"},
+        {"method": "GET", "path": f"{API_PREFIX}/data-quality/spatial", "description": "spatial data quality"},
+        {"method": "GET", "path": f"{API_PREFIX}/admin/data-quality", "description": "admin data quality"},
+        {"method": "GET", "path": f"{API_PREFIX}/admin/errors", "description": "admin errors"},
+        {"method": "GET", "path": f"{API_PREFIX}/admin/scrape-runs", "description": "admin scrape runs"},
+    ],
+    "cache": [
+        {"method": "GET", "path": f"{API_PREFIX}/cache/status", "description": "cache status"},
+        {"method": "POST", "path": f"{API_PREFIX}/cache/clear", "description": "clear cache"},
+        {"method": "POST", "path": f"{API_PREFIX}/cache/rebuild", "description": "staged rebuild all cache"},
+        {"method": "POST", "path": f"{API_PREFIX}/cache/rebuild-phase", "description": "rebuild selected phase"},
+    ],
+    "detail": [
+        {"method": "GET", "path": f"{API_PREFIX}/detail/object", "description": "generic object detail"},
+        {"method": "GET", "path": f"{API_PREFIX}/search", "description": "global search"},
+    ],
     "package": [
         {"method": "POST", "path": f"{API_PREFIX}/packages/preview", "description": "preview package"},
         {"method": "POST", "path": f"{API_PREFIX}/packages/generate", "description": "generate package"},
         {"method": "GET", "path": f"{API_PREFIX}/packages", "description": "list packages"},
+        {"method": "GET", "path": f"{API_PREFIX}/packages/<package_id>/download", "description": "download package file"},
+        {"method": "GET", "path": f"{PUBLIC_API_PREFIX}/packages/<package_id>/meta", "description": "public package meta"},
         {"method": "GET", "path": f"{PUBLIC_API_PREFIX}/packages/<package_id>/data", "description": "public package data"},
+        {"method": "GET", "path": f"{PUBLIC_API_PREFIX}/packages/<package_id>/summary", "description": "public package summary"},
+        {"method": "GET", "path": f"{PUBLIC_API_PREFIX}/packages/<package_id>/map", "description": "public package map"},
+        {"method": "GET", "path": f"{PUBLIC_API_PREFIX}/packages/<package_id>/charts", "description": "public package charts"},
+        {"method": "GET", "path": f"{PUBLIC_API_PREFIX}/packages/<package_id>/tables", "description": "public package tables"},
     ],
 }
 
+API_ROUTE_CATALOG: Dict[str, List[Dict[str, Any]]] = {
+    "core": [
+        {"method": "GET", "path": f"{API_PREFIX}/health", "description": "ตรวจสุขภาพระบบ"},
+        {"method": "GET", "path": f"{API_PREFIX}/status", "description": "สถานะระบบ"},
+        {"method": "GET", "path": f"{API_PREFIX}/config", "description": "config summary"},
+        {"method": "GET", "path": f"{API_PREFIX}/routes", "description": "รายการ API routes"},
+        {"method": "GET", "path": f"{API_PREFIX}/paths", "description": "สถานะ path"},
+        {"method": "GET", "path": f"{API_PREFIX}/inputs", "description": "สถานะ input file"},
+        {"method": "GET", "path": f"{API_PREFIX}/schema", "description": "frontend schema bundle"},
+    ],
+    "company": [
+        {"method": "GET", "path": f"{API_PREFIX}/companies", "description": "รายการบริษัท"},
+        {"method": "GET", "path": f"{API_PREFIX}/companies/<tax_id>", "description": "รายละเอียดบริษัท"},
+        {"method": "GET", "path": f"{API_PREFIX}/companies/summary", "description": "summary บริษัท"},
+        {"method": "GET", "path": f"{API_PREFIX}/companies/ranking/income", "description": "ranking บริษัทตามรายได้"},
+    ],
+    "policy": [
+        {"method": "GET", "path": f"{API_PREFIX}/policy/summary", "description": "policy summary"},
+        {"method": "GET", "path": f"{API_PREFIX}/policy/companies", "description": "policy company list"},
+        {"method": "GET", "path": f"{API_PREFIX}/policy/company/<tax_id>", "description": "policy detail by company"},
+        {"method": "GET", "path": f"{API_PREFIX}/policy/product-summary", "description": "product summary"},
+        {"method": "GET", "path": f"{API_PREFIX}/policy/subclass-summary", "description": "subclass summary"},
+    ],
+    "linkage": [
+        {"method": "GET", "path": f"{API_PREFIX}/linkage/summary", "description": "linkage summary"},
+        {"method": "GET", "path": f"{API_PREFIX}/linkage/graph", "description": "D3 graph payload"},
+        {"method": "GET", "path": f"{API_PREFIX}/linkage/company/<tax_id>", "description": "company network"},
+        {"method": "GET", "path": f"{API_PREFIX}/linkage/director/<director_id>", "description": "director network"},
+    ],
+    "flood": [
+        {"method": "GET", "path": f"{API_PREFIX}/flood/summary", "description": "flood summary"},
+        {"method": "GET", "path": f"{API_PREFIX}/flood/rainfall/latest", "description": "rainfall latest"},
+        {"method": "GET", "path": f"{API_PREFIX}/flood/waterlevel/latest", "description": "waterlevel latest"},
+        {"method": "GET", "path": f"{API_PREFIX}/flood/dam/latest", "description": "dam latest"},
+        {"method": "GET", "path": f"{API_PREFIX}/flood/computed-risk", "description": "computed flood risk"},
+        {"method": "GET", "path": f"{API_PREFIX}/latest/rainfall", "description": "rainfall latest alias"},
+        {"method": "GET", "path": f"{API_PREFIX}/latest/waterlevel", "description": "waterlevel latest alias"},
+        {"method": "GET", "path": f"{API_PREFIX}/latest/dam", "description": "dam latest alias"},
+        {"method": "GET", "path": f"{API_PREFIX}/history/rainfall", "description": "rainfall history"},
+        {"method": "GET", "path": f"{API_PREFIX}/history/rain15d", "description": "rain15d history"},
+        {"method": "GET", "path": f"{API_PREFIX}/history/rain-yearly", "description": "rain yearly history"},
+        {"method": "GET", "path": f"{API_PREFIX}/history/waterlevel", "description": "waterlevel history"},
+        {"method": "GET", "path": f"{API_PREFIX}/history/dam", "description": "dam history"},
+        {"method": "GET", "path": f"{API_PREFIX}/history/all-long", "description": "all long history"},
+    ],
+    "prediction": [
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/contract", "description": "prediction contract"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/latest", "description": "latest flood predictions"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/summary", "description": "prediction summary"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/map", "description": "prediction map layer data"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/location-debug", "description": "prediction location match debug"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/station/<station_id>", "description": "prediction station detail"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/risk-distribution", "description": "prediction risk distribution"},
+        {"method": "GET", "path": f"{API_PREFIX}/prediction/search", "description": "prediction search"},
+        {"method": "GET", "path": f"{API_PREFIX}/forecast/latest", "description": "forecast latest alias"},
+        {"method": "GET", "path": f"{API_PREFIX}/forecast/map", "description": "forecast map alias"},
+    ],
+    "upload": [
+        {"method": "POST", "path": f"{API_PREFIX}/upload/entities", "description": "upload entity CSV"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/entities/latest", "description": "latest entity records"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/entities/map", "description": "latest entity map features"},
+        {"method": "DELETE", "path": f"{API_PREFIX}/upload/entities/latest", "description": "clear latest entity"},
+        {"method": "POST", "path": f"{API_PREFIX}/upload/entities/clear", "description": "clear latest entity alias"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/logs", "description": "upload logs"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/result/<upload_id>", "description": "upload result"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/result/<upload_id>/displayable", "description": "displayable upload rows"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/result/<upload_id>/not-displayable", "description": "not-displayable upload rows"},
+        {"method": "GET", "path": f"{API_PREFIX}/upload/result/<upload_id>/error-report", "description": "upload error report"},
+    ],
+    "map": [
+        {"method": "GET", "path": f"{API_PREFIX}/map/layers", "description": "OpenLayers merged layers"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/companies", "description": "company markers"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/flood", "description": "flood markers"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/entities", "description": "uploaded entity map layer"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/linkage-lines", "description": "linkage line layer"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/boundary/province", "description": "province boundary layer"},
+        {"method": "GET", "path": f"{API_PREFIX}/map/boundary/basin", "description": "basin boundary layer"},
+    ],
+    "dashboard": [
+        {"method": "GET", "path": f"{API_PREFIX}/summary", "description": "dashboard summary"},
+        {"method": "GET", "path": f"{API_PREFIX}/dashboard/overview", "description": "dashboard overview"},
+        {"method": "GET", "path": f"{API_PREFIX}/dashboard/province-insights", "description": "province insight cards/ranking"},
+        {"method": "GET", "path": f"{API_PREFIX}/dashboard/freshness", "description": "data freshness"},
+        {"method": "GET", "path": f"{API_PREFIX}/charts/risk-distribution", "description": "risk distribution chart"},
+        {"method": "GET", "path": f"{API_PREFIX}/charts/province-comparison", "description": "province comparison chart"},
+        {"method": "GET", "path": f"{API_PREFIX}/charts/station-ranking", "description": "station ranking chart"},
+    ],
+    "filter": [
+        {"method": "GET", "path": f"{API_PREFIX}/filter/fields", "description": "filter fields"},
+        {"method": "GET", "path": f"{API_PREFIX}/filter/quick-presets", "description": "quick presets"},
+        {"method": "POST", "path": f"{API_PREFIX}/filter/preview", "description": "preview filter"},
+        {"method": "POST", "path": f"{API_PREFIX}/filter/apply", "description": "apply filter"},
+    ],
+    "data_quality": [
+        {"method": "GET", "path": f"{API_PREFIX}/data-quality/summary", "description": "data quality summary"},
+        {"method": "GET", "path": f"{API_PREFIX}/data-quality/flood", "description": "flood data quality"},
+        {"method": "GET", "path": f"{API_PREFIX}/data-quality/spatial", "description": "spatial data quality"},
+        {"method": "GET", "path": f"{API_PREFIX}/admin/data-quality", "description": "admin data quality"},
+        {"method": "GET", "path": f"{API_PREFIX}/admin/errors", "description": "admin errors"},
+        {"method": "GET", "path": f"{API_PREFIX}/admin/scrape-runs", "description": "admin scrape runs"},
+    ],
+    "cache": [
+        {"method": "POST", "path": f"{API_PREFIX}/cache/rebuild", "description": "staged rebuild all cache"},
+        {"method": "POST", "path": f"{API_PREFIX}/cache/rebuild-phase", "description": "rebuild selected phase"},
+        {"method": "GET", "path": f"{API_PREFIX}/cache/status", "description": "cache status"},
+    ],
+    "detail": [
+        {"method": "GET", "path": f"{API_PREFIX}/detail/object", "description": "generic object detail"},
+        {"method": "GET", "path": f"{API_PREFIX}/search", "description": "global search"},
+    ],
+    "package": [
+        {"method": "POST", "path": f"{API_PREFIX}/packages/preview", "description": "preview package"},
+        {"method": "POST", "path": f"{API_PREFIX}/packages/generate", "description": "generate package"},
+        {"method": "GET", "path": f"{API_PREFIX}/packages", "description": "list packages"},
+        {"method": "GET", "path": f"{PUBLIC_API_PREFIX}/packages/<package_id>/meta", "description": "public package meta"},
+        {"method": "GET", "path": f"{PUBLIC_API_PREFIX}/packages/<package_id>/data", "description": "public package data"},
+        {"method": "GET", "path": f"{PUBLIC_API_PREFIX}/packages/<package_id>/summary", "description": "public package summary"},
+        {"method": "GET", "path": f"{PUBLIC_API_PREFIX}/packages/<package_id>/map", "description": "public package map"},
+        {"method": "GET", "path": f"{PUBLIC_API_PREFIX}/packages/<package_id>/charts", "description": "public package charts"},
+        {"method": "GET", "path": f"{PUBLIC_API_PREFIX}/packages/<package_id>/tables", "description": "public package tables"},
+    ],
+}
 
 # ============================================================
 # 17) VALIDATION HELPERS
@@ -2171,7 +4467,7 @@ def get_filterable_fields(target: Optional[str] = None) -> List[Dict[str, Any]]:
 
     Args:
         target:
-            company / policy / linkage / flood
+            company / policy / linkage / flood / prediction / entity / map / dashboard
     """
 
     fields = [
@@ -2209,10 +4505,92 @@ def get_filterable_fields(target: Optional[str] = None) -> List[Dict[str, Any]]:
                 "policy_summary",
                 "flood",
             },
+            "director": {
+                "linkage",
+                "linkage_summary",
+            },
             "flood": {
                 "location",
                 "flood",
                 "spatial",
+                "data_source",
+            },
+            "flood_rainfall_latest": {
+                "location",
+                "flood",
+                "data_source",
+                "source_flag",
+            },
+            "flood_waterlevel_latest": {
+                "location",
+                "flood",
+                "data_source",
+                "source_flag",
+            },
+            "flood_dam_latest": {
+                "location",
+                "flood",
+                "data_source",
+                "source_flag",
+            },
+            "flood_prediction_latest": {
+                "prediction",
+                "flood",
+                "location",
+                "map",
+                "data_source",
+                "source_flag",
+            },
+            "flood_prediction_map": {
+                "prediction",
+                "flood",
+                "location",
+                "map",
+                "data_source",
+                "source_flag",
+            },
+            "uploaded_entity_latest": {
+                "entity",
+                "location",
+                "map",
+                "source_flag",
+            },
+            "map_layers": {
+                "map",
+                "flood",
+                "prediction",
+                "entity",
+                "location",
+                "source_flag",
+            },
+            "dashboard_province_insights": {
+                "dashboard",
+                "flood",
+                "prediction",
+                "location",
+            },
+            "map": {
+                "map",
+                "location",
+                "flood",
+                "prediction",
+                "entity",
+                "source_flag",
+            },
+            "dashboard": {
+                "dashboard",
+                "flood",
+                "prediction",
+                "location",
+                "data_quality",
+            },
+            "data_quality": {
+                "data_quality",
+                "cache",
+                "data_source",
+            },
+            "cache_registry": {
+                "cache",
             },
         }.get(target, set())
 
@@ -2251,10 +4629,9 @@ def get_sortable_fields(target: Optional[str] = None) -> List[str]:
         if field.get("sortable")
     ]
 
-
 def get_exportable_fields(dataset_key: Optional[str] = None) -> List[Dict[str, Any]]:
     """
-    คืน field ที่ export ได้
+    คืน field ที่ export ได้ โดยตัด internal path/debug/raw field ออกเสมอ
     """
 
     if dataset_key and dataset_key in DATASET_SCHEMAS:
@@ -2263,15 +4640,17 @@ def get_exportable_fields(dataset_key: Optional[str] = None) -> List[Dict[str, A
         return [
             field_definition_to_dict(field_def)
             for name, field_def in FIELD_DEFINITIONS.items()
-            if name in allowed_fields and field_def.exportable
+            if name in allowed_fields
+            and field_def.exportable
+            and name not in INTERNAL_NON_EXPORTABLE_FIELDS
         ]
 
     return [
         field_definition_to_dict(field_def)
-        for field_def in FIELD_DEFINITIONS.values()
+        for name, field_def in FIELD_DEFINITIONS.items()
         if field_def.exportable
+        and name not in INTERNAL_NON_EXPORTABLE_FIELDS
     ]
-
 
 def get_dataset_schema(dataset_key: str) -> Optional[Dict[str, Any]]:
     """
@@ -2354,76 +4733,127 @@ def validate_required_columns(
         "required_columns": list(required_columns),
     }
 
-
 def validate_filter_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     validate filter payload แบบเบื้องต้น
 
     ไม่ apply filter จริง
-    แค่ตรวจว่าโครงสร้างถูกหรือไม่
+    แค่ตรวจ target/operator/field ตาม final schema contract
     """
 
     errors: List[Dict[str, Any]] = []
     warnings: List[Dict[str, Any]] = []
 
+    if not isinstance(payload, dict):
+        return {
+            "valid": False,
+            "errors": [
+                {
+                    "code": "invalid_filter_payload",
+                    "message": "payload ต้องเป็น object",
+                }
+            ],
+            "warnings": [],
+        }
+
     target = payload.get("target", "company")
 
-    if target not in {"company", "policy", "linkage", "flood", "map", "dashboard"}:
+    if target not in RUNTIME_FILTER_TARGETS:
         errors.append(
             {
                 "code": "invalid_filter_target",
                 "message": f"target ไม่ถูกต้อง: {target}",
+                "allowed_targets": RUNTIME_FILTER_TARGETS,
             }
         )
+
+    filters = payload.get("filters", {})
+    if filters and not isinstance(filters, dict):
+        errors.append(
+            {
+                "code": "invalid_filters",
+                "message": "filters ต้องเป็น object",
+            }
+        )
+
+    if isinstance(filters, dict):
+        for field_name in filters.keys():
+            base_field = str(field_name)
+            if base_field.endswith("_min") or base_field.endswith("_max"):
+                base_field = base_field[:-4]
+
+            if base_field not in FIELD_DEFINITIONS:
+                warnings.append(
+                    {
+                        "code": "unknown_filter_field",
+                        "message": f"ไม่พบ field ใน dictionary: {base_field}",
+                    }
+                )
 
     advanced = payload.get("advanced", {})
 
     if advanced:
-        logic = advanced.get("logic", "AND")
-
-        if logic not in FILTER_LOGICAL_OPERATORS:
+        if not isinstance(advanced, dict):
             errors.append(
                 {
-                    "code": "invalid_filter_logic",
-                    "message": f"logical operator ไม่ถูกต้อง: {logic}",
+                    "code": "invalid_advanced_filter",
+                    "message": "advanced ต้องเป็น object",
                 }
             )
+        else:
+            logic = advanced.get("logic", "AND")
 
-        for condition in advanced.get("conditions", []):
-            field_name = condition.get("field")
-            operator = condition.get("operator")
-
-            if not field_name:
+            if logic not in FILTER_LOGICAL_OPERATORS:
                 errors.append(
                     {
-                        "code": "filter_field_missing",
-                        "message": "filter condition ไม่มี field",
-                    }
-                )
-                continue
-
-            if field_name not in FIELD_DEFINITIONS:
-                warnings.append(
-                    {
-                        "code": "unknown_filter_field",
-                        "message": f"ไม่พบ field ใน dictionary: {field_name}",
+                        "code": "invalid_filter_logic",
+                        "message": f"logical operator ไม่ถูกต้อง: {logic}",
                     }
                 )
 
-            if operator not in FILTER_OPERATORS:
-                errors.append(
-                    {
-                        "code": "invalid_filter_operator",
-                        "message": f"operator ไม่ถูกต้อง: {operator}",
-                    }
-                )
+            for condition in advanced.get("conditions", []):
+                if not isinstance(condition, dict):
+                    errors.append(
+                        {
+                            "code": "invalid_filter_condition",
+                            "message": "condition ต้องเป็น object",
+                        }
+                    )
+                    continue
+
+                field_name = condition.get("field")
+                operator = condition.get("operator") or condition.get("op")
+
+                if not field_name:
+                    errors.append(
+                        {
+                            "code": "filter_field_missing",
+                            "message": "filter condition ไม่มี field",
+                        }
+                    )
+                    continue
+
+                if field_name not in FIELD_DEFINITIONS:
+                    warnings.append(
+                        {
+                            "code": "unknown_filter_field",
+                            "message": f"ไม่พบ field ใน dictionary: {field_name}",
+                        }
+                    )
+
+                if operator and operator not in FILTER_OPERATORS:
+                    errors.append(
+                        {
+                            "code": "invalid_filter_operator",
+                            "message": f"operator ไม่ถูกต้อง: {operator}",
+                        }
+                    )
 
     return {
         "valid": len(errors) == 0,
         "errors": errors,
         "warnings": warnings,
     }
-
 
 def validate_package_request(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -2508,6 +4938,112 @@ def validate_package_request(payload: Dict[str, Any]) -> Dict[str, Any]:
 # 18) FRONTEND CONTRACT HELPERS
 # ============================================================
 
+def get_api_route_catalog() -> Dict[str, List[Dict[str, Any]]]:
+    """
+    คืน route catalog รวม endpoint เดิม + flood runtime ใหม่
+    """
+
+    return API_ROUTE_CATALOG
+
+
+def flatten_api_route_catalog() -> List[Dict[str, Any]]:
+    """
+    คืน route catalog แบบ list สำหรับ frontend dev doc
+    """
+
+    records: List[Dict[str, Any]] = []
+
+    for group, routes in API_ROUTE_CATALOG.items():
+        for route in routes:
+            item = dict(route)
+            item["group"] = group
+            records.append(item)
+
+    return records
+
+def get_prediction_contract_schema() -> Dict[str, Any]:
+    """
+    คืน prediction contract สำหรับ /api/prediction/contract
+    """
+
+    return {
+        "record_schema": FLOOD_PREDICTION_RECORD_SCHEMA,
+        "dataset_schema": dataset_schema_to_dict(DATASET_SCHEMAS["flood_prediction_latest"]),
+        "map_dataset_schema": dataset_schema_to_dict(DATASET_SCHEMAS["flood_prediction_map"]),
+        "required_fields": DATASET_SCHEMAS["flood_prediction_latest"].required_fields,
+        "fields": DATASET_SCHEMAS["flood_prediction_latest"].fields,
+        "field_aliases": {
+            "risk": [
+                "risk_level",
+                "risk_status",
+                "warning_level",
+                "warning_level_predict",
+            ],
+            "province": [
+                "province",
+                "province_model",
+                "prediction_province",
+                "prediction_province_model",
+            ],
+            "station": [
+                "station_name",
+                "station_id",
+                "station_code",
+                "matched_station_id",
+                "matched_station_code",
+                "matched_station_name",
+            ],
+            "horizon": [
+                "forecast_horizon_day",
+                "prediction_horizon",
+                "horizon",
+            ],
+        },
+        "map_contract": {
+            "map_ready": "true ถ้ามีพิกัดจาก station master",
+            "focus_level": "station|province_boundary|none",
+            "focus_fallback": "station|province_boundary|none",
+            "focus_fallback_reason": "matched_station_master|province_boundary_fallback|missing_location",
+            "latitude_longitude_source": "station_master_first_then_province_boundary_fallback",
+            "public_map_can_expose_lat_lon": True,
+        },
+        "record_key": "prediction|station|base_date|target_date|forecast_horizon_day",
+        "public_allowed_fields": [
+            "province",
+            "station_name",
+            "risk_level",
+            "target_date",
+            "forecast_horizon_day",
+            "latest_value",
+            "latest_unit",
+            "map_ready",
+            "latitude",
+            "longitude",
+        ],
+    }
+
+def get_cache_rebuild_contract_schema() -> Dict[str, Any]:
+    """
+    คืน contract ของ cache registry และ rebuild phase
+    """
+
+    return {
+        "cache_registry_item": CACHE_REGISTRY_ITEM_SCHEMA,
+        "rebuild_phase_result": REBUILD_PHASE_RESULT_SCHEMA,
+        "phase_order": [
+            "validate_runtime_inputs",
+            "company_policy_base",
+            "linkage",
+            "flood_excel_base",
+            "spatial_prediction_entity",
+            "company_policy_enriched",
+            "map",
+            "dashboard_charts",
+            "data_quality",
+            "package_snapshot",
+        ],
+    }
+
 def get_frontend_field_dictionary() -> Dict[str, Any]:
     """
     คืน field dictionary สำหรับ frontend
@@ -2529,13 +5065,59 @@ def get_frontend_field_dictionary() -> Dict[str, Any]:
         "operators": FILTER_OPERATORS,
         "logical_operators": FILTER_LOGICAL_OPERATORS,
         "table_views": TABLE_VIEW_SCHEMAS,
+        "runtime_contracts": {
+            "data_source": DATA_SOURCE_CONFIG_SCHEMA,
+            "flood_latest": FLOOD_LATEST_RECORD_SCHEMA,
+            "flood_prediction": FLOOD_PREDICTION_RECORD_SCHEMA,
+            "uploaded_entity": UPLOADED_ENTITY_RECORD_SCHEMA,
+            "map_layer": MAP_LAYER_PAYLOAD_SCHEMA,
+            "merged_map_layers": MERGED_MAP_LAYERS_PAYLOAD_SCHEMA,
+            "dashboard_province_insights": DASHBOARD_PROVINCE_INSIGHTS_SCHEMA,
+            "cache_registry": CACHE_REGISTRY_ITEM_SCHEMA,
+            "rebuild_phase_result": REBUILD_PHASE_RESULT_SCHEMA,
+        },
     }
-
 
 def get_frontend_schema_bundle() -> Dict[str, Any]:
     """
     คืน schema bundle ทั้งหมดที่ frontend ต้องใช้
     """
+
+    uploaded_entity_schema = FLOOD_INPUT_SCHEMA.get(
+        "uploaded_entity",
+        SheetSchema(
+            key="uploaded_entity",
+            display_name="uploaded_entity.csv",
+            description="uploaded entity fallback schema",
+            required_columns=[
+                "entity_id",
+                "entity_type",
+                "entity_name_th",
+                "province_name_th",
+                "latitude",
+                "longitude",
+            ],
+            optional_columns=[],
+            source_type="csv_upload",
+        ),
+    )
+
+    prediction_schema = FLOOD_INPUT_SCHEMA.get(
+        "prediction_latest",
+        SheetSchema(
+            key="prediction_latest",
+            display_name="predict_*.xlsx",
+            description="prediction fallback schema",
+            required_columns=[
+                "station_id",
+                "base_date",
+                "target_date",
+                "forecast_horizon_day",
+            ],
+            optional_columns=[],
+            source_type="excel",
+        ),
+    )
 
     return {
         "api": {
@@ -2543,18 +5125,23 @@ def get_frontend_schema_bundle() -> Dict[str, Any]:
             "public_prefix": PUBLIC_API_PREFIX,
             "response_example": make_api_schema_example(),
             "routes": API_ROUTE_CATALOG,
+            "route_list": flatten_api_route_catalog(),
         },
         "fields": get_frontend_field_dictionary(),
         "datasets": get_all_dataset_schemas(),
         "inputs": get_all_input_schemas(),
+        "data_source": DATA_SOURCE_CONFIG_SCHEMA,
         "filter": {
             "payload_example": FILTER_PAYLOAD_EXAMPLE,
             "operators": FILTER_OPERATORS,
             "logical_operators": FILTER_LOGICAL_OPERATORS,
+            "targets": RUNTIME_FILTER_TARGETS,
         },
         "map": {
             "layer_schema": MAP_LAYER_SCHEMA,
+            "merged_layers_schema": MERGED_MAP_LAYERS_PAYLOAD_SCHEMA,
             "feature_property_schema": MAP_FEATURE_PROPERTY_SCHEMA,
+            "canonical_layer_order": MERGED_MAP_LAYERS_PAYLOAD_SCHEMA["layer_order"],
         },
         "graph": {
             "node_schema": GRAPH_NODE_SCHEMA,
@@ -2564,8 +5151,24 @@ def get_frontend_schema_bundle() -> Dict[str, Any]:
         "dashboard": {
             "summary_card_schema": SUMMARY_CARD_SCHEMA,
             "dashboard_summary_schema": DASHBOARD_SUMMARY_SCHEMA,
+            "province_insights_schema": DASHBOARD_PROVINCE_INSIGHTS_SCHEMA,
             "chart_payload_schema": CHART_PAYLOAD_SCHEMA,
         },
+        "prediction": {
+            **get_prediction_contract_schema(),
+            "input_schema": sheet_schema_to_dict(prediction_schema),
+        },
+        "entity": {
+            "record_schema": UPLOADED_ENTITY_RECORD_SCHEMA,
+            "input_schema": sheet_schema_to_dict(uploaded_entity_schema),
+            "required_fields": uploaded_entity_schema.required_columns,
+            "public_policy": {
+                "displayable_only": True,
+                "remove_internal_paths": True,
+                "remove_raw_invalid_rows": True,
+            },
+        },
+        "cache_rebuild": get_cache_rebuild_contract_schema(),
         "package": {
             "request_schema": asdict(
                 PackageRequestSchema(
@@ -2577,6 +5180,7 @@ def get_frontend_schema_bundle() -> Dict[str, Any]:
             "snapshot_schema": PACKAGE_SNAPSHOT_SCHEMA,
             "public_schema": PUBLIC_PACKAGE_SCHEMA,
             "security_schema": MASKING_SCHEMA,
+            "checksum_components": PACKAGE_SNAPSHOT_SCHEMA["checksum_components"],
         },
         "data_quality": {
             "issue_schema": asdict(
@@ -2593,7 +5197,6 @@ def get_frontend_schema_bundle() -> Dict[str, Any]:
             "categories": DATA_QUALITY_CATEGORIES,
         },
     }
-
 
 # ============================================================
 # 19) DEFAULT EMPTY PAYLOADS
@@ -2632,11 +5235,94 @@ EMPTY_PAYLOADS: Dict[str, Any] = {
         "warnings": [],
     },
     "map_layers": {
+        "map": {},
+        "center": [],
+        "zoom": 0,
         "layers": {},
+        "layers_by_id": {},
+        "layer_order": [],
+        "layer_list": [],
+        "layers_list": [],
+        "legacy_layers": [],
         "summary": {
             "layer_count": 0,
+            "canonical_layer_count": 0,
             "feature_count": 0,
+            "record_count": 0,
+            "record_count_by_layer": {},
+            "enabled_layers": [],
+            "compatibility_layers": [],
+            "degraded_layer_ids": [],
+            "generated_at": "",
+            "degraded": False,
         },
+        "meta": {
+            "source": "excel",
+            "filters": {},
+            "counts": {},
+            "record_count_by_layer": {},
+            "upstream_cache_keys": [],
+            "degraded": False,
+            "errors": [],
+            "generated_at": "",
+            "cache_used": False,
+        },
+    },
+    "flood_rainfall_latest": {
+        "records": [],
+        "total": 0,
+        "meta": {
+            "source": "excel",
+        },
+    },
+    "flood_waterlevel_latest": {
+        "records": [],
+        "total": 0,
+        "meta": {
+            "source": "excel",
+        },
+    },
+    "flood_dam_latest": {
+        "records": [],
+        "total": 0,
+        "meta": {
+            "source": "excel",
+        },
+    },
+    "flood_prediction_latest": {
+        "records": [],
+        "total": 0,
+        "meta": {
+            "source": "excel",
+            "map_ready_count": 0,
+        },
+    },
+    "flood_prediction_map": {
+        "type": "FeatureCollection",
+        "features": [],
+        "total": 0,
+        "meta": {
+            "source": "excel",
+            "map_ready_count": 0,
+            "province_fallback_count": 0,
+        },
+    },
+    "uploaded_entity_latest": {
+        "records": [],
+        "displayable_records": [],
+        "not_displayable_records": [],
+        "total": 0,
+        "meta": {
+            "source": "uploaded_entity",
+        },
+    },
+    "dashboard_province_insights": {
+        "prediction_risk_top3": [],
+        "rainfall_top5": [],
+        "waterlevel_top5": [],
+        "reservoir_top5": [],
+        "filters": {},
+        "generated_at": "",
     },
     "dashboard_summary": {
         "summary_cards": [],
@@ -2644,18 +5330,36 @@ EMPTY_PAYLOADS: Dict[str, Any] = {
         "top_companies": [],
         "top_directors": [],
         "risk_insights": [],
+        "province_insights": DASHBOARD_PROVINCE_INSIGHTS_SCHEMA,
+        "prediction_risk_top3": [],
+        "rainfall_top5": [],
+        "waterlevel_top5": [],
+        "reservoir_top5": [],
         "data_quality": DATA_QUALITY_SUMMARY_SCHEMA,
         "freshness": {},
     },
     "data_quality": DATA_QUALITY_SUMMARY_SCHEMA,
+    "cache_registry": {
+        "records": [],
+        "total": 0,
+    },
+    "rebuild_phase_result": {
+        "phase": "",
+        "status": "pending",
+        "outputs": {},
+        "errors": [],
+        "warnings": [],
+        "duration_ms": None,
+    },
     "package_preview": {
         "components": PACKAGE_COMPONENTS,
         "security_options": PACKAGE_SECURITY_OPTIONS,
         "estimated_records": {},
         "warnings": [],
     },
+    "package_snapshot": PACKAGE_SNAPSHOT_SCHEMA,
+    "public_package": PUBLIC_PACKAGE_SCHEMA,
 }
-
 
 def get_empty_payload(key: str) -> Any:
     """
@@ -2674,6 +5378,43 @@ def get_schema_summary() -> Dict[str, Any]:
     คืน summary ของ schemas.py
     """
 
+    required_runtime_inputs = [
+        "rainfall_latest",
+        "waterlevel_latest",
+        "large_dam_latest",
+        "medium_dam_latest",
+        "all_long_latest",
+        "prediction_latest",
+        "uploaded_entity",
+    ]
+
+    required_runtime_datasets = [
+        "company_unified_base",
+        "company_unified_master",
+        "flood_rainfall_latest",
+        "flood_waterlevel_latest",
+        "flood_dam_latest",
+        "flood_prediction_latest",
+        "flood_prediction_map",
+        "uploaded_entity_latest",
+        "map_layers",
+        "dashboard_province_insights",
+        "cache_registry",
+        "rebuild_phase_result",
+    ]
+
+    missing_inputs = [
+        key
+        for key in required_runtime_inputs
+        if key not in FLOOD_INPUT_SCHEMA
+    ]
+
+    missing_datasets = [
+        key
+        for key in required_runtime_datasets
+        if key not in DATASET_SCHEMAS
+    ]
+
     return {
         "field_count": len(FIELD_DEFINITIONS),
         "field_group_count": len(FIELD_GROUPS),
@@ -2681,10 +5422,27 @@ def get_schema_summary() -> Dict[str, Any]:
         "policy_input_sheet_count": len(POLICY_INPUT_SCHEMA),
         "flood_input_sheet_count": len(FLOOD_INPUT_SCHEMA),
         "api_group_count": len(API_ROUTE_CATALOG),
+        "api_route_count": len(flatten_api_route_catalog()),
         "table_view_count": len(TABLE_VIEW_SCHEMAS),
         "package_component_count": len(PACKAGE_COMPONENTS),
         "data_quality_category_count": len(DATA_QUALITY_CATEGORIES),
+        "runtime_contracts": [
+            "DataSourceConfigSchema",
+            "FloodLatestRecord",
+            "FloodPredictionRecord",
+            "UploadedEntityRecord",
+            "MapLayerPayloadSchema",
+            "DashboardProvinceInsightsSchema",
+            "CacheRegistryItemSchema",
+            "RebuildPhaseResultSchema",
+        ],
+        "runtime_filter_targets": RUNTIME_FILTER_TARGETS,
+        "new_runtime_datasets": required_runtime_datasets,
+        "required_runtime_inputs": required_runtime_inputs,
+        "missing_runtime_inputs": missing_inputs,
+        "missing_runtime_datasets": missing_datasets,
+        "contract_ready": not missing_inputs and not missing_datasets,
+        "schema_bundle_version": SCHEMA_BUNDLE_VERSION,
     }
-
 
 SCHEMA_BUNDLE_VERSION: str = "1.0.0"

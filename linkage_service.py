@@ -104,6 +104,7 @@ from utils import (
     to_jsonable,
     to_number,
     validate_tax_id,
+    write_cache,
 )
 
 try:
@@ -144,6 +145,8 @@ CACHE_KEYS: Dict[str, str] = {
     "key_connector_summary": "key_connector_summary",
     "linkage_company_summary": "linkage_company_summary",
     "linkage_graph_payload": "linkage_graph_payload",
+    "linkage_graph": "linkage_graph_payload",
+    "graph_payload": "linkage_graph_payload",
     "exposure_by_director": "exposure_by_director",
 }
 
@@ -164,6 +167,14 @@ DIRECTOR_SEARCHABLE_FIELDS: List[str] = [
     "company_list_text",
     "risk_level_text",
 ]
+
+
+LINKAGE_GRAPH_MAIN_CACHE_KEY = "linkage_graph_payload"
+
+LINKAGE_GRAPH_ALIAS_CACHE_KEYS: Dict[str, str] = {
+    "linkage_graph": LINKAGE_GRAPH_MAIN_CACHE_KEY,
+    "graph_payload": LINKAGE_GRAPH_MAIN_CACHE_KEY,
+}
 
 SHARED_LINK_SEARCHABLE_FIELDS: List[str] = [
     "source_tax_id",
@@ -383,38 +394,145 @@ def get_linkage_input_records(force_refresh: bool = False) -> List[Dict[str, Any
 # 4) COMPANY UNIFIED ENRICHMENT
 # ============================================================
 
-def load_company_unified_index() -> Dict[str, Dict[str, Any]]:
+def extract_records_from_cache_payload(payload: Any) -> List[Dict[str, Any]]:
     """
-    โหลด company_unified_master จาก cache เพื่อ enrich linkage
-
-    ใช้เพิ่ม:
-    - policy exposure
-    - flood risk
-    - location
-    - company profile ที่ resolve แล้ว
+    ดึง records จาก cache payload หลายรูปแบบ
     """
 
-    data = read_cache("company_unified_master", default={})
+    if isinstance(payload, dict):
+        if isinstance(payload.get("records"), list):
+            return payload["records"]
 
-    if isinstance(data, dict):
-        records = data.get("records") or data.get("data") or []
-    elif isinstance(data, list):
-        records = data
-    else:
-        records = []
+        if isinstance(payload.get("data"), dict) and isinstance(payload["data"].get("records"), list):
+            return payload["data"]["records"]
 
-    if not isinstance(records, list):
-        return {}
+        if isinstance(payload.get("data"), list):
+            return payload["data"]
 
-    index: Dict[str, Dict[str, Any]] = {}
+    if isinstance(payload, list):
+        return payload
 
-    for record in records:
+    return []
+
+
+def index_company_records_by_tax_id(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """
+    index company records ด้วย tax_id_norm
+    """
+
+    result: Dict[str, Dict[str, Any]] = {}
+
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+
         tax_id_norm = normalize_tax_id(record.get("tax_id_norm") or record.get("tax_id"))
 
         if tax_id_norm:
-            index[tax_id_norm] = record
+            result[tax_id_norm] = record
 
-    return index
+    return result
+
+
+def load_company_source_payload() -> Dict[str, Any]:
+    """
+    PHASE linkage อ่าน company_unified_base ก่อน
+    ถ้าไม่มีให้ fallback เป็น company_unified_master
+    ถ้ายังไม่มี ให้ใช้ linkage input record เป็น fallback ใน enrich_company_fields()
+    """
+
+    for cache_key in ["company_unified_base", "company_unified_master"]:
+        payload = read_cache(cache_key, default={})
+        records = extract_records_from_cache_payload(payload)
+
+        if records:
+            return {
+                "company_source": cache_key,
+                "records": records,
+                "index": index_company_records_by_tax_id(records),
+                "record_count": len(records),
+                "degraded": cache_key != "company_unified_base",
+            }
+
+    return {
+        "company_source": "linkage_input_fallback",
+        "records": [],
+        "index": {},
+        "record_count": 0,
+        "degraded": True,
+    }
+
+
+def build_linkage_cache_meta(
+    cache_key: str,
+    source_input: str,
+    company_source: str,
+    record_count: int = 0,
+    node_count: int = 0,
+    edge_count: int = 0,
+    cache_used: bool = False,
+    degraded: bool = False,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    metadata กลางของ linkage cache
+    """
+
+    return {
+        "cache_key": cache_key,
+        "source_input": source_input,
+        "company_source": company_source,
+        "record_count": int(record_count or 0),
+        "node_count": int(node_count or 0),
+        "edge_count": int(edge_count or 0),
+        "generated_at": now_iso(),
+        "cache_used": bool(cache_used),
+        "degraded": bool(degraded),
+        **(extra or {}),
+    }
+
+
+def write_linkage_graph_aliases(payload: Dict[str, Any], cache_used: bool = False) -> Dict[str, Any]:
+    """
+    เขียน alias cache ให้ข้อมูลเดียวกับ linkage_graph_payload
+    """
+
+    alias_results: Dict[str, Any] = {}
+
+    if not isinstance(payload, dict):
+        return alias_results
+
+    for alias_key in LINKAGE_GRAPH_ALIAS_CACHE_KEYS.keys():
+        alias_payload = dict(payload)
+        alias_payload["meta"] = {
+            **(payload.get("meta") if isinstance(payload.get("meta"), dict) else {}),
+            "cache_key": LINKAGE_GRAPH_MAIN_CACHE_KEY,
+            "alias_cache_key": alias_key,
+            "alias_of": LINKAGE_GRAPH_MAIN_CACHE_KEY,
+            "cache_used": bool(cache_used),
+            "generated_at": now_iso(),
+        }
+
+        alias_results[alias_key] = write_cache(
+            alias_key,
+            alias_payload,
+            ttl_seconds=get_linkage_ttl(),
+            source=f"linkage_service.write_linkage_graph_aliases.{alias_key}",
+        )
+
+    return alias_results
+
+def load_company_unified_index() -> Dict[str, Dict[str, Any]]:
+    """
+    โหลด company index สำหรับ linkage phase
+
+    ลำดับ:
+    1. company_unified_base
+    2. company_unified_master
+    3. linkage_input_fallback ผ่าน enrich_company_fields(base)
+    """
+
+    return load_company_source_payload().get("index", {})
 
 
 def enrich_company_fields(
@@ -422,13 +540,16 @@ def enrich_company_fields(
     company_index: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
-    เติมข้อมูลจาก company_unified_master เข้า linkage record
+    เติมข้อมูลจาก company_unified_base/company_unified_master เข้า linkage record
+
+    ถ้าไม่มี company cache ให้ fallback เป็น linkage input record เดิม
     """
 
-    company_index = company_index or load_company_unified_index()
+    if company_index is None:
+        company_index = load_company_unified_index()
 
     tax_id_norm = normalize_tax_id(base.get("tax_id_norm") or base.get("tax_id"))
-    company = company_index.get(tax_id_norm, {})
+    company = company_index.get(tax_id_norm, {}) if isinstance(company_index, dict) else {}
 
     result = dict(base)
 
@@ -445,16 +566,18 @@ def enrich_company_fields(
             "subdistrict": first_non_empty(company.get("subdistrict"), base.get("subdistrict"), default=""),
             "lat": company.get("lat", base.get("lat")),
             "lon": company.get("lon", base.get("lon")),
+            "latitude": company.get("latitude", company.get("lat", base.get("latitude", base.get("lat")))),
+            "longitude": company.get("longitude", company.get("lon", base.get("longitude", base.get("lon")))),
 
-            "has_policy": bool(to_bool(company.get("has_policy"), default=False)),
-            "has_location": bool(to_bool(company.get("has_location"), default=False)),
-            "has_flood_context": bool(to_bool(company.get("has_flood_context"), default=False)),
+            "has_policy": bool(to_bool(company.get("has_policy", base.get("has_policy")), default=False)),
+            "has_location": bool(to_bool(company.get("has_location", base.get("has_location")), default=False)),
+            "has_flood_context": bool(to_bool(company.get("has_flood_context", base.get("has_flood_context")), default=False)),
 
-            "total_premium": to_number(company.get("total_premium"), 0) or 0,
-            "total_loss": to_number(company.get("total_loss"), 0) or 0,
-            "total_suminsure": to_number(company.get("total_suminsure"), 0) or 0,
-            "loss_ratio": company.get("loss_ratio"),
-            "loss_ratio_band": company.get("loss_ratio_band", "Undefined"),
+            "total_premium": to_number(company.get("total_premium", base.get("total_premium")), 0) or 0,
+            "total_loss": to_number(company.get("total_loss", base.get("total_loss")), 0) or 0,
+            "total_suminsure": to_number(company.get("total_suminsure", base.get("total_suminsure")), 0) or 0,
+            "loss_ratio": first_non_empty(company.get("loss_ratio"), base.get("loss_ratio"), default=None),
+            "loss_ratio_band": first_non_empty(company.get("loss_ratio_band"), base.get("loss_ratio_band"), default="Undefined"),
 
             "most_recent_income_val": first_non_empty(
                 company.get("most_recent_income_val"),
@@ -487,11 +610,11 @@ def enrich_company_fields(
                 base.get("location_quality"),
                 default="",
             ),
+            "company_source": company.get("record_stage", "company_cache") if company else "linkage_input_fallback",
         }
     )
 
     return result
-
 
 # ============================================================
 # 5) DIRECTOR-COMPANY PAIRS
@@ -501,12 +624,15 @@ def build_director_company_pairs(force_refresh: bool = False) -> Dict[str, Any]:
     """
     สร้าง director_company_pairs
 
-    1 แถว = director 1 คน เชื่อม company 1 บริษัท
+    PHASE linkage อ่าน company_unified_base ก่อน
+    ถ้าไม่มี company cache ให้ใช้ linkage input fallback
     """
 
     def builder() -> Dict[str, Any]:
         linkage_records = get_linkage_input_records(force_refresh=force_refresh)
-        company_index = load_company_unified_index()
+        company_source_payload = load_company_source_payload()
+        company_index = company_source_payload.get("index", {})
+        company_source = company_source_payload.get("company_source", "linkage_input_fallback")
 
         pairs: List[Dict[str, Any]] = []
 
@@ -534,8 +660,10 @@ def build_director_company_pairs(force_refresh: bool = False) -> Dict[str, Any]:
                     ),
 
                     "tax_id_norm": tax_id_norm,
+                    "company_node_id": make_company_node_id(tax_id_norm),
                     "company_name": company_enriched.get("company_name", ""),
                     "director_id": director_id,
+                    "director_node_id": make_director_node_id(director_id),
                     "director_name": director_name_clean,
                     "director_name_norm": normalize_director_name_for_id(director_name_clean),
 
@@ -548,6 +676,8 @@ def build_director_company_pairs(force_refresh: bool = False) -> Dict[str, Any]:
                     "district": company_enriched.get("district", ""),
                     "lat": company_enriched.get("lat"),
                     "lon": company_enriched.get("lon"),
+                    "latitude": company_enriched.get("latitude", company_enriched.get("lat")),
+                    "longitude": company_enriched.get("longitude", company_enriched.get("lon")),
                     "location_quality": company_enriched.get("location_quality", ""),
 
                     "has_policy": company_enriched.get("has_policy", False),
@@ -567,6 +697,12 @@ def build_director_company_pairs(force_refresh: bool = False) -> Dict[str, Any]:
                     "flood_join_level": company_enriched.get("flood_join_level", "none"),
                     "flood_risk_reason": company_enriched.get("flood_risk_reason", ""),
 
+                    "edge_contract": {
+                        "company_node_id": make_company_node_id(tax_id_norm),
+                        "director_node_id": make_director_node_id(director_id),
+                        "edge_type": EDGE_TYPE_DIRECTOR_OF,
+                    },
+                    "company_source": company_source,
                     "source_file": record.get("source_file", ""),
                     "source_row": record.get("source_row"),
                 }
@@ -592,6 +728,13 @@ def build_director_company_pairs(force_refresh: bool = False) -> Dict[str, Any]:
             "records": records,
             "total": len(records),
             "created_at": now_iso(),
+            "meta": build_linkage_cache_meta(
+                cache_key=CACHE_KEYS["director_company_pairs"],
+                source_input=str(LINKAGE_INPUT_PATH),
+                company_source=company_source,
+                record_count=len(records),
+                degraded=company_source != "company_unified_base",
+            ),
         }
 
     cache_result = get_or_build_cache(
@@ -602,11 +745,13 @@ def build_director_company_pairs(force_refresh: bool = False) -> Dict[str, Any]:
         source="linkage_service.build_director_company_pairs",
     )
 
-    return {
-        **cache_result["data"],
-        "cache_used": cache_result["cache_used"],
-    }
+    data = dict(cache_result["data"])
+    data["cache_used"] = cache_result["cache_used"]
 
+    if isinstance(data.get("meta"), dict):
+        data["meta"]["cache_used"] = cache_result["cache_used"]
+
+    return data
 
 def get_director_company_pair_records(force_refresh: bool = False) -> List[Dict[str, Any]]:
     """
@@ -1492,40 +1637,72 @@ def build_graph_summary(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]]
 def build_linkage_graph_payload(force_refresh: bool = False) -> Dict[str, Any]:
     """
     สร้าง graph payload เต็ม
+
+    cache key หลัก = linkage_graph_payload
+    alias = linkage_graph, graph_payload
     """
 
     def builder() -> Dict[str, Any]:
+        company_source_payload = load_company_source_payload()
+        company_source = company_source_payload.get("company_source", "linkage_input_fallback")
+
         nodes = build_linkage_nodes(force_refresh=force_refresh).get("records", [])
         edges = build_linkage_edges(force_refresh=force_refresh).get("records", [])
+        summary = build_graph_summary(nodes, edges)
 
         payload = {
             "nodes": nodes,
             "edges": edges,
-            "summary": build_graph_summary(nodes, edges),
+            "summary": summary,
             "layout": {
                 "mode": GRAPH_DEFAULT_MODE,
                 "depth": GRAPH_DEFAULT_DEPTH,
                 "max_nodes": GRAPH_DEFAULT_MAX_NODES,
             },
             "warnings": [],
+            "meta": build_linkage_cache_meta(
+                cache_key=LINKAGE_GRAPH_MAIN_CACHE_KEY,
+                source_input=str(LINKAGE_INPUT_PATH),
+                company_source=company_source,
+                record_count=len(nodes) + len(edges),
+                node_count=len(nodes),
+                edge_count=len(edges),
+                degraded=company_source != "company_unified_base",
+                extra={
+                    "alias_cache_keys": list(LINKAGE_GRAPH_ALIAS_CACHE_KEYS.keys()),
+                    "graph_contract": {
+                        "company_node_id": "company:<tax_id_norm>",
+                        "director_node_id": "director:<director_id>",
+                        "edge_types": [
+                            EDGE_TYPE_DIRECTOR_OF,
+                            EDGE_TYPE_SHARED_DIRECTOR,
+                        ],
+                    },
+                },
+            ),
             "created_at": now_iso(),
         }
 
         return payload
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["linkage_graph_payload"],
+        cache_key=LINKAGE_GRAPH_MAIN_CACHE_KEY,
         builder=builder,
         ttl_seconds=get_linkage_ttl(),
         force_refresh=force_refresh,
         source="linkage_service.build_linkage_graph_payload",
     )
 
-    return {
-        **cache_result["data"],
-        "cache_used": cache_result["cache_used"],
-    }
+    data = dict(cache_result["data"])
+    data["cache_used"] = cache_result["cache_used"]
 
+    if isinstance(data.get("meta"), dict):
+        data["meta"]["cache_used"] = cache_result["cache_used"]
+        data["meta"]["cache_key"] = LINKAGE_GRAPH_MAIN_CACHE_KEY
+
+    data["alias_cache_results"] = write_linkage_graph_aliases(data, cache_used=cache_result["cache_used"])
+
+    return data
 
 # ============================================================
 # 11) EXPOSURE BY DIRECTOR
@@ -1645,12 +1822,24 @@ def get_linkage_graph(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any
 
     graph = build_linkage_graph_payload(force_refresh=ctx.get("force_refresh", False))
 
-    return filter_graph_payload(
+    filtered = filter_graph_payload(
         nodes=graph.get("nodes", []),
         edges=graph.get("edges", []),
         context=ctx,
     )
 
+    filtered["meta"] = {
+        **(graph.get("meta") if isinstance(graph.get("meta"), dict) else {}),
+        "cache_used": graph.get("cache_used", False),
+        "filtered_node_count": len(filtered.get("nodes", [])),
+        "filtered_edge_count": len(filtered.get("edges", [])),
+        "filters": ctx.get("filters", {}),
+        "mode": ctx.get("mode"),
+        "tax_id": ctx.get("tax_id"),
+        "director_id": ctx.get("director_id"),
+    }
+
+    return to_jsonable(filtered)
 
 def get_linkage_company_detail(
     tax_id: str,
@@ -1904,11 +2093,19 @@ def get_linkage_dashboard_payload(context: Optional[Dict[str, Any]] = None) -> D
         "generated_at": now_iso(),
     }
 
-
 def rebuild_linkage_cache(force_refresh: bool = True) -> Dict[str, Any]:
     """
     rebuild cache ทั้งหมดของ linkage
+
+    PHASE linkage:
+    - อ่าน company_unified_base ถ้ามี
+    - fallback เป็น linkage input
+    - เขียน graph หลักที่ linkage_graph_payload
+    - เขียน alias linkage_graph / graph_payload ด้วย payload เดียวกัน
     """
+
+    company_source_payload = load_company_source_payload()
+    company_source = company_source_payload.get("company_source", "linkage_input_fallback")
 
     results = {
         "linkage_input_clean": load_linkage_input_clean(force_refresh=force_refresh),
@@ -1922,19 +2119,43 @@ def rebuild_linkage_cache(force_refresh: bool = True) -> Dict[str, Any]:
         "exposure_by_director": build_exposure_by_director(force_refresh=force_refresh),
     }
 
+    graph_payload = results["linkage_graph_payload"]
+    alias_results = write_linkage_graph_aliases(graph_payload, cache_used=graph_payload.get("cache_used", False))
+
     return {
         "rebuilt": True,
+        "phase": "linkage",
+        "company_source": company_source,
+        "degraded": company_source != "company_unified_base",
         "results": {
             key: {
+                "cache_key": CACHE_KEYS.get(key, key),
                 "total": value.get("total"),
+                "record_count": value.get("total") if value.get("total") is not None else value.get("meta", {}).get("record_count"),
+                "node_count": value.get("summary", {}).get("node_count") if isinstance(value.get("summary"), dict) else value.get("meta", {}).get("node_count"),
+                "edge_count": value.get("summary", {}).get("edge_count") if isinstance(value.get("summary"), dict) else value.get("meta", {}).get("edge_count"),
                 "cache_used": value.get("cache_used"),
                 "created_at": value.get("created_at"),
+                "meta": value.get("meta", {}),
             }
             for key, value in results.items()
         },
+        "aliases": {
+            "linkage_graph": LINKAGE_GRAPH_MAIN_CACHE_KEY,
+            "graph_payload": LINKAGE_GRAPH_MAIN_CACHE_KEY,
+        },
+        "alias_cache_results": alias_results,
+        "meta": build_linkage_cache_meta(
+            cache_key=LINKAGE_GRAPH_MAIN_CACHE_KEY,
+            source_input=str(LINKAGE_INPUT_PATH),
+            company_source=company_source,
+            record_count=sum(to_int(value.get("total"), 0) for value in results.values() if isinstance(value, dict)),
+            node_count=results["linkage_graph_payload"].get("summary", {}).get("node_count", 0),
+            edge_count=results["linkage_graph_payload"].get("summary", {}).get("edge_count", 0),
+            degraded=company_source != "company_unified_base",
+        ),
         "generated_at": now_iso(),
     }
-
 
 # ============================================================
 # 14) MODULE STATUS / SELF TEST
@@ -1945,12 +2166,32 @@ def get_linkage_module_status() -> Dict[str, Any]:
     คืนสถานะ module linkage_service.py
     """
 
+    company_source_payload = load_company_source_payload()
+
     return {
         "module": "linkage_service",
         "ready": True,
         "linkage_input_path": str(LINKAGE_INPUT_PATH),
         "linkage_input_exists": LINKAGE_INPUT_PATH.exists(),
         "cache_keys": CACHE_KEYS,
+        "main_graph_cache_key": LINKAGE_GRAPH_MAIN_CACHE_KEY,
+        "graph_cache_aliases": LINKAGE_GRAPH_ALIAS_CACHE_KEYS,
+        "company_source_contract": {
+            "phase": "linkage",
+            "preferred_company_source": "company_unified_base",
+            "fallback_company_source": "linkage_input_fallback",
+            "current_company_source": company_source_payload.get("company_source"),
+            "current_company_source_record_count": company_source_payload.get("record_count", 0),
+            "reads_company_unified_master_in_linkage_phase": False,
+            "reads_flood_prediction": False,
+        },
+        "graph_contract": {
+            "company_node_id": "company:<tax_id_norm>",
+            "director_node_id": "director:<director_id>",
+            "director_of_edge_type": EDGE_TYPE_DIRECTOR_OF,
+            "shared_director_edge_type": EDGE_TYPE_SHARED_DIRECTOR,
+            "key_connector": "director.company_count > 1",
+        },
         "supported_outputs": [
             "linkage_input_clean",
             "director_company_pairs",
@@ -1960,6 +2201,8 @@ def get_linkage_module_status() -> Dict[str, Any]:
             "linkage_nodes",
             "linkage_edges",
             "linkage_graph_payload",
+            "linkage_graph",
+            "graph_payload",
             "exposure_by_director",
         ],
         "edge_types": [
@@ -1974,7 +2217,6 @@ def get_linkage_module_status() -> Dict[str, Any]:
         "checked_at": now_iso(),
     }
 
-
 def run_linkage_self_test() -> Dict[str, Any]:
     """
     self test เบื้องต้น
@@ -1983,7 +2225,13 @@ def run_linkage_self_test() -> Dict[str, Any]:
     input_data = load_linkage_input_clean(force_refresh=False)
     pairs = build_director_company_pairs(force_refresh=False)
     directors = build_director_master(force_refresh=False)
+    graph_payload = build_linkage_graph_payload(force_refresh=False)
     graph = get_linkage_graph({"max_nodes": 100})
+
+    alias_status = {
+        alias_key: bool(read_cache(alias_key, default={}))
+        for alias_key in LINKAGE_GRAPH_ALIAS_CACHE_KEYS.keys()
+    }
 
     return {
         "module": "linkage_service",
@@ -1993,5 +2241,9 @@ def run_linkage_self_test() -> Dict[str, Any]:
         "pair_total": pairs.get("total", 0),
         "director_total": directors.get("total", 0),
         "graph_summary": graph.get("summary", {}),
+        "main_graph_cache_key": LINKAGE_GRAPH_MAIN_CACHE_KEY,
+        "main_graph_cache_ready": bool(graph_payload.get("nodes") or graph_payload.get("edges")),
+        "alias_status": alias_status,
+        "company_source": graph_payload.get("meta", {}).get("company_source"),
         "checked_at": now_iso(),
     }

@@ -346,6 +346,20 @@ SUPPORTED_TARGETS: List[str] = [
     "dashboard",
     "data_quality",
     "package",
+
+    "flood_rainfall_latest",
+    "flood_waterlevel_latest",
+    "flood_dam_latest",
+    "flood_prediction_latest",
+    "flood_prediction_map",
+    "uploaded_entity_latest",
+    "map_layers",
+    "dashboard_province_insights",
+
+    "prediction_map_view",
+    "entity_overlay_view",
+    "flood_dashboard_view",
+    "province_insight_view",
 ]
 
 TARGET_ALIASES: Dict[str, str] = {
@@ -353,18 +367,70 @@ TARGET_ALIASES: Dict[str, str] = {
     "policies": "policy",
     "directors": "director",
     "graph": "linkage",
+    "linkage_graph": "linkage",
+    "linkage_graph_payload": "linkage",
     "quality": "data_quality",
     "data-quality": "data_quality",
     "data quality": "data_quality",
     "dataquality": "data_quality",
     "packages": "package",
     "exports": "package",
+
+    "rainfall": "flood_rainfall_latest",
+    "rainfall_latest": "flood_rainfall_latest",
+    "latest_rainfall": "flood_rainfall_latest",
+    "flood_rainfall": "flood_rainfall_latest",
+
+    "waterlevel": "flood_waterlevel_latest",
+    "water_level": "flood_waterlevel_latest",
+    "waterlevel_latest": "flood_waterlevel_latest",
+    "latest_waterlevel": "flood_waterlevel_latest",
+    "flood_waterlevel": "flood_waterlevel_latest",
+
+    "dam": "flood_dam_latest",
+    "dams": "flood_dam_latest",
+    "reservoir": "flood_dam_latest",
+    "reservoirs": "flood_dam_latest",
+    "dam_latest": "flood_dam_latest",
+    "latest_dam": "flood_dam_latest",
+    "flood_dam": "flood_dam_latest",
+
+    "prediction": "flood_prediction_latest",
+    "forecast": "flood_prediction_latest",
+    "prediction_latest": "flood_prediction_latest",
+    "forecast_latest": "flood_prediction_latest",
+    "latest_prediction": "flood_prediction_latest",
+    "latest_forecast": "flood_prediction_latest",
+
+    "prediction_map": "flood_prediction_map",
+    "forecast_map": "flood_prediction_map",
+    "map_prediction": "flood_prediction_map",
+
+    "entity": "uploaded_entity_latest",
+    "entities": "uploaded_entity_latest",
+    "uploaded_entity": "uploaded_entity_latest",
+    "uploaded_entities": "uploaded_entity_latest",
+    "entity_overlay": "uploaded_entity_latest",
+
+    "layers": "map_layers",
+    "map_layer": "map_layers",
+    "map_layers": "map_layers",
+
+    "province_insights": "dashboard_province_insights",
+    "dashboard_insights": "dashboard_province_insights",
+    "dashboard_province": "dashboard_province_insights",
+    "province_insight": "dashboard_province_insights",
+
+    "prediction_map_view": "prediction_map_view",
+    "entity_overlay_view": "entity_overlay_view",
+    "flood_dashboard_view": "flood_dashboard_view",
+    "province_insight_view": "province_insight_view",
 }
 
 TARGET_CACHE_KEYS: Dict[str, str] = {
     "company": "company_unified_master",
     "policy": "policy_fact",
-    "linkage": "linkage_graph",
+    "linkage": "linkage_graph_payload",
     "director": "director_master",
     "flood": "flood_computed_risk",
     "spatial": "spatial_join_result",
@@ -372,19 +438,47 @@ TARGET_CACHE_KEYS: Dict[str, str] = {
     "dashboard": "dashboard_summary",
     "data_quality": "data_quality_summary",
     "package": "package_index",
+
+    "flood_rainfall_latest": "flood_rainfall_latest",
+    "flood_waterlevel_latest": "flood_waterlevel_latest",
+    "flood_dam_latest": "flood_large_dam_latest",
+    "flood_prediction_latest": "flood_prediction_latest",
+    "flood_prediction_map": "flood_prediction_map",
+    "uploaded_entity_latest": "uploaded_entity_latest",
+    "map_layers": "map_layers",
+    "dashboard_province_insights": "dashboard_province_insights",
+
+    "prediction_map_view": "flood_prediction_map",
+    "entity_overlay_view": "uploaded_entity_latest",
+    "flood_dashboard_view": "dashboard_province_insights",
+    "province_insight_view": "dashboard_province_insights",
 }
 
 TARGET_CACHE_KEY_CANDIDATES: Dict[str, List[str]] = {
-    "company": ["company_unified_master"],
+    "company": ["company_unified_master", "company_unified_base"],
     "policy": ["policy_fact", "policy_company_summary", "policy_product_summary"],
-    "linkage": ["linkage_graph", "linkage_nodes", "linkage_edges", "shared_director_links"],
+    "linkage": ["linkage_graph_payload", "linkage_graph", "linkage_nodes", "linkage_edges", "shared_director_links"],
     "director": ["director_master", "director_company_pairs"],
     "flood": ["flood_computed_risk", "province_risk_summary"],
     "spatial": ["spatial_join_result", "company_flood_context", "policy_flood_exposure"],
     "map": ["map_layers", "map_companies", "map_flood", "map_policy_exposure"],
-    "dashboard": ["dashboard_summary", "chart_summary"],
+    "dashboard": ["dashboard_summary", "dashboard_province_insights", "chart_summary"],
     "data_quality": ["data_quality_summary", "data_quality_issues"],
     "package": ["package_index", "export_history"],
+
+    "flood_rainfall_latest": ["flood_rainfall_latest"],
+    "flood_waterlevel_latest": ["flood_waterlevel_latest"],
+    "flood_dam_latest": ["flood_large_dam_latest", "flood_medium_dam_latest", "flood_dam_latest"],
+    "flood_prediction_latest": ["flood_prediction_latest"],
+    "flood_prediction_map": ["flood_prediction_map", "flood_prediction_latest"],
+    "uploaded_entity_latest": ["uploaded_entity_latest"],
+    "map_layers": ["map_layers"],
+    "dashboard_province_insights": ["dashboard_province_insights"],
+
+    "prediction_map_view": ["flood_prediction_map", "flood_prediction_latest"],
+    "entity_overlay_view": ["uploaded_entity_latest"],
+    "flood_dashboard_view": ["dashboard_province_insights", "dashboard_summary"],
+    "province_insight_view": ["dashboard_province_insights"],
 }
 
 FILTER_FIELD_GROUPS: List[str] = [
@@ -395,10 +489,81 @@ FILTER_FIELD_GROUPS: List[str] = [
     "director",
     "location",
     "flood",
+    "prediction",
+    "entity",
     "spatial",
     "map",
+    "dashboard",
     "data_quality",
     "package",
+]
+
+COMMON_FLOOD_RUNTIME_FIELDS: List[str] = [
+    "province",
+    "province_model",
+    "province_name_th",
+    "prediction_province",
+    "prediction_province_model",
+    "risk_level",
+    "risk_status",
+    "warning_level",
+    "warning_level_predict",
+    "station_id",
+    "station_name",
+    "station_code",
+    "matched_station_id",
+    "matched_station_code",
+    "matched_station_name",
+    "base_date",
+    "target_date",
+    "forecast_horizon_day",
+    "prediction_horizon",
+    "horizon",
+    "data_date",
+    "source_id",
+    "source_name",
+    "source_type",
+    "latest_value",
+    "latest_unit",
+    "risk_score",
+    "map_ready",
+    "has_location",
+    "latitude",
+    "longitude",
+    "lat",
+    "lon",
+]
+
+ENTITY_RUNTIME_FIELDS: List[str] = [
+    "entity_id",
+    "entity_type",
+    "entity_name_th",
+    "province_name_th",
+    "province",
+    "risk_group",
+    "risk_level",
+    "source_type",
+    "map_ready",
+    "has_location",
+    "latitude",
+    "longitude",
+]
+
+DASHBOARD_INSIGHT_FIELDS: List[str] = [
+    "province",
+    "risk_level",
+    "risk_score",
+    "confidence",
+    "prediction_count",
+    "critical_count",
+    "warning_count",
+    "watch_count",
+    "target_horizons",
+    "target_display",
+    "name",
+    "value",
+    "focus",
+    "mode",
 ]
 
 FALLBACK_FIELDS_BY_TARGET: Dict[str, List[str]] = {
@@ -414,6 +579,7 @@ FALLBACK_FIELDS_BY_TARGET: Dict[str, List[str]] = {
         "business_type_tsic",
         "company_size",
         "Wtip",
+        "wtip",
         "most_recent_income_val",
         "registered_capital",
         "has_policy",
@@ -476,6 +642,7 @@ FALLBACK_FIELDS_BY_TARGET: Dict[str, List[str]] = {
     "map": [
         "layer_id",
         "feature_type",
+        "object_type",
         "marker_size",
         "marker_color",
         "location_quality",
@@ -483,6 +650,24 @@ FALLBACK_FIELDS_BY_TARGET: Dict[str, List[str]] = {
         "lon",
         "latitude",
         "longitude",
+        "province",
+        "risk_level",
+        "source_type",
+    ],
+    "map_layers": [
+        "layer_id",
+        "layer_name",
+        "feature_type",
+        "object_type",
+        "source_type",
+        "province",
+        "risk_level",
+        "risk_status",
+        "map_ready",
+        "has_location",
+        "latitude",
+        "longitude",
+        "record_count",
     ],
     "data_quality": [
         "issue_type",
@@ -494,20 +679,108 @@ FALLBACK_FIELDS_BY_TARGET: Dict[str, List[str]] = {
         "data_quality_flags",
     ],
     "package": ["package_id", "package_name", "created_at", "status", "owner"],
-    "dashboard": ["card_id", "chart_id", "title", "metric", "value", "status"],
+    "dashboard": ["card_id", "chart_id", "title", "metric", "value", "status", "province", "risk_level"],
+
+    "flood_rainfall_latest": COMMON_FLOOD_RUNTIME_FIELDS,
+    "flood_waterlevel_latest": COMMON_FLOOD_RUNTIME_FIELDS,
+    "flood_dam_latest": COMMON_FLOOD_RUNTIME_FIELDS + ["dam_id", "dam_name", "reservoir_name", "storage_percent", "percent_storage"],
+    "flood_prediction_latest": COMMON_FLOOD_RUNTIME_FIELDS + ["record_key", "focus_level", "focus_fallback"],
+    "flood_prediction_map": COMMON_FLOOD_RUNTIME_FIELDS + ["record_key", "focus_level", "focus_fallback", "object_type"],
+    "uploaded_entity_latest": ENTITY_RUNTIME_FIELDS,
+    "dashboard_province_insights": DASHBOARD_INSIGHT_FIELDS,
+
+    "prediction_map_view": COMMON_FLOOD_RUNTIME_FIELDS + ["record_key", "focus_level", "focus_fallback", "object_type"],
+    "entity_overlay_view": ENTITY_RUNTIME_FIELDS,
+    "flood_dashboard_view": DASHBOARD_INSIGHT_FIELDS,
+    "province_insight_view": DASHBOARD_INSIGHT_FIELDS,
 }
 
 SEARCHABLE_FIELDS_BY_TARGET: Dict[str, List[str]] = {
-    "company": ["tax_id_norm", "company_name", "company_name_policy", "company_name_linkage", "province", "district", "business_type_objective", "business_type_tsic", "Wtip"],
+    "company": ["tax_id_norm", "company_name", "company_name_policy", "company_name_linkage", "province", "district", "business_type_objective", "business_type_tsic", "Wtip", "wtip"],
     "policy": ["tax_id_norm", "company_name", "product", "subclass", "status_now", "province"],
     "linkage": ["tax_id_norm", "company_name", "director_name", "director_name_display", "shared_directors", "business_type_tsic"],
     "director": ["director_id", "director_name", "director_name_display", "companies"],
     "flood": ["source_id", "source_name", "station_name", "province", "basin", "risk_level"],
     "spatial": ["tax_id_norm", "company_name", "province", "nearest_station_name", "flood_risk_level"],
-    "map": ["layer_id", "feature_type", "company_name", "province", "marker_color", "location_quality"],
-    "dashboard": ["card_id", "chart_id", "title", "metric", "status"],
+    "map": ["layer_id", "feature_type", "object_type", "company_name", "province", "marker_color", "location_quality", "source_type"],
+    "map_layers": ["layer_id", "layer_name", "feature_type", "object_type", "province", "risk_level", "source_type"],
+    "dashboard": ["card_id", "chart_id", "title", "metric", "status", "province"],
     "data_quality": ["issue_type", "severity", "field", "message", "source"],
     "package": ["package_id", "package_name", "status", "owner"],
+
+    "flood_rainfall_latest": ["province", "station_id", "station_name", "station_code", "source_id", "source_name", "risk_level", "risk_status"],
+    "flood_waterlevel_latest": ["province", "station_id", "station_name", "station_code", "source_id", "source_name", "risk_level", "risk_status"],
+    "flood_dam_latest": ["province", "dam_id", "dam_name", "reservoir_name", "source_id", "source_name", "risk_level", "risk_status"],
+    "flood_prediction_latest": ["province", "province_model", "station_id", "station_name", "station_code", "matched_station_id", "matched_station_code", "matched_station_name", "risk_level", "warning_level_predict", "record_key"],
+    "flood_prediction_map": ["province", "province_model", "station_id", "station_name", "matched_station_id", "matched_station_name", "risk_level", "warning_level_predict", "record_key", "source_type"],
+    "uploaded_entity_latest": ["entity_id", "entity_type", "entity_name_th", "province_name_th", "province", "risk_group", "risk_level", "source_type"],
+    "dashboard_province_insights": ["province", "risk_level", "name", "target_display", "mode"],
+
+    "prediction_map_view": ["province", "province_model", "station_id", "station_name", "matched_station_id", "matched_station_name", "risk_level", "warning_level_predict", "record_key", "source_type"],
+    "entity_overlay_view": ["entity_id", "entity_type", "entity_name_th", "province_name_th", "province", "risk_group", "risk_level", "source_type"],
+    "flood_dashboard_view": ["province", "risk_level", "name", "target_display", "mode"],
+    "province_insight_view": ["province", "risk_level", "name", "target_display", "mode"],
+}
+
+FILTER_FIELD_ALIAS_CANDIDATES: Dict[str, List[str]] = {
+    "risk": ["risk_level", "risk_status", "warning_level", "warning_level_predict", "flood_risk_level", "province_risk_level", "risk_group"],
+    "risk_level": ["risk_level", "risk_status", "warning_level", "warning_level_predict", "flood_risk_level", "province_risk_level", "risk_group"],
+    "risk_status": ["risk_status", "risk_level", "warning_level", "warning_level_predict", "flood_risk_level", "province_risk_level", "risk_group"],
+    "warning_level": ["warning_level", "warning_level_predict", "risk_level", "risk_status", "flood_risk_level"],
+    "warning_level_predict": ["warning_level_predict", "warning_level", "risk_level", "risk_status", "flood_risk_level"],
+
+    "province": ["province", "province_model", "prediction_province", "prediction_province_model", "province_name_th"],
+    "province_model": ["province_model", "prediction_province_model", "prediction_province", "province", "province_name_th"],
+    "prediction_province": ["prediction_province", "province_model", "prediction_province_model", "province", "province_name_th"],
+    "prediction_province_model": ["prediction_province_model", "province_model", "prediction_province", "province", "province_name_th"],
+
+    "station": ["station_name", "station_id", "station_code", "matched_station_id", "matched_station_code", "matched_station_name", "source_name", "source_id"],
+    "station_name": ["station_name", "matched_station_name", "source_name"],
+    "station_id": ["station_id", "matched_station_id", "source_id"],
+    "station_code": ["station_code", "matched_station_code"],
+    "matched_station_id": ["matched_station_id", "station_id", "source_id"],
+    "matched_station_code": ["matched_station_code", "station_code"],
+    "matched_station_name": ["matched_station_name", "station_name", "source_name"],
+
+    "horizon": ["forecast_horizon_day", "prediction_horizon", "horizon"],
+    "forecast_horizon_day": ["forecast_horizon_day", "prediction_horizon", "horizon"],
+    "prediction_horizon": ["prediction_horizon", "forecast_horizon_day", "horizon"],
+
+    "lat": ["lat", "latitude"],
+    "lon": ["lon", "longitude", "lng"],
+    "lng": ["longitude", "lon", "lng"],
+    "latitude": ["latitude", "lat"],
+    "longitude": ["longitude", "lon", "lng"],
+
+    "entity_name": ["entity_name_th", "entity_name", "name"],
+    "entity_name_th": ["entity_name_th", "entity_name", "name"],
+}
+
+FIELD_DTYPE_OVERRIDES: Dict[str, str] = {
+    "latest_value": "number",
+    "risk_score": "number",
+    "confidence": "number",
+    "forecast_horizon_day": "integer",
+    "prediction_horizon": "integer",
+    "horizon": "integer",
+    "storage_percent": "number",
+    "percent_storage": "number",
+    "value": "number",
+    "prediction_count": "integer",
+    "critical_count": "integer",
+    "warning_count": "integer",
+    "watch_count": "integer",
+    "base_date": "date",
+    "target_date": "date",
+    "data_date": "date",
+    "created_at": "datetime",
+    "updated_at": "datetime",
+    "generated_at": "datetime",
+    "map_ready": "boolean",
+    "has_location": "boolean",
+    "has_flood_context": "boolean",
+    "has_policy": "boolean",
+    "has_linkage": "boolean",
 }
 
 OPERATOR_ALIASES: Dict[str, str] = {
@@ -638,11 +911,10 @@ def make_degraded_filter_response(
 def normalize_target(target: Any) -> str:
     """
     normalize target ของ filter
-
-    ถ้า target ไม่ถูกต้อง ให้ fallback เป็น company
     """
 
     target_text = clean_text_lower(target)
+    target_text = target_text.replace("-", "_").replace(" ", "_")
     target_text = TARGET_ALIASES.get(target_text, target_text)
 
     if target_text in SUPPORTED_TARGETS:
@@ -692,16 +964,112 @@ def normalize_page_size(value: Any) -> int:
 
     return page_size
 
+def normalize_filter_field_name(field_name: Any) -> str:
+    """
+    normalize field name แบบ canonical
+    """
+
+    text = clean_text(field_name)
+    text = text.replace("-", "_").replace(" ", "_")
+    key = clean_text_lower(text)
+    candidates = FILTER_FIELD_ALIAS_CANDIDATES.get(key)
+
+    if candidates:
+        return candidates[0]
+
+    return text
+
+
+def get_filter_field_candidates(field_name: Any) -> List[str]:
+    """
+    คืน field candidates จาก alias route/frontend
+    """
+
+    text = clean_text(field_name)
+    if not text:
+        return []
+
+    key = clean_text_lower(text.replace("-", "_").replace(" ", "_"))
+    candidates = FILTER_FIELD_ALIAS_CANDIDATES.get(key)
+
+    if candidates:
+        return list(dict.fromkeys([clean_text(item) for item in candidates if clean_text(item)]))
+
+    normalized = normalize_filter_field_name(text)
+    return [normalized] if normalized else []
+
+
+def normalize_filter_dict(filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    normalize simple filter keys แต่ยังรักษา value เดิม
+    """
+
+    if not isinstance(filters, dict):
+        return {}
+
+    result: Dict[str, Any] = {}
+
+    for field_name, value in filters.items():
+        if value in (None, "", [], {}):
+            continue
+
+        field_text = clean_text(field_name)
+
+        if field_text.endswith("_min"):
+            normalized = f"{normalize_filter_field_name(field_text[:-4])}_min"
+        elif field_text.endswith("_max"):
+            normalized = f"{normalize_filter_field_name(field_text[:-4])}_max"
+        else:
+            normalized = normalize_filter_field_name(field_text)
+
+        result[normalized] = value
+
+    return result
+
+
+def normalize_filter_group_fields(group: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    normalize field ใน advanced filter group
+    """
+
+    if not isinstance(group, dict):
+        return {}
+
+    result = deepcopy(group)
+
+    conditions = result.get("conditions", [])
+    if isinstance(conditions, list):
+        normalized_conditions = []
+        for condition in conditions:
+            if not isinstance(condition, dict):
+                continue
+
+            if "field" in condition:
+                item = dict(condition)
+                item["field"] = normalize_filter_field_name(item.get("field"))
+                normalized_conditions.append(item)
+            elif "conditions" in condition or "groups" in condition:
+                normalized_conditions.append(normalize_filter_group_fields(condition))
+
+        result["conditions"] = normalized_conditions
+
+    groups = result.get("groups", [])
+    if isinstance(groups, list):
+        result["groups"] = [
+            normalize_filter_group_fields(item)
+            for item in groups
+            if isinstance(item, dict)
+        ]
+
+    return result
 
 def normalize_filter_payload(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     normalize filter payload กลางของระบบ
 
-    รองรับ payload จาก:
-    - POST /api/filter/preview
-    - POST /api/filter/apply
-    - package export
-    - frontend state
+    รองรับ:
+    - target ใหม่ flood/prediction/entity/map/dashboard
+    - field alias จาก route/frontend
     """
 
     warnings: List[Dict[str, Any]] = []
@@ -721,8 +1089,10 @@ def normalize_filter_payload(payload: Optional[Dict[str, Any]] = None) -> Dict[s
         )
 
     raw_target = raw_payload.get("target", DEFAULT_FILTER_TARGET)
+    raw_target_key = clean_text_lower(raw_target).replace("-", "_").replace(" ", "_")
     target = normalize_target(raw_target)
-    if clean_text_lower(raw_target) and clean_text_lower(raw_target) not in SUPPORTED_TARGETS and clean_text_lower(raw_target) not in TARGET_ALIASES:
+
+    if raw_target_key and raw_target_key not in SUPPORTED_TARGETS and raw_target_key not in TARGET_ALIASES:
         warnings.append(
             {
                 "type": "ValidationWarning",
@@ -759,10 +1129,10 @@ def normalize_filter_payload(payload: Optional[Dict[str, Any]] = None) -> Dict[s
 
     normalized = {
         "target": target,
-        "filters": filters,
-        "advanced": advanced,
+        "filters": normalize_filter_dict(filters),
+        "advanced": normalize_filter_group_fields(advanced),
         "search": clean_text(raw_payload.get("search", "")),
-        "sort_by": clean_text(raw_payload.get("sort_by", "")),
+        "sort_by": normalize_filter_field_name(raw_payload.get("sort_by", "")) if clean_text(raw_payload.get("sort_by", "")) else "",
         "sort_dir": normalize_sort_dir(raw_payload.get("sort_dir", "asc")),
         "page": normalize_page(raw_payload.get("page", 1)),
         "page_size": normalize_page_size(raw_payload.get("page_size", DEFAULT_TABLE_PAGE_SIZE)),
@@ -770,7 +1140,7 @@ def normalize_filter_payload(payload: Optional[Dict[str, Any]] = None) -> Dict[s
         "include_summary": bool(to_bool(raw_payload.get("include_summary", True), default=True)),
         "include_map": bool(to_bool(raw_payload.get("include_map", True), default=True)),
         "include_graph": bool(to_bool(raw_payload.get("include_graph", False), default=False)),
-        "force_refresh": False,
+        "force_refresh": bool(to_bool(raw_payload.get("force_refresh", False), default=False)),
         "warnings": warnings,
         "raw_payload": to_jsonable(raw_payload),
     }
@@ -821,26 +1191,49 @@ def query_context_to_filter_payload(context: Optional[Dict[str, Any]] = None) ->
 # ============================================================
 
 def field_group_for_name(field_name: str, target: str) -> str:
+    target = normalize_target(target)
+    field_name = normalize_filter_field_name(field_name)
+
     if target in {"policy"} or field_name.startswith("policy_") or field_name in {"product", "subclass"}:
         return "policy"
+
     if target in {"linkage"} or "director" in field_name or "shared" in field_name or "edge" in field_name:
         return "linkage"
+
     if target == "director":
         return "director"
-    if target in {"flood"} or "risk" in field_name or "flood" in field_name or "station" in field_name or "dam" in field_name:
+
+    if target in {"flood_prediction_latest", "flood_prediction_map", "prediction_map_view"}:
+        return "prediction"
+
+    if target in {"uploaded_entity_latest", "entity_overlay_view"} or field_name.startswith("entity_"):
+        return "entity"
+
+    if target in {"dashboard_province_insights", "flood_dashboard_view", "province_insight_view"}:
+        return "dashboard"
+
+    if target in {"flood", "flood_rainfall_latest", "flood_waterlevel_latest", "flood_dam_latest"}:
         return "flood"
+
+    if "risk" in field_name or "flood" in field_name or "station" in field_name or "dam" in field_name:
+        return "flood"
+
     if target == "spatial" or field_name in {"province", "district", "subdistrict", "lat", "lon", "latitude", "longitude"}:
         return "location"
-    if target == "map" or field_name in {"layer_id", "feature_type", "marker_size", "marker_color"}:
+
+    if target in {"map", "map_layers"} or field_name in {"layer_id", "feature_type", "marker_size", "marker_color", "object_type", "source_type"}:
         return "map"
+
     if target == "data_quality":
         return "data_quality"
+
     if target == "package":
         return "package"
+
     if field_name in {"total_premium", "total_loss", "total_suminsure", "loss_ratio", "registered_capital", "most_recent_income_val"}:
         return "company_financial"
-    return "company_identity"
 
+    return "company_identity"
 
 def build_field_object(field_name: str, target: str) -> Dict[str, Any]:
     field_def = FIELD_DEFINITIONS.get(field_name) if isinstance(FIELD_DEFINITIONS, dict) else None
@@ -953,22 +1346,34 @@ def fallback_quick_filter_presets() -> Dict[str, Dict[str, Any]]:
         "high_loss_ratio": preset("high_loss_ratio", "High Loss Ratio", "company", {"loss_ratio": {"operator": "gte", "value": 50}}, "policy", 20),
         "active_policy": preset("active_policy", "Active Policy", "policy", {"policy_status_now": "active"}, "policy", 30),
         "expired_policy": preset("expired_policy", "Expired Policy", "policy", {"policy_status_now": "expired"}, "policy", 40),
-        "wtip_companies": preset("wtip_companies", "WTIP Companies", "company", {"Wtip": {"operator": "is_not_empty"}}, "company", 50),
+        "wtip_companies": preset("wtip_companies", "WTIP Companies", "company", {"wtip": {"operator": "is_not_empty"}}, "company", 50),
         "missing_policy": preset("missing_policy", "Missing Policy", "company", {"has_policy": False}, "data_quality", 60),
         "missing_linkage": preset("missing_linkage", "Missing Linkage", "company", {"has_linkage": False}, "data_quality", 70),
         "missing_location": preset("missing_location", "Missing Location", "company", {"has_location": False}, "data_quality", 80),
         "invalid_tax_id": preset("invalid_tax_id", "Invalid Tax ID", "data_quality", {"issue_type": "invalid_tax_id"}, "data_quality", 90),
-        "critical_flood_risk": preset("critical_flood_risk", "Critical Flood Risk", "company", {"flood_risk_level": ["Critical", "critical"]}, "flood", 100),
-        "warning_flood_risk": preset("warning_flood_risk", "Warning Flood Risk", "company", {"flood_risk_level": ["Warning", "High"]}, "flood", 110),
-        "companies_in_flood_area": preset("companies_in_flood_area", "Companies In Flood Area", "company", {"has_flood_context": True}, "flood", 120),
-        "high_suminsure_in_flood_risk": preset("high_suminsure_in_flood_risk", "High Sum Insure In Flood Risk", "company", {"total_suminsure": {"operator": "gte", "value": 1000000}, "flood_risk_level": ["Warning", "Critical", "High"]}, "flood", 130),
-        "key_connectors": preset("key_connectors", "Key Connectors", "linkage", {"is_key_connector": True}, "linkage", 140),
-        "high_director_connectivity": preset("high_director_connectivity", "High Director Connectivity", "director", {"company_count": {"operator": "gte", "value": 3}}, "director", 150),
-        "shared_director_network": preset("shared_director_network", "Shared Director Network", "linkage", {"shared_director_count": {"operator": "gte", "value": 1}}, "linkage", 160),
-        "data_quality_critical": preset("data_quality_critical", "Data Quality Critical", "data_quality", {"severity": "critical"}, "data_quality", 170),
-        "data_quality_warning": preset("data_quality_warning", "Data Quality Warning", "data_quality", {"severity": "warning"}, "data_quality", 180),
-    }
 
+        "critical_flood_risk": preset("critical_flood_risk", "Critical Flood Risk", "company", {"risk": ["Critical", "critical"]}, "flood", 100),
+        "warning_flood_risk": preset("warning_flood_risk", "Warning Flood Risk", "company", {"risk": ["Warning", "High"]}, "flood", 110),
+        "companies_in_flood_area": preset("companies_in_flood_area", "Companies In Flood Area", "company", {"has_flood_context": True}, "flood", 120),
+        "high_suminsure_in_flood_risk": preset("high_suminsure_in_flood_risk", "High Sum Insure In Flood Risk", "company", {"total_suminsure": {"operator": "gte", "value": 1000000}, "risk": ["Warning", "Critical", "High"]}, "flood", 130),
+
+        "rainfall_warning": preset("rainfall_warning", "Rainfall Warning", "flood_rainfall_latest", {"risk": ["Warning", "Critical", "High"]}, "flood", 140),
+        "waterlevel_warning": preset("waterlevel_warning", "Waterlevel Warning", "flood_waterlevel_latest", {"risk": ["Warning", "Critical", "High"]}, "flood", 150),
+        "dam_warning": preset("dam_warning", "Dam Warning", "flood_dam_latest", {"risk": ["Warning", "Critical", "High"]}, "flood", 160),
+        "prediction_critical": preset("prediction_critical", "Prediction Critical", "flood_prediction_latest", {"risk": ["Critical", "critical"]}, "prediction", 170),
+        "prediction_warning": preset("prediction_warning", "Prediction Warning", "flood_prediction_latest", {"risk": ["Warning", "High"]}, "prediction", 180),
+        "prediction_map_ready": preset("prediction_map_ready", "Prediction Map Ready", "flood_prediction_map", {"map_ready": True}, "prediction", 190),
+        "prediction_missing_location": preset("prediction_missing_location", "Prediction Missing Location", "flood_prediction_map", {"map_ready": False}, "prediction", 200),
+        "entity_overlay_displayable": preset("entity_overlay_displayable", "Entity Overlay Displayable", "uploaded_entity_latest", {"has_location": True}, "entity", 210),
+        "entity_overlay_high_risk": preset("entity_overlay_high_risk", "Entity Overlay High Risk", "uploaded_entity_latest", {"risk": ["Critical", "Warning", "High"]}, "entity", 220),
+        "province_insight_prediction": preset("province_insight_prediction", "Province Insight Prediction", "dashboard_province_insights", {"mode": "prediction"}, "dashboard", 230),
+
+        "key_connectors": preset("key_connectors", "Key Connectors", "linkage", {"is_key_connector": True}, "linkage", 240),
+        "high_director_connectivity": preset("high_director_connectivity", "High Director Connectivity", "director", {"company_count": {"operator": "gte", "value": 3}}, "director", 250),
+        "shared_director_network": preset("shared_director_network", "Shared Director Network", "linkage", {"shared_director_count": {"operator": "gte", "value": 1}}, "linkage", 260),
+        "data_quality_critical": preset("data_quality_critical", "Data Quality Critical", "data_quality", {"severity": "critical"}, "data_quality", 270),
+        "data_quality_warning": preset("data_quality_warning", "Data Quality Warning", "data_quality", {"severity": "warning"}, "data_quality", 280),
+    }
 
 def get_quick_filter_presets(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -1003,13 +1408,17 @@ def get_quick_filter_presets(context: Optional[Dict[str, Any]] = None) -> Dict[s
         meta={"record_count": len(presets)},
     )
 
-
 def get_field_dtype(field_name: str) -> str:
     """
-    คืน dtype ของ field จาก schemas.py
+    คืน dtype ของ field จาก schemas.py + override ของ runtime flood/entity/map
     """
 
-    field_def = FIELD_DEFINITIONS.get(field_name)
+    normalized_name = normalize_filter_field_name(field_name)
+
+    if normalized_name in FIELD_DTYPE_OVERRIDES:
+        return FIELD_DTYPE_OVERRIDES[normalized_name]
+
+    field_def = FIELD_DEFINITIONS.get(normalized_name)
 
     if not field_def:
         return "string"
@@ -1044,10 +1453,10 @@ def get_target_fields(target: str) -> List[str]:
     target = normalize_target(target)
 
     if target in FILTERABLE_FIELDS:
-        return list(FILTERABLE_FIELDS[target])
+        return list(dict.fromkeys([normalize_filter_field_name(field) for field in FILTERABLE_FIELDS[target]]))
 
     if target in FALLBACK_FIELDS_BY_TARGET:
-        return list(FALLBACK_FIELDS_BY_TARGET[target])
+        return list(dict.fromkeys([normalize_filter_field_name(field) for field in FALLBACK_FIELDS_BY_TARGET[target]]))
 
     if target == "director":
         return [
@@ -1286,15 +1695,19 @@ def evaluate_condition(record: Dict[str, Any], condition: Dict[str, Any]) -> boo
         expected_value = condition.get("min")
         expected_value_to = condition.get("max")
 
-    record_value = record.get(field_name)
+    candidates = get_filter_field_candidates(field_name)
 
-    return compare_values(
-        record_value=record_value,
-        operator=operator,
-        expected_value=expected_value,
-        expected_value_to=expected_value_to,
-        dtype=dtype,
-    )
+    for candidate in candidates:
+        if compare_values(
+            record_value=record.get(candidate),
+            operator=operator,
+            expected_value=expected_value,
+            expected_value_to=expected_value_to,
+            dtype=dtype,
+        ):
+            return True
+
+    return False
 
 
 def evaluate_filter_group(record: Dict[str, Any], group: Dict[str, Any], depth: int = 0, max_depth: int = 5) -> bool:
@@ -1369,33 +1782,54 @@ def evaluate_simple_filter(record: Dict[str, Any], field_name: str, value: Any) 
 
     if key_text.endswith("_min"):
         base_field = key_text[:-4]
-        return compare_values(record.get(base_field), "gte", value)
+        return any(
+            compare_values(record.get(candidate), "gte", value, dtype=get_field_dtype(candidate))
+            for candidate in get_filter_field_candidates(base_field)
+        )
 
     if key_text.endswith("_max"):
         base_field = key_text[:-4]
-        return compare_values(record.get(base_field), "lte", value)
+        return any(
+            compare_values(record.get(candidate), "lte", value, dtype=get_field_dtype(candidate))
+            for candidate in get_filter_field_candidates(base_field)
+        )
+
+    candidates = get_filter_field_candidates(key_text)
 
     if isinstance(value, dict):
         if "operator" in value or "op" in value:
-            return compare_values(
-                record.get(key_text),
-                value.get("operator") or value.get("op") or "equals",
-                value.get("value"),
-                value.get("value_to") or value.get("max"),
-                dtype=get_field_dtype(key_text),
+            return any(
+                compare_values(
+                    record.get(candidate),
+                    value.get("operator") or value.get("op") or "equals",
+                    value.get("value"),
+                    value.get("value_to") or value.get("max"),
+                    dtype=get_field_dtype(candidate),
+                )
+                for candidate in candidates
             )
+
         if "min" in value or "max" in value:
-            return compare_values(
-                record.get(key_text),
-                "between",
-                {"min": value.get("min"), "max": value.get("max")},
-                dtype=get_field_dtype(key_text),
+            return any(
+                compare_values(
+                    record.get(candidate),
+                    "between",
+                    {"min": value.get("min"), "max": value.get("max")},
+                    dtype=get_field_dtype(candidate),
+                )
+                for candidate in candidates
             )
 
     if isinstance(value, list):
-        return compare_values(record.get(key_text), "in", value, dtype=get_field_dtype(key_text))
+        return any(
+            compare_values(record.get(candidate), "in", value, dtype=get_field_dtype(candidate))
+            for candidate in candidates
+        )
 
-    return compare_values(record.get(key_text), "equals", value, dtype=get_field_dtype(key_text))
+    return any(
+        compare_values(record.get(candidate), "equals", value, dtype=get_field_dtype(candidate))
+        for candidate in candidates
+    )
 
 
 def apply_simple_filters(
@@ -1802,16 +2236,120 @@ def records_to_record_list(records: Any, target: Optional[str] = None) -> List[D
 
     return [deepcopy(record) for record in dataframe_to_records(records) if isinstance(record, dict)]
 
+def extract_dashboard_insight_records(payload: Any) -> List[Dict[str, Any]]:
+    """
+    แปลง dashboard province insight payload เป็น records สำหรับ filter
+    """
+
+    records: List[Dict[str, Any]] = []
+
+    if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+        source = payload["data"]
+    elif isinstance(payload, dict):
+        source = payload
+    else:
+        return records
+
+    insight_keys = [
+        "prediction_risk_top3",
+        "top_prediction_risk_provinces",
+        "rainfall_top5",
+        "rainfall_ranking",
+        "waterlevel_top5",
+        "waterlevel_ranking",
+        "reservoir_top5",
+        "reservoir_ranking",
+    ]
+
+    for key in insight_keys:
+        items = source.get(key)
+        if not isinstance(items, list):
+            continue
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            record = deepcopy(item)
+            record["record_kind"] = "dashboard_province_insight"
+            record["insight_key"] = key
+
+            focus = record.get("focus")
+            if isinstance(focus, dict):
+                record["mode"] = clean_text(focus.get("mode"))
+                record["focus_type"] = clean_text(focus.get("type"))
+                record["focus_province"] = clean_text(focus.get("province"))
+
+            records.append(record)
+
+    return records
+
+
+def extract_map_layer_records(payload: Any) -> List[Dict[str, Any]]:
+    """
+    แปลง map layer payload เป็น records สำหรับ filter
+    """
+
+    records: List[Dict[str, Any]] = []
+
+    if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+        source = payload["data"]
+    elif isinstance(payload, dict):
+        source = payload
+    else:
+        return records
+
+    layers = source.get("layers")
+
+    if isinstance(layers, dict):
+        iterable = layers.items()
+    elif isinstance(layers, list):
+        iterable = [(clean_text(item.get("layer_id")) if isinstance(item, dict) else "", item) for item in layers]
+    else:
+        iterable = []
+
+    for layer_id, layer in iterable:
+        if not isinstance(layer, dict):
+            continue
+
+        record = {
+            "record_kind": "map_layer",
+            "layer_id": clean_text(layer.get("layer_id") or layer_id),
+            "layer_name": clean_text(layer.get("layer_name") or layer.get("name") or layer_id),
+            "source_type": clean_text(layer.get("source_type") or layer.get("source")),
+            "record_count": to_number(layer.get("record_count") or layer.get("count"), 0) or 0,
+            "feature_type": clean_text(layer.get("feature_type") or layer.get("type")),
+            "enabled": to_bool(layer.get("enabled"), default=True),
+            "visible": to_bool(layer.get("visible"), default=True),
+        }
+        records.append(record)
+
+        feature_collection = layer.get("features") or layer.get("feature_collection")
+        if isinstance(feature_collection, dict) and isinstance(feature_collection.get("features"), list):
+            for feature in feature_collection["features"]:
+                if not isinstance(feature, dict):
+                    continue
+
+                props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+                feature_record = {
+                    "record_kind": "map_feature",
+                    "layer_id": record["layer_id"],
+                    "layer_name": record["layer_name"],
+                    **props,
+                }
+                records.append(feature_record)
+
+    return records
 
 def load_records_from_cache_key(cache_key: str) -> List[Dict[str, Any]]:
     """
     โหลด records จาก cache key
 
-    รองรับ format:
-    - list
-    - {"records": []}
-    - {"data": []}
-    - {"data": {"records": []}}
+    รองรับ:
+    - records/list/items
+    - graph nodes/edges
+    - map layers/features
+    - dashboard province insights
     """
 
     path = get_cache_file_path(cache_key)
@@ -1821,7 +2359,19 @@ def load_records_from_cache_key(cache_key: str) -> List[Dict[str, Any]]:
 
     data = read_json(path, default={})
 
-    return normalize_cache_payload_to_records(data, target=cache_key)
+    records = normalize_cache_payload_to_records(data, target=cache_key)
+    if records:
+        return records
+
+    insight_records = extract_dashboard_insight_records(data)
+    if insight_records:
+        return insight_records
+
+    map_records = extract_map_layer_records(data)
+    if map_records:
+        return map_records
+
+    return []
 
 
 def load_target_records(target: str) -> List[Dict[str, Any]]:
@@ -1874,18 +2424,12 @@ def get_searchable_fields_for_target(target: str) -> List[str]:
 # ============================================================
 # 7) FILTER SUMMARY
 # ============================================================
-
 def summarize_filtered_records(
     records: List[Dict[str, Any]],
     target: str,
 ) -> Dict[str, Any]:
     """
     สร้าง summary หลัง apply filter
-
-    summary นี้ใช้ใน:
-    - filter preview
-    - package preview
-    - dashboard filter context
     """
 
     target = normalize_target(target)
@@ -1961,12 +2505,100 @@ def summarize_filtered_records(
             }
         )
 
-    elif target == "flood":
+    elif target in {"flood", "flood_rainfall_latest", "flood_waterlevel_latest", "flood_dam_latest", "flood_prediction_latest", "flood_prediction_map", "prediction_map_view"}:
         risk_counts: Dict[str, int] = {}
+        province_counts: Dict[str, int] = {}
+
         for r in records:
-            level = clean_text(r.get("risk_level") or r.get("flood_risk_level"), default="Unknown")
+            level = clean_text(
+                r.get("risk_level")
+                or r.get("risk_status")
+                or r.get("warning_level")
+                or r.get("warning_level_predict")
+                or r.get("flood_risk_level"),
+                default="Unknown",
+            )
+            province = clean_text(
+                r.get("province")
+                or r.get("province_model")
+                or r.get("province_name_th"),
+                default="Unknown",
+            )
             risk_counts[level] = risk_counts.get(level, 0) + 1
-        summary["risk_counts"] = risk_counts
+            province_counts[province] = province_counts.get(province, 0) + 1
+
+        summary.update(
+            {
+                "risk_counts": risk_counts,
+                "province_counts": province_counts,
+                "map_ready_count": sum(1 for r in records if to_bool(r.get("map_ready"), default=False)),
+                "with_location_count": sum(
+                    1
+                    for r in records
+                    if to_bool(r.get("has_location"), default=False)
+                    or (not is_empty_value(r.get("latitude")) and not is_empty_value(r.get("longitude")))
+                ),
+            }
+        )
+
+    elif target in {"uploaded_entity_latest", "entity_overlay_view"}:
+        entity_type_counts: Dict[str, int] = {}
+        risk_counts: Dict[str, int] = {}
+
+        for r in records:
+            entity_type = clean_text(r.get("entity_type"), default="Unknown")
+            risk = clean_text(r.get("risk_group") or r.get("risk_level"), default="Unknown")
+            entity_type_counts[entity_type] = entity_type_counts.get(entity_type, 0) + 1
+            risk_counts[risk] = risk_counts.get(risk, 0) + 1
+
+        summary.update(
+            {
+                "entity_type_counts": entity_type_counts,
+                "risk_counts": risk_counts,
+                "displayable_count": sum(
+                    1
+                    for r in records
+                    if not is_empty_value(r.get("latitude")) and not is_empty_value(r.get("longitude"))
+                ),
+            }
+        )
+
+    elif target in {"map", "map_layers"}:
+        layer_counts: Dict[str, int] = {}
+        source_counts: Dict[str, int] = {}
+
+        for r in records:
+            layer_id = clean_text(r.get("layer_id"), default="unknown")
+            source_type = clean_text(r.get("source_type"), default="unknown")
+            layer_counts[layer_id] = layer_counts.get(layer_id, 0) + 1
+            source_counts[source_type] = source_counts.get(source_type, 0) + 1
+
+        summary.update(
+            {
+                "layer_counts": layer_counts,
+                "source_counts": source_counts,
+                "feature_count": sum(1 for r in records if r.get("record_kind") == "map_feature"),
+            }
+        )
+
+    elif target in {"dashboard", "dashboard_province_insights", "flood_dashboard_view", "province_insight_view"}:
+        mode_counts: Dict[str, int] = {}
+        province_counts: Dict[str, int] = {}
+
+        for r in records:
+            mode = clean_text(r.get("mode") or r.get("insight_key"), default="unknown")
+            province = clean_text(r.get("province"), default="Unknown")
+            mode_counts[mode] = mode_counts.get(mode, 0) + 1
+            province_counts[province] = province_counts.get(province, 0) + 1
+
+        summary.update(
+            {
+                "mode_counts": mode_counts,
+                "province_counts": province_counts,
+                "critical_count": sum(1 for r in records if clean_text_lower(r.get("risk_level")) == "critical"),
+                "warning_count": sum(1 for r in records if clean_text_lower(r.get("risk_level")) == "warning"),
+            }
+        )
 
     elif target == "data_quality":
         severity_counts: Dict[str, int] = {}
@@ -2158,6 +2790,90 @@ def apply_quick_preset(
 # 10) SAVED FILTER VIEWS
 # ============================================================
 
+def builtin_saved_filter_views() -> List[Dict[str, Any]]:
+    """
+    saved view runtime default สำหรับ map/dashboard target ใหม่
+    """
+
+    definitions = [
+        {
+            "view_id": "prediction_map_view",
+            "name": "Prediction Map View",
+            "view_name": "Prediction Map View",
+            "description": "Flood prediction records ready for map focus.",
+            "target": "prediction_map_view",
+            "payload": {
+                "target": "prediction_map_view",
+                "filters": {},
+                "advanced": {},
+                "sort_by": "risk_score",
+                "sort_dir": "desc",
+            },
+            "tags": ["prediction", "map"],
+        },
+        {
+            "view_id": "entity_overlay_view",
+            "name": "Entity Overlay View",
+            "view_name": "Entity Overlay View",
+            "description": "Uploaded entity overlay records.",
+            "target": "entity_overlay_view",
+            "payload": {
+                "target": "entity_overlay_view",
+                "filters": {},
+                "advanced": {},
+                "sort_by": "risk_group",
+                "sort_dir": "desc",
+            },
+            "tags": ["entity", "map"],
+        },
+        {
+            "view_id": "flood_dashboard_view",
+            "name": "Flood Dashboard View",
+            "view_name": "Flood Dashboard View",
+            "description": "Flood dashboard runtime insight records.",
+            "target": "flood_dashboard_view",
+            "payload": {
+                "target": "flood_dashboard_view",
+                "filters": {},
+                "advanced": {},
+                "sort_by": "risk_score",
+                "sort_dir": "desc",
+            },
+            "tags": ["flood", "dashboard"],
+        },
+        {
+            "view_id": "province_insight_view",
+            "name": "Province Insight View",
+            "view_name": "Province Insight View",
+            "description": "Province insight ranking records.",
+            "target": "province_insight_view",
+            "payload": {
+                "target": "province_insight_view",
+                "filters": {},
+                "advanced": {},
+                "sort_by": "value",
+                "sort_dir": "desc",
+            },
+            "tags": ["province", "dashboard"],
+        },
+    ]
+
+    result = []
+
+    for item in definitions:
+        view = dict(item)
+        view["payload"] = normalize_filter_payload(view.get("payload"))
+        view["filter"] = view["payload"]
+        view["created_at"] = "builtin"
+        view["updated_at"] = "builtin"
+        view["is_default"] = False
+        view["owner"] = "system"
+        view["version"] = 1
+        result.append(to_jsonable(view))
+
+    return result
+
+
 def load_saved_filter_views() -> List[Dict[str, Any]]:
     """
     โหลด saved filter views
@@ -2166,16 +2882,28 @@ def load_saved_filter_views() -> List[Dict[str, Any]]:
     try:
         data = read_json(SAVED_VIEWS_PATH, default=[])
     except Exception:
-        return []
+        data = []
 
     if isinstance(data, list):
-        return [view for view in data if isinstance(view, dict)]
+        saved = [view for view in data if isinstance(view, dict)]
+    elif isinstance(data, dict) and isinstance(data.get("views"), list):
+        saved = [view for view in data["views"] if isinstance(view, dict)]
+    else:
+        saved = []
 
-    if isinstance(data, dict) and isinstance(data.get("views"), list):
-        return [view for view in data["views"] if isinstance(view, dict)]
+    builtin = builtin_saved_filter_views()
+    merged: Dict[str, Dict[str, Any]] = {}
 
-    return []
+    for view in builtin + saved:
+        view_id = clean_text(view.get("view_id")) or generate_view_id(view)
+        normalized_view = dict(view)
+        normalized_view["view_id"] = view_id
+        normalized_view["target"] = normalize_target(normalized_view.get("target"))
+        normalized_view["payload"] = normalize_filter_payload(normalized_view.get("payload") or normalized_view.get("filter") or {"target": normalized_view["target"]})
+        normalized_view["filter"] = normalized_view["payload"]
+        merged[view_id] = normalized_view
 
+    return list(merged.values())
 
 def load_saved_views() -> List[Dict[str, Any]]:
     return load_saved_filter_views()
@@ -2795,7 +3523,6 @@ def explain_filter_payload(payload: Optional[Dict[str, Any]] = None) -> Dict[str
         "operators": FILTER_OPERATORS,
     }
 
-
 def run_filter_self_test() -> Dict[str, Any]:
     """
     self test สำหรับ filter_engine.py
@@ -2837,7 +3564,30 @@ def run_filter_self_test() -> Dict[str, Any]:
         },
     ]
 
-    payload = {
+    prediction_records = [
+        {
+            "record_key": "prediction|1373690|2026-07-01|2026-07-03|2",
+            "station_id": "1373690",
+            "matched_station_id": "1373690",
+            "station_name": "สถานีตัวอย่าง",
+            "province_model": "น่าน",
+            "warning_level_predict": "Critical",
+            "forecast_horizon_day": 2,
+            "map_ready": True,
+            "latitude": 18.7,
+            "longitude": 100.7,
+        },
+        {
+            "record_key": "prediction|999|2026-07-01|2026-07-03|2",
+            "station_id": "999",
+            "province_model": "แพร่",
+            "warning_level_predict": "Normal",
+            "forecast_horizon_day": 2,
+            "map_ready": False,
+        },
+    ]
+
+    company_payload = {
         "target": "company",
         "filters": {
             "province": ["น่าน", "แพร่"],
@@ -2862,10 +3612,32 @@ def run_filter_self_test() -> Dict[str, Any]:
         "sort_dir": "desc",
     }
 
-    result = apply_full_filter(
+    prediction_payload = {
+        "target": "flood_prediction_latest",
+        "filters": {
+            "risk": "Critical",
+            "province": "น่าน",
+            "horizon": 2,
+            "map_ready": True,
+        },
+        "search": "",
+        "page": 1,
+        "page_size": 50,
+        "sort_by": "horizon",
+        "sort_dir": "asc",
+    }
+
+    company_result = apply_full_filter(
         records=sample_records,
-        payload=payload,
+        payload=company_payload,
         searchable_fields=get_searchable_fields_for_target("company"),
+        paginate=True,
+    )
+
+    prediction_result = apply_full_filter(
+        records=prediction_records,
+        payload=prediction_payload,
+        searchable_fields=get_searchable_fields_for_target("flood_prediction_latest"),
         paginate=True,
     )
 
@@ -2873,11 +3645,23 @@ def run_filter_self_test() -> Dict[str, Any]:
         "module": "filter_engine",
         "ready": True,
         "sample_input_count": len(sample_records),
-        "sample_result": result,
-        "explain": explain_filter_payload(payload),
+        "sample_result": company_result,
+        "prediction_input_count": len(prediction_records),
+        "prediction_result": prediction_result,
+        "explain": explain_filter_payload(company_payload),
+        "prediction_explain": explain_filter_payload(prediction_payload),
+        "supported_new_targets": [
+            "flood_rainfall_latest",
+            "flood_waterlevel_latest",
+            "flood_dam_latest",
+            "flood_prediction_latest",
+            "flood_prediction_map",
+            "uploaded_entity_latest",
+            "map_layers",
+            "dashboard_province_insights",
+        ],
         "checked_at": now_iso(),
     }
-
 
 # ============================================================
 # 14) MODULE STATUS
@@ -2892,10 +3676,29 @@ def get_filter_engine_status() -> Dict[str, Any]:
         "module": "filter_engine",
         "ready": True,
         "supported_targets": SUPPORTED_TARGETS,
+        "runtime_targets": [
+            "flood_rainfall_latest",
+            "flood_waterlevel_latest",
+            "flood_dam_latest",
+            "flood_prediction_latest",
+            "flood_prediction_map",
+            "uploaded_entity_latest",
+            "map_layers",
+            "dashboard_province_insights",
+        ],
+        "saved_view_targets": [
+            "prediction_map_view",
+            "entity_overlay_view",
+            "flood_dashboard_view",
+            "province_insight_view",
+        ],
+        "target_aliases": TARGET_ALIASES,
+        "field_alias_candidates": FILTER_FIELD_ALIAS_CANDIDATES,
         "supported_operators": FILTER_OPERATORS,
         "supported_logical_operators": FILTER_LOGICAL_OPERATORS,
-        "quick_preset_count": len(QUICK_FILTER_PRESETS),
+        "quick_preset_count": len(fallback_quick_filter_presets()),
         "saved_views_path": str(SAVED_VIEWS_PATH),
         "saved_views_count": len(load_saved_views()),
+        "cache_key_candidates": TARGET_CACHE_KEY_CANDIDATES,
         "checked_at": now_iso(),
     }
