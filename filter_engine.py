@@ -1059,11 +1059,7 @@ def normalize_filter_group_fields(group: Optional[Dict[str, Any]] = None) -> Dic
 
 def normalize_filter_payload(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    normalize filter payload กลางของระบบ
-
-    รองรับ:
-    - target ใหม่ flood/prediction/entity/map/dashboard
-    - field alias จาก route/frontend
+    Normalize the shared filter payload without mutating the caller input.
     """
 
     warnings: List[Dict[str, Any]] = []
@@ -1140,6 +1136,100 @@ def normalize_filter_payload(payload: Optional[Dict[str, Any]] = None) -> Dict[s
     }
 
     return normalized
+
+
+
+def validate_runtime_filter_payload(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Validate runtime filter structure while preserving field aliases."""
+
+    errors: List[Dict[str, Any]] = []
+    warnings: List[Dict[str, Any]] = []
+
+    if payload is None:
+        return {"valid": True, "errors": [], "warnings": []}
+
+    if not isinstance(payload, dict):
+        return {
+            "valid": False,
+            "errors": [{"code": "invalid_filter_payload", "field": "payload", "message": "payload must be a dictionary."}],
+            "warnings": [],
+        }
+
+    if "filters" in payload and payload.get("filters") is not None and not isinstance(payload.get("filters"), dict):
+        errors.append({"code": "invalid_filters", "field": "filters", "message": "filters must be a dictionary."})
+
+    advanced = payload.get("advanced")
+    if advanced is not None and not isinstance(advanced, dict):
+        errors.append({"code": "invalid_advanced_filter", "field": "advanced", "message": "advanced must be a dictionary."})
+        advanced = None
+
+    def walk_group(group: Dict[str, Any], path_prefix: str, depth: int = 0) -> None:
+        if depth > 5:
+            errors.append({"code": "filter_group_depth_exceeded", "field": path_prefix, "message": "advanced filter nesting exceeds the supported depth."})
+            return
+
+        logic = clean_text(group.get("logic", "AND")).upper() or "AND"
+        if logic not in FILTER_LOGICAL_OPERATORS:
+            errors.append({"code": "invalid_filter_logic", "field": f"{path_prefix}.logic", "message": f"unsupported logical operator: {logic}"})
+
+        conditions = group.get("conditions", [])
+        groups = group.get("groups", [])
+        if not isinstance(conditions, list):
+            errors.append({"code": "invalid_filter_conditions", "field": f"{path_prefix}.conditions", "message": "conditions must be a list."})
+            conditions = []
+        if not isinstance(groups, list):
+            errors.append({"code": "invalid_filter_groups", "field": f"{path_prefix}.groups", "message": "groups must be a list."})
+            groups = []
+
+        for index, condition in enumerate(conditions):
+            condition_path = f"{path_prefix}.conditions[{index}]"
+            if not isinstance(condition, dict):
+                errors.append({"code": "invalid_filter_condition", "field": condition_path, "message": "condition must be a dictionary."})
+                continue
+
+            if not clean_text(condition.get("field")) and ("conditions" in condition or "groups" in condition):
+                walk_group(condition, condition_path, depth + 1)
+                continue
+
+            field_name = clean_text(condition.get("field"))
+            if not field_name:
+                errors.append({"code": "filter_field_missing", "field": condition_path, "message": "filter condition requires a field."})
+                continue
+
+            operator = normalize_operator(condition.get("operator") or condition.get("op") or "equals")
+            if operator not in FILTER_OPERATORS:
+                errors.append({"code": "invalid_filter_operator", "field": f"{condition_path}.operator", "message": f"unsupported filter operator: {operator}"})
+                continue
+
+            if operator in {"is_empty", "is_not_empty", "exists", "not_exists"}:
+                continue
+
+            value = condition.get("value")
+            value_to = condition.get("value_to")
+            if operator == "between":
+                if isinstance(value, dict):
+                    lower = value.get("min")
+                    upper = value.get("max")
+                else:
+                    values = as_list(value)
+                    lower = condition.get("min", values[0] if values else None)
+                    upper = condition.get("max", values[1] if len(values) > 1 else value_to)
+                if is_empty_value(lower) or is_empty_value(upper):
+                    errors.append({"code": "between_value_incomplete", "field": f"{condition_path}.value", "message": "between requires both minimum and maximum values."})
+            elif is_empty_value(value):
+                errors.append({"code": "filter_value_missing", "field": f"{condition_path}.value", "message": "filter condition requires a non-empty value."})
+
+        for index, child_group in enumerate(groups):
+            child_path = f"{path_prefix}.groups[{index}]"
+            if not isinstance(child_group, dict):
+                errors.append({"code": "invalid_filter_group", "field": child_path, "message": "nested group must be a dictionary."})
+                continue
+            walk_group(child_group, child_path, depth + 1)
+
+    if isinstance(advanced, dict) and advanced:
+        walk_group(advanced, "advanced")
+
+    return {"valid": not errors, "errors": errors, "warnings": warnings}
 
 
 def normalize_filter_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1544,6 +1634,8 @@ def normalize_value_for_compare(value: Any) -> Any:
 
 def normalize_compare_value(value: Any, dtype: str = "string") -> Any:
     dtype = clean_text_lower(dtype)
+    if is_empty_value(value):
+        return None
     if dtype in {"number", "float", "integer", "int"}:
         return to_comparable_number(value)
     if dtype in {"boolean", "bool"}:
@@ -1552,7 +1644,8 @@ def normalize_compare_value(value: Any, dtype: str = "string") -> Any:
         return to_comparable_datetime(value)
     if dtype in {"array", "list"}:
         return as_list(value)
-    return normalize_string(value)
+    return clean_text_lower(value)
+
 
 
 def comparable_pair(left: Any, right: Any) -> Tuple[Any, Any]:
@@ -1578,65 +1671,63 @@ def compare_values(
 ) -> bool:
     operator = normalize_operator(operator)
 
+    if operator not in FILTER_OPERATORS:
+        return False
+
     if operator == "is_empty":
         return is_empty_value(record_value)
-
     if operator in {"is_not_empty", "exists"}:
         return not is_empty_value(record_value)
-
     if operator == "not_exists":
         return is_empty_value(record_value)
 
     if operator == "equals":
-        left, right = comparable_pair(record_value, expected_value)
-        return left == right
-
+        return normalize_compare_value(record_value, dtype) == normalize_compare_value(expected_value, dtype)
     if operator == "not_equals":
         return not compare_values(record_value, "equals", expected_value, dtype=dtype)
 
     if operator == "contains":
-        if is_empty_value(record_value):
+        if is_empty_value(record_value) or is_empty_value(expected_value):
             return False
+        expected_values = [clean_text_lower(item) for item in as_list(expected_value)]
         if isinstance(record_value, (list, tuple, set)):
             record_values = [clean_text_lower(item) for item in record_value]
-            expected_values = [clean_text_lower(item) for item in as_list(expected_value)]
-            return any(item in record_values for item in expected_values)
-        return clean_text_lower(expected_value) in clean_text_lower(record_value)
-
+            return any(expected in record_values for expected in expected_values)
+        haystack = clean_text_lower(record_value)
+        return any(expected in haystack for expected in expected_values)
     if operator == "not_contains":
         return not compare_values(record_value, "contains", expected_value, dtype=dtype)
-
     if operator == "startswith":
-        return clean_text_lower(record_value).startswith(clean_text_lower(expected_value))
-
+        return not is_empty_value(expected_value) and clean_text_lower(record_value).startswith(clean_text_lower(expected_value))
     if operator == "endswith":
-        return clean_text_lower(record_value).endswith(clean_text_lower(expected_value))
+        return not is_empty_value(expected_value) and clean_text_lower(record_value).endswith(clean_text_lower(expected_value))
 
-    if operator == "in":
+    if operator in {"in", "not_in"}:
         expected_list = as_list(expected_value)
+        if not expected_list:
+            return operator == "not_in"
+        expected_normalized = [normalize_compare_value(item, dtype) for item in expected_list]
         if isinstance(record_value, (list, tuple, set)):
-            record_set = {clean_text_lower(item) for item in record_value}
-            expected_set = {clean_text_lower(item) for item in expected_list}
-            return bool(record_set.intersection(expected_set))
-        left = normalize_value_for_compare(record_value)
-        expected_normalized = [normalize_value_for_compare(item) for item in expected_list]
-        return left in expected_normalized
-
-    if operator == "not_in":
-        return not compare_values(record_value, "in", expected_value, dtype=dtype)
+            matched = any(normalize_compare_value(item, dtype) in expected_normalized for item in record_value)
+        else:
+            matched = normalize_compare_value(record_value, dtype) in expected_normalized
+        return matched if operator == "in" else not matched
 
     if operator in {"gt", "gte", "lt", "lte"}:
-        left, right = comparable_pair(record_value, expected_value)
+        left = normalize_compare_value(record_value, dtype)
+        right = normalize_compare_value(expected_value, dtype)
         if left is None or right is None:
             return False
-        if operator == "gt":
-            return left > right
-        if operator == "gte":
-            return left >= right
-        if operator == "lt":
-            return left < right
-        if operator == "lte":
+        try:
+            if operator == "gt":
+                return left > right
+            if operator == "gte":
+                return left >= right
+            if operator == "lt":
+                return left < right
             return left <= right
+        except TypeError:
+            return False
 
     if operator == "between":
         if isinstance(expected_value, dict):
@@ -1646,20 +1737,20 @@ def compare_values(
             values = as_list(expected_value)
             min_value = values[0] if values else None
             max_value = values[1] if len(values) > 1 else expected_value_to
-        left = normalize_value_for_compare(record_value)
-        if left is None:
+        if is_empty_value(min_value) or is_empty_value(max_value):
             return False
-        if not is_empty_value(min_value):
-            min_left, min_right = comparable_pair(left, min_value)
-            if min_left < min_right:
-                return False
-        if not is_empty_value(max_value):
-            max_left, max_right = comparable_pair(left, max_value)
-            if max_left > max_right:
-                return False
-        return True
+        left = normalize_compare_value(record_value, dtype)
+        lower = normalize_compare_value(min_value, dtype)
+        upper = normalize_compare_value(max_value, dtype)
+        if left is None or lower is None or upper is None:
+            return False
+        try:
+            return lower <= left <= upper
+        except TypeError:
+            return False
 
     return False
+
 
 
 # ============================================================
@@ -1705,66 +1796,36 @@ def evaluate_condition(record: Dict[str, Any], condition: Dict[str, Any]) -> boo
 
 
 def evaluate_filter_group(record: Dict[str, Any], group: Dict[str, Any], depth: int = 0, max_depth: int = 5) -> bool:
-    """
-    evaluate filter group แบบ nested
-
-    group format:
-    {
-        "logic": "AND",
-        "conditions": [],
-        "groups": []
-    }
-    """
+    """Evaluate a nested advanced-filter group."""
 
     if not isinstance(group, dict) or not group:
         return True
     if depth > max_depth:
         return False
 
-    logic = clean_text(group.get("logic", "AND")).upper()
-
+    logic = clean_text(group.get("logic", "AND")).upper() or "AND"
     if logic not in FILTER_LOGICAL_OPERATORS:
-        logic = "AND"
+        return False
 
     conditions = group.get("conditions", [])
     groups = group.get("groups", [])
-    if "conditions" in group and not isinstance(conditions, list):
+    if not isinstance(conditions, list) or not isinstance(groups, list):
         return False
-    if "groups" in group and not isinstance(groups, list):
-        return False
-    if not conditions and not groups and any(key in group for key in ["logic", "conditions", "groups"]):
-        return False
-    nested_conditions = [
-        condition
-        for condition in conditions
-        if isinstance(condition, dict) and "conditions" in condition and not condition.get("field")
-    ]
-    flat_conditions = [
-        condition
-        for condition in conditions
-        if not (isinstance(condition, dict) and "conditions" in condition and not condition.get("field"))
-    ]
 
     results: List[bool] = []
-
-    if isinstance(flat_conditions, list):
-        for condition in flat_conditions:
+    for condition in conditions:
+        if isinstance(condition, dict) and not clean_text(condition.get("field")) and ("conditions" in condition or "groups" in condition):
+            results.append(evaluate_filter_group(record, condition, depth=depth + 1, max_depth=max_depth))
+        else:
             results.append(evaluate_condition(record, condition))
 
-    for child_group in nested_conditions:
+    for child_group in groups:
         results.append(evaluate_filter_group(record, child_group, depth=depth + 1, max_depth=max_depth))
-
-    if isinstance(groups, list):
-        for child_group in groups:
-            results.append(evaluate_filter_group(record, child_group, depth=depth + 1, max_depth=max_depth))
 
     if not results:
         return True
+    return any(results) if logic == "OR" else all(results)
 
-    if logic == "OR":
-        return any(results)
-
-    return all(results)
 
 
 def evaluate_advanced_group(record: Dict[str, Any], group: Dict[str, Any], depth: int = 0) -> bool:
@@ -2091,66 +2152,58 @@ def apply_full_filter(
 # ============================================================
 
 def extract_records_from_cache_payload(payload: Any, target: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Extract list records from common cache payload shapes.
-    """
+    """Extract record dictionaries from common service and cache wrappers."""
 
     records: List[Dict[str, Any]] = []
 
     def append_items(items: Any, record_kind: str = "") -> None:
-        if not isinstance(items, list):
+        if isinstance(items, dict):
+            iterable: Iterable[Any] = [items]
+        elif isinstance(items, (list, tuple, set)):
+            iterable = items
+        elif isinstance(items, Iterable) and not isinstance(items, (str, bytes, bytearray)):
+            iterable = items
+        else:
             return
-        for item in items:
-            if isinstance(item, dict):
-                record = deepcopy(item)
-                if record_kind and "record_kind" not in record:
-                    record["record_kind"] = record_kind
-                records.append(record)
+        for item in iterable:
+            if not isinstance(item, dict):
+                continue
+            record = dict(item)
+            if record_kind and "record_kind" not in record:
+                record["record_kind"] = record_kind
+            records.append(record)
 
-    if isinstance(payload, list):
+    if isinstance(payload, (list, tuple, set)):
         append_items(payload)
         return records
-
     if not isinstance(payload, dict):
         return []
 
     for key in ["records", "items", "companies", "issues", "packages"]:
-        if isinstance(payload.get(key), list):
-            append_items(payload[key], key[:-1] if key.endswith("s") else key)
-            return records
-
-    data = payload.get("data")
-    if isinstance(data, list):
-        append_items(data)
-        return records
-
-    if isinstance(data, dict):
-        for key in ["records", "items", "companies", "issues", "packages"]:
-            if isinstance(data.get(key), list):
-                append_items(data[key], key[:-1] if key.endswith("s") else key)
+        if key in payload:
+            append_items(payload.get(key), key[:-1] if key.endswith("s") else key)
+            if records:
                 return records
 
-        if (
-            isinstance(data.get("layers"), (list, dict))
-            or isinstance(data.get("features"), dict)
-            or any(key in data for key in ["cards", "charts", "summary"])
-        ):
-            return extract_records_from_cache_payload(data, target=target)
+    data = payload.get("data")
+    if isinstance(data, (list, tuple, set)):
+        append_items(data)
+        return records
+    if isinstance(data, dict):
+        nested = extract_records_from_cache_payload(data, target=target)
+        if nested:
+            return nested
 
-        if isinstance(data.get("nodes"), list) or isinstance(data.get("edges"), list):
-            append_items(data.get("nodes", []), "node")
-            append_items(data.get("edges", []), "edge")
-            return records
-
-    if isinstance(payload.get("nodes"), list) or isinstance(payload.get("edges"), list):
+    if "nodes" in payload or "edges" in payload:
         append_items(payload.get("nodes", []), "node")
         append_items(payload.get("edges", []), "edge")
-        return records
+        if records:
+            return records
 
     layers = payload.get("layers")
     if isinstance(layers, dict):
         layer_iterable = layers.values()
-    elif isinstance(layers, list):
+    elif isinstance(layers, (list, tuple)):
         layer_iterable = layers
     else:
         layer_iterable = []
@@ -2164,12 +2217,8 @@ def extract_records_from_cache_payload(payload: Any, target: Optional[str] = Non
             for feature in feature_collection["features"]:
                 if not isinstance(feature, dict):
                     continue
-                record = {
-                    "record_kind": "map_feature",
-                    "layer_id": layer_id,
-                    "feature_type": feature.get("properties", {}).get("feature_type"),
-                    **(feature.get("properties", {}) if isinstance(feature.get("properties"), dict) else {}),
-                }
+                properties = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+                record = {"record_kind": "map_feature", "layer_id": layer_id, "feature_type": properties.get("feature_type"), **properties}
                 geometry = feature.get("geometry")
                 if isinstance(geometry, dict):
                     record["geometry_type"] = geometry.get("type")
@@ -2182,17 +2231,13 @@ def extract_records_from_cache_payload(payload: Any, target: Optional[str] = Non
     if isinstance(features, dict) and features.get("type") == "FeatureCollection":
         for feature in features.get("features", []):
             if isinstance(feature, dict):
-                records.append(
-                    {
-                        "record_kind": "map_feature",
-                        **(feature.get("properties", {}) if isinstance(feature.get("properties"), dict) else {}),
-                    }
-                )
+                properties = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+                records.append({"record_kind": "map_feature", **properties})
         return records
 
     for key in ["cards", "charts", "summary"]:
         value = payload.get(key)
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             append_items(value, key[:-1] if key.endswith("s") else key)
         elif isinstance(value, dict):
             for item_key, item_value in value.items():
@@ -2200,8 +2245,8 @@ def extract_records_from_cache_payload(payload: Any, target: Optional[str] = Non
                     records.append({"record_kind": key, "key": item_key, **item_value})
                 else:
                     records.append({"record_kind": key, "key": item_key, "value": item_value})
-
     return records
+
 
 
 def normalize_cache_payload_to_records(payload: Any, target: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -2213,22 +2258,25 @@ def normalize_cache_payload_to_records(payload: Any, target: Optional[str] = Non
 
 
 def records_to_record_list(records: Any, target: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Convert service/cache/DataFrame inputs into a detached list of record dicts.
-    """
+    """Convert supported service/cache inputs to a detached record list."""
 
     if records is None:
         return []
-
     if isinstance(records, dict):
         if not records:
             return []
-        extracted = normalize_cache_payload_to_records(records, target=target)
+        extracted = extract_records_from_cache_payload(records, target=target)
         if extracted:
-            return [deepcopy(record) for record in extracted if isinstance(record, dict)]
-        return [deepcopy(records)]
+            return [dict(record) for record in extracted]
+        return [dict(records)]
+    if isinstance(records, (list, tuple, set)):
+        return [dict(record) for record in records if isinstance(record, dict)]
+    if isinstance(records, Iterable) and not isinstance(records, (str, bytes, bytearray)) and not hasattr(records, "to_dict"):
+        return [dict(record) for record in records if isinstance(record, dict)]
+    if hasattr(records, "empty") and hasattr(records, "to_dict"):
+        return [dict(record) for record in dataframe_to_records(records) if isinstance(record, dict)]
+    return []
 
-    return [deepcopy(record) for record in dataframe_to_records(records) if isinstance(record, dict)]
 
 def extract_dashboard_insight_records(payload: Any) -> List[Dict[str, Any]]:
     """
@@ -2619,17 +2667,22 @@ def summarize_filtered_records(
 # ============================================================
 
 def preview_filter(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    API function:
-    POST /api/filter/preview
+    """Preview a filter request before applying it to the full result set."""
 
-    ใช้สำหรับ preview ก่อน apply จริง
-    """
-
+    validation = validate_runtime_filter_payload(payload)
     normalized = normalize_filter_payload(payload)
     target = normalized["target"]
-    records = load_target_records(target)
+    if not validation["valid"]:
+        return make_filter_response(
+            data={"target": target, "records": [], "sample_rows": [], "validation": validation},
+            message="Filter payload validation failed.",
+            target=target,
+            meta={"status_code": 422, "record_count": 0},
+            errors=validation["errors"],
+            success=False,
+        )
 
+    records = load_target_records(target)
     if not records:
         return make_filter_response(
             data={
@@ -2640,7 +2693,7 @@ def preview_filter(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
                 "filtered_record_count": 0,
                 "preview_count": 0,
                 "filter_summary": build_filter_summary(normalized, {}),
-                "warnings": normalized.get("warnings", []),
+                "warnings": normalized.get("warnings", []) + validation.get("warnings", []),
             },
             message="Filter operation completed with empty source data.",
             target=target,
@@ -2652,7 +2705,6 @@ def preview_filter(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     preview_payload["page_size"] = min(10, normalized.get("page_size", DEFAULT_TABLE_PAGE_SIZE))
     result = run_filter_pipeline(records, preview_payload, target=target)
     sample_rows = result.get("records", [])[: min(10, preview_payload["page_size"])]
-
     return make_filter_response(
         data={
             "target": target,
@@ -2662,35 +2714,36 @@ def preview_filter(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "filtered_record_count": result.get("filtered_record_count", 0),
             "preview_count": len(sample_rows),
             "filter_summary": result.get("filter_summary", {}),
-            "warnings": result.get("warnings", []),
+            "warnings": result.get("warnings", []) + validation.get("warnings", []),
         },
         message="Filter preview completed.",
         target=target,
-        meta={
-            "record_count": len(sample_rows),
-            "source_record_count": result.get("source_record_count", 0),
-            "filtered_record_count": result.get("filtered_record_count", 0),
-        },
+        meta={"record_count": len(sample_rows), "source_record_count": result.get("source_record_count", 0), "filtered_record_count": result.get("filtered_record_count", 0)},
     )
 
 
+
 def apply_filter(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    API function:
-    POST /api/filter/apply
+    """Apply a validated filter request and return a paginated result."""
 
-    ใช้ apply filter แล้วคืน records แบบ paginate
-    """
-
+    validation = validate_runtime_filter_payload(payload)
     normalized = normalize_filter_payload(payload)
     target = normalized["target"]
-    records = load_target_records(target)
+    if not validation["valid"]:
+        return make_filter_response(
+            data={"target": target, "records": [], "validation": validation},
+            message="Filter payload validation failed.",
+            target=target,
+            meta={"status_code": 422, "record_count": 0},
+            errors=validation["errors"],
+            success=False,
+        )
 
+    records = load_target_records(target)
     if not records:
         return make_degraded_filter_response(target, "target cache missing or empty", normalized)
 
     result = run_filter_pipeline(records, normalized, target=target)
-
     return make_filter_response(
         data={
             "target": target,
@@ -2703,16 +2756,13 @@ def apply_filter(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "has_next": result.get("has_next", False),
             "has_prev": result.get("has_prev", False),
             "filter_summary": result.get("filter_summary", {}),
-            "warnings": result.get("warnings", []),
+            "warnings": result.get("warnings", []) + validation.get("warnings", []),
         },
         message="Filter operation completed.",
         target=target,
-        meta={
-            "record_count": result.get("returned_count", 0),
-            "source_record_count": result.get("source_record_count", 0),
-            "filtered_record_count": result.get("filtered_record_count", 0),
-        },
+        meta={"record_count": result.get("returned_count", 0), "source_record_count": result.get("source_record_count", 0), "filtered_record_count": result.get("filtered_record_count", 0)},
     )
+
 
 
 # ============================================================
@@ -3110,85 +3160,66 @@ def update_saved_filter_view(
     view_id: str,
     payload: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    API function:
-    PUT /api/filter/saved-views/<view_id>
-    """
+    """Update a saved filter view without mutating the loaded source payload."""
 
     view_id = clean_text(view_id)
     if not view_id:
         return make_filter_error("view_id is required.", field="view_id", target=DEFAULT_FILTER_TARGET, status_code=400)
-    payload = payload if isinstance(payload, dict) else {}
-
-    views = load_saved_filter_views()
-
+    if payload is not None and not isinstance(payload, dict):
+        return make_filter_error("payload must be a dictionary.", field="payload", target=DEFAULT_FILTER_TARGET, status_code=422)
+    update_payload = deepcopy(payload or {})
+    views = [deepcopy(view) for view in load_saved_filter_views()]
     updated_view: Optional[Dict[str, Any]] = None
 
-    for view in views:
-        if view.get("view_id") != view_id:
+    for index, current in enumerate(views):
+        if current.get("view_id") != view_id:
             continue
-
-        if "view_name" in payload or "name" in payload:
-            name = clean_text(payload.get("view_name") or payload.get("name"), default=view.get("name") or view.get("view_name") or "Untitled View")
+        view = deepcopy(current)
+        if "view_name" in update_payload or "name" in update_payload:
+            name = clean_text(update_payload.get("view_name") or update_payload.get("name"), default=view.get("name") or view.get("view_name") or "Untitled View")
             view["view_name"] = name
             view["name"] = name
-
-        if "description" in payload:
-            view["description"] = clean_text(payload.get("description"))
-
-        if "tags" in payload and isinstance(payload.get("tags"), list):
-            view["tags"] = [clean_text(item) for item in payload["tags"] if not is_empty_value(item)]
-        elif "tags" in payload and isinstance(payload.get("tags"), str):
-            view["tags"] = [clean_text(item) for item in payload["tags"].split(",") if clean_text(item)]
-
-        if "is_default" in payload:
-            view["is_default"] = bool(to_bool(payload.get("is_default"), default=False))
-
-        if "target" in payload and "filter" not in payload and "payload" not in payload:
-            view["target"] = normalize_target(payload.get("target"))
-            existing_payload = view.get("payload") if isinstance(view.get("payload"), dict) else {}
+        if "description" in update_payload:
+            view["description"] = clean_text(update_payload.get("description"))
+        if "tags" in update_payload and isinstance(update_payload.get("tags"), list):
+            view["tags"] = [clean_text(item) for item in update_payload["tags"] if not is_empty_value(item)]
+        elif "tags" in update_payload and isinstance(update_payload.get("tags"), str):
+            view["tags"] = [clean_text(item) for item in update_payload["tags"].split(",") if clean_text(item)]
+        if "is_default" in update_payload:
+            view["is_default"] = bool(to_bool(update_payload.get("is_default"), default=False))
+        if "target" in update_payload and "filter" not in update_payload and "payload" not in update_payload:
+            view["target"] = normalize_target(update_payload.get("target"))
+            existing_payload = deepcopy(view.get("payload")) if isinstance(view.get("payload"), dict) else {}
             existing_payload["target"] = view["target"]
             normalized = normalize_filter_payload(existing_payload)
-            view["filter"] = normalized
-            view["payload"] = normalized
-
-        if "filter" in payload or "payload" in payload:
-            filter_payload = payload.get("filter") or payload.get("payload")
+            view["filter"] = deepcopy(normalized)
+            view["payload"] = deepcopy(normalized)
+        if "filter" in update_payload or "payload" in update_payload:
+            filter_payload = update_payload.get("filter") or update_payload.get("payload")
+            validation = validate_runtime_filter_payload(filter_payload)
+            if not validation["valid"]:
+                return make_filter_response(data={"updated": False, "view_id": view_id, "validation": validation}, message="Filter payload validation failed.", target=normalize_target(view.get("target")), meta={"status_code": 422}, errors=validation["errors"], success=False)
             normalized = normalize_filter_payload(filter_payload)
-            view["filter"] = normalized
-            view["payload"] = normalized
+            view["filter"] = deepcopy(normalized)
+            view["payload"] = deepcopy(normalized)
             view["target"] = normalized["target"]
-
         view["updated_at"] = now_iso()
+        views[index] = view
         updated_view = view
         break
 
     if updated_view is None:
-        return make_filter_error(
-            "Saved view not found.",
-            error_type="NotFoundError",
-            field="view_id",
-            target=DEFAULT_FILTER_TARGET,
-            status_code=404,
-            data={"updated": False, "view_id": view_id},
-        )
-
+        return make_filter_error("Saved view not found.", error_type="NotFoundError", field="view_id", target=DEFAULT_FILTER_TARGET, status_code=404, data={"updated": False, "view_id": view_id})
     if updated_view.get("is_default"):
         for view in views:
             if view.get("view_id") != view_id and view.get("target") == updated_view.get("target"):
                 view["is_default"] = False
-
     try:
         write_saved_filter_views(views)
-    except Exception as exc:
-        return make_filter_error(str(exc), error_type="SavedViewWriteError", field="saved_filter_views", target=updated_view.get("target"), status_code=500)
+    except Exception:
+        return make_filter_error("Saved filter views could not be written.", error_type="SavedViewWriteError", field="saved_filter_views", target=updated_view.get("target"), status_code=500)
+    return make_filter_response(data={"updated": True, "view_id": view_id, "view": updated_view}, message="Saved filter view updated.", target=normalize_target(updated_view.get("target")), meta={"record_count": 1})
 
-    return make_filter_response(
-        data={"updated": True, "view_id": view_id, "view": updated_view},
-        message="Saved filter view updated.",
-        target=normalize_target(updated_view.get("target")),
-        meta={"record_count": 1},
-    )
 
 
 def delete_saved_filter_view(view_id: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -3518,144 +3549,50 @@ def explain_filter_payload(payload: Optional[Dict[str, Any]] = None) -> Dict[str
     }
 
 def run_filter_self_test() -> Dict[str, Any]:
-    """
-    self test สำหรับ filter_engine.py
-    """
+    """Run deterministic coverage for record normalization and filter ordering."""
 
     sample_records = [
-        {
-            "tax_id_norm": "0100000000001",
-            "company_name": "บริษัท ตัวอย่างหนึ่ง จำกัด",
-            "province": "น่าน",
-            "total_suminsure": 1500000,
-            "loss_ratio": 45,
-            "flood_risk_level": "Watch",
-            "has_policy": True,
-            "has_linkage": True,
-            "has_location": True,
-        },
-        {
-            "tax_id_norm": "0100000000002",
-            "company_name": "บริษัท ตัวอย่างสอง จำกัด",
-            "province": "แพร่",
-            "total_suminsure": 500000,
-            "loss_ratio": 120,
-            "flood_risk_level": "Critical",
-            "has_policy": True,
-            "has_linkage": False,
-            "has_location": True,
-        },
-        {
-            "tax_id_norm": "0100000000003",
-            "company_name": "บริษัท ตัวอย่างสาม จำกัด",
-            "province": "เชียงใหม่",
-            "total_suminsure": 2500000,
-            "loss_ratio": 10,
-            "flood_risk_level": "Normal",
-            "has_policy": False,
-            "has_linkage": True,
-            "has_location": False,
-        },
+        {"tax_id_norm": "0100000000001", "company_name": "Alpha", "province": "Nan", "total_suminsure": 1500000, "loss_ratio": 45, "flood_risk_level": "Watch", "has_policy": True, "has_linkage": True, "has_location": True, "created_at": "2026-07-01"},
+        {"tax_id_norm": "0100000000002", "company_name": "Beta", "province": "Phrae", "total_suminsure": 500000, "loss_ratio": 120, "flood_risk_level": "Critical", "has_policy": True, "has_linkage": False, "has_location": True, "created_at": "01/07/2026"},
+        {"tax_id_norm": "0100000000003", "company_name": "Gamma", "province": "Chiang Mai", "total_suminsure": 2500000, "loss_ratio": 10, "flood_risk_level": "Normal", "has_policy": False, "has_linkage": True, "has_location": False, "created_at": "2026/07/02"},
     ]
-
     prediction_records = [
-        {
-            "record_key": "prediction|1373690|2026-07-01|2026-07-03|2",
-            "station_id": "1373690",
-            "matched_station_id": "1373690",
-            "station_name": "สถานีตัวอย่าง",
-            "province_model": "น่าน",
-            "warning_level_predict": "Critical",
-            "forecast_horizon_day": 2,
-            "map_ready": True,
-            "latitude": 18.7,
-            "longitude": 100.7,
-        },
-        {
-            "record_key": "prediction|999|2026-07-01|2026-07-03|2",
-            "station_id": "999",
-            "province_model": "แพร่",
-            "warning_level_predict": "Normal",
-            "forecast_horizon_day": 2,
-            "map_ready": False,
-        },
+        {"record_key": "prediction|1373690", "station_id": "1373690", "station_name": "Station A", "province_model": "Nan", "warning_level_predict": "Critical", "forecast_horizon_day": 2, "map_ready": True, "latitude": 18.7, "longitude": 100.7},
+        {"record_key": "prediction|999", "station_id": "999", "station_name": "Station B", "province_model": "Phrae", "warning_level_predict": "Normal", "forecast_horizon_day": 2, "map_ready": False},
     ]
-
-    company_payload = {
-        "target": "company",
-        "filters": {
-            "province": ["น่าน", "แพร่"],
-            "has_policy": True,
-        },
-        "advanced": {
-            "logic": "AND",
-            "conditions": [
-                {
-                    "field": "total_suminsure",
-                    "operator": "gte",
-                    "value": 1000000,
-                    "dtype": "number",
-                }
-            ],
-            "groups": [],
-        },
-        "search": "",
-        "page": 1,
-        "page_size": 50,
-        "sort_by": "total_suminsure",
-        "sort_dir": "desc",
+    company_payload = {"target": "company", "filters": {"has_policy": True}, "advanced": {"logic": "AND", "conditions": [{"field": "total_suminsure", "operator": "gte", "value": "1000000", "dtype": "number"}]}, "search": "alpha", "sort_by": "total_suminsure", "sort_dir": "desc", "page": 1, "page_size": 10}
+    nested_payload = {"target": "company", "advanced": {"logic": "OR", "conditions": [], "groups": [{"logic": "AND", "conditions": [{"field": "province", "operator": "equals", "value": "Nan"}, {"field": "has_policy", "operator": "equals", "value": 1, "dtype": "boolean"}]}, {"logic": "AND", "conditions": [{"field": "province", "operator": "equals", "value": "Phrae"}]}]}}
+    company_result = apply_full_filter(sample_records, company_payload, paginate=True)
+    nested_result = apply_full_filter(tuple(sample_records), nested_payload, paginate=False)
+    prediction_result = apply_full_filter(prediction_records, {"target": "flood_prediction_latest", "filters": {"risk": "Critical", "map_ready": "true"}, "sort_by": "horizon", "sort_dir": "asc"}, paginate=True)
+    dataframe_result: List[Dict[str, Any]] = []
+    try:
+        import pandas as pd
+        dataframe_result = records_to_record_list(pd.DataFrame(sample_records), target="company")
+    except Exception:
+        dataframe_result = []
+    checks = {
+        "list_input": len(records_to_record_list(sample_records)) == 3,
+        "tuple_input": len(records_to_record_list(tuple(sample_records))) == 3,
+        "iterable_input": len(records_to_record_list(iter(sample_records))) == 3,
+        "dataframe_input": len(dataframe_result) == 3,
+        "empty_input": records_to_record_list(None) == [],
+        "simple_filter": len(apply_simple_filters(sample_records, {"has_policy": True})) == 2,
+        "advanced_and": len(apply_advanced_filter(sample_records, company_payload["advanced"])) == 2,
+        "advanced_or_nested": len(nested_result.get("records", [])) == 2,
+        "empty_group": len(apply_advanced_filter(sample_records, {"logic": "AND", "conditions": [], "groups": []})) == 3,
+        "search": len(apply_search_to_records(sample_records, "beta", "company")) == 1,
+        "sort_asc": apply_sort_to_records(sample_records, "total_suminsure", "asc")[0]["company_name"] == "Beta",
+        "sort_desc": apply_sort_to_records(sample_records, "total_suminsure", "desc")[0]["company_name"] == "Gamma",
+        "pagination": apply_pagination_to_records(sample_records, 2, 2)["returned_count"] == 1,
+        "company_target": company_result.get("filtered_record_count") == 1,
+        "policy_target": normalize_target("policy") == "policy",
+        "linkage_target": normalize_target("linkage") == "linkage",
+        "flood_target": normalize_target("flood") == "flood",
+        "prediction_target": prediction_result.get("filtered_record_count") == 1,
     }
+    return {"module": "filter_engine", "ready": all(checks.values()), "checks": checks, "sample_result": company_result, "nested_result": nested_result, "prediction_result": prediction_result, "checked_at": now_iso()}
 
-    prediction_payload = {
-        "target": "flood_prediction_latest",
-        "filters": {
-            "risk": "Critical",
-            "province": "น่าน",
-            "horizon": 2,
-            "map_ready": True,
-        },
-        "search": "",
-        "page": 1,
-        "page_size": 50,
-        "sort_by": "horizon",
-        "sort_dir": "asc",
-    }
-
-    company_result = apply_full_filter(
-        records=sample_records,
-        payload=company_payload,
-        searchable_fields=get_searchable_fields_for_target("company"),
-        paginate=True,
-    )
-
-    prediction_result = apply_full_filter(
-        records=prediction_records,
-        payload=prediction_payload,
-        searchable_fields=get_searchable_fields_for_target("flood_prediction_latest"),
-        paginate=True,
-    )
-
-    return {
-        "module": "filter_engine",
-        "ready": True,
-        "sample_input_count": len(sample_records),
-        "sample_result": company_result,
-        "prediction_input_count": len(prediction_records),
-        "prediction_result": prediction_result,
-        "explain": explain_filter_payload(company_payload),
-        "prediction_explain": explain_filter_payload(prediction_payload),
-        "supported_new_targets": [
-            "flood_rainfall_latest",
-            "flood_waterlevel_latest",
-            "flood_dam_latest",
-            "flood_prediction_latest",
-            "flood_prediction_map",
-            "uploaded_entity_latest",
-            "map_layers",
-            "dashboard_province_insights",
-        ],
-        "checked_at": now_iso(),
-    }
 
 # ============================================================
 # 14) MODULE STATUS
