@@ -32,13 +32,15 @@ except Exception as e:
     BOOTSTRAP_ERROR = str(e)
 
 import inspect
+import logging
+import math
 import traceback
 from datetime import datetime
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Body, File, Request, UploadFile
+from fastapi import APIRouter, Body, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 import config
@@ -63,6 +65,9 @@ from config import (
     get_system_path_status,
 )
 
+logger = logging.getLogger(APP_SHORT_NAME)
+
+
 
 # ============================================================
 # 1) ROUTER
@@ -78,28 +83,19 @@ def generate_operation_id(route: Any) -> str:
     )
 
     route_path = str(
-        getattr(
-            route,
-            "path_format",
-            getattr(route, "path", ""),
-        )
-        or ""
+        getattr(route, "path_format", getattr(route, "path", "")) or ""
     )
-
     normalized_path = (
-        route_path
-        .strip("/")
+        route_path.strip("/")
+        .replace("_", "_underscore_")
+        .replace("-", "_dash_")
         .replace("/", "_")
         .replace("{", "")
         .replace("}", "")
-        .replace("-", "_")
     )
 
-    return (
-        f"{route.name}_"
-        f"{methods or 'route'}_"
-        f"{normalized_path or 'root'}"
-    )
+    return f"{route.name}_{methods or 'route'}_{normalized_path or 'root'}"
+
 
 
 PUBLIC_ROUTER_PREFIX: str = (
@@ -293,11 +289,20 @@ def get_first_arg(request: Request, names: List[str], default: Optional[Any] = N
 
 def get_bool_arg(request: Request, name: str, default: bool = False) -> bool:
     raw = request.query_params.get(name)
-
-    if raw is None:
+    if raw is None or str(raw).strip() == "":
         return default
 
-    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+
+    raise HTTPException(
+        status_code=400,
+        detail=f"Invalid boolean query parameter: {name}",
+    )
+
 
 
 def get_first_bool_arg(request: Request, names: List[str], default: bool = False) -> bool:
@@ -348,13 +353,19 @@ def get_int_arg(
     max_value: Optional[int] = None,
 ) -> int:
     raw = request.query_params.get(name)
-
-    try:
-        value = int(raw) if raw is not None and raw != "" else int(default)
-    except Exception:
+    if raw is None or str(raw).strip() == "":
         value = int(default)
+    else:
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid integer query parameter: {name}",
+            ) from exc
 
     return clamp_int_value(value, min_value=min_value, max_value=max_value)
+
 
 
 def get_first_int_arg(
@@ -377,16 +388,30 @@ def get_first_int_arg(
     return clamp_int_value(int(default), min_value=min_value, max_value=max_value)
 
 
-def get_float_arg(request: Request, name: str, default: Optional[float] = None) -> Optional[float]:
+def get_float_arg(
+    request: Request,
+    name: str,
+    default: Optional[float] = None,
+) -> Optional[float]:
     raw = request.query_params.get(name)
-
-    if raw is None or raw == "":
+    if raw is None or str(raw).strip() == "":
         return default
 
     try:
-        return float(raw)
-    except Exception:
-        return default
+        value = float(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid numeric query parameter: {name}",
+        ) from exc
+
+    if not math.isfinite(value):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid numeric query parameter: {name}",
+        )
+    return value
+
 
 
 def get_first_float_arg(
@@ -433,16 +458,20 @@ async def get_json_payload(
     request: Request,
     default: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    if default is None:
-        default = {}
+    if not request.headers.get("content-type", "").lower().startswith("application/json"):
+        if default is not None:
+            return dict(default)
+        raise HTTPException(status_code=400, detail="JSON request body is required")
 
     try:
         payload = await request.json()
-        if isinstance(payload, dict):
-            return payload
-        return dict(default)
-    except Exception:
-        return dict(default)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Malformed JSON request body") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="JSON request body must be an object")
+    return dict(payload)
+
 
 
 def get_pagination_params(request: Request) -> Dict[str, int]:
@@ -466,10 +495,14 @@ def get_pagination_params(request: Request) -> Dict[str, int]:
 
 
 def get_sort_params(request: Request) -> Dict[str, str]:
+    sort_dir = get_str_arg(request, "sort_dir", "asc").lower()
+    if sort_dir not in {"asc", "desc"}:
+        raise HTTPException(status_code=400, detail="sort_dir must be 'asc' or 'desc'")
     return {
         "sort_by": get_str_arg(request, "sort_by", ""),
-        "sort_dir": get_str_arg(request, "sort_dir", "asc").lower(),
+        "sort_dir": sort_dir,
     }
+
 
 
 def get_common_query_context(request: Request) -> Dict[str, Any]:
@@ -482,7 +515,7 @@ def get_common_query_context(request: Request) -> Dict[str, Any]:
         **get_sort_params(request),
     }
 
-    simple_filters = {
+    simple_filters: Dict[str, Any] = {
         "province": get_list_arg(request, "province"),
         "district": get_list_arg(request, "district"),
         "subdistrict": get_list_arg(request, "subdistrict"),
@@ -498,10 +531,6 @@ def get_common_query_context(request: Request) -> Dict[str, Any]:
         "business_type_tsic": get_list_arg(request, "business_type_tsic"),
         "director_id": get_list_arg(request, "director_id"),
         "policy_year": get_list_arg(request, "policy_year"),
-        "has_policy": request.query_params.get("has_policy"),
-        "has_linkage": request.query_params.get("has_linkage"),
-        "has_location": request.query_params.get("has_location"),
-        "has_flood_context": request.query_params.get("has_flood_context"),
         "premium_min": get_float_arg(request, "premium_min"),
         "premium_max": get_float_arg(request, "premium_max"),
         "suminsure_min": get_float_arg(request, "suminsure_min"),
@@ -510,13 +539,17 @@ def get_common_query_context(request: Request) -> Dict[str, Any]:
         "loss_ratio_max": get_float_arg(request, "loss_ratio_max"),
     }
 
+    for key in ("has_policy", "has_linkage", "has_location", "has_flood_context"):
+        if key in request.query_params:
+            simple_filters[key] = get_bool_arg(request, key)
+
     context["filters"] = {
         key: value
         for key, value in simple_filters.items()
         if value not in (None, "", [], {})
     }
-
     return context
+
 
 
 def get_prediction_filters(request: Request) -> Dict[str, Any]:
@@ -590,6 +623,42 @@ def get_dashboard_province_insight_filters(request: Request) -> Dict[str, Any]:
     }
 
 
+def get_package_access_token(request: Request) -> str:
+    authorization = request.headers.get("Authorization", "").strip()
+    if authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+        if token:
+            return token
+
+    for header_name in (
+        getattr(config, "PACKAGE_TOKEN_HEADER_NAME", "X-TIPX-Package-Token"),
+        "X-Package-Token",
+        "X-TIPX-Package-Token",
+    ):
+        token = request.headers.get(header_name, "").strip()
+        if token:
+            return token
+
+    return str(
+        request.query_params.get("token")
+        or request.query_params.get("access_token")
+        or ""
+    ).strip()
+
+
+def get_public_request_meta(request: Request) -> Dict[str, Any]:
+    return {
+        "remote_addr": request.client.host if request.client else "",
+        "user_agent": request.headers.get("User-Agent", "")[:500],
+        "request_id": str(
+            getattr(request.state, "request_id", "")
+            or request.headers.get("X-Request-ID", "")
+        )[:128],
+        "method": request.method,
+        "path": request.url.path,
+    }
+
+
 # ============================================================
 # 4) SERVICE DISPATCH HELPERS
 # ============================================================
@@ -621,6 +690,10 @@ SERVICE_MODULES: Dict[str, str] = {
 }
 
 DATA_SOURCE_DOMAINS: set[str] = {
+    "company",
+    "policy",
+    "linkage",
+    "filter",
     "flood",
     "prediction",
     "forecast",
@@ -664,25 +737,35 @@ def contract_mismatch_payload(
     dropped_kwargs: List[str],
     fallback_data: Optional[Any] = None,
 ) -> Dict[str, Any]:
+    logger.error(
+        "Service contract mismatch: %s.%s dropped=%s",
+        import_path,
+        function_name,
+        dropped_kwargs,
+    )
+    meta: Dict[str, Any] = {
+        "fallback": True,
+        "status_code": 501,
+    }
+    error: Dict[str, Any] = {
+        "type": "ServiceContractMismatch",
+        "message": "Service function contract mismatch.",
+    }
+    if config.DEBUG:
+        meta.update({
+            "module": import_path,
+            "service": function_name,
+            "dropped_kwargs": dropped_kwargs,
+        })
+        error["dropped_kwargs"] = dropped_kwargs
+
     return {
         "__service_error__": True,
         "success": False,
         "message": "Service function contract mismatch.",
         "data": fallback_data if fallback_data is not None else {},
-        "meta": {
-            "fallback": True,
-            "module": import_path,
-            "service": function_name,
-            "status_code": 501,
-            "dropped_kwargs": dropped_kwargs,
-        },
-        "errors": [
-            {
-                "type": "ServiceContractMismatch",
-                "message": f"{import_path}.{function_name} does not accept arguments: {', '.join(dropped_kwargs)}",
-                "dropped_kwargs": dropped_kwargs,
-            }
-        ],
+        "meta": meta,
+        "errors": [error],
     }
 
 
@@ -723,25 +806,17 @@ def call_data_service(
         fallback_data = {}
 
     domain_key = str(domain or "").strip().lower()
-
     if domain_key in DATA_SOURCE_DOMAINS:
         if getattr(config, "USE_MYSQL_DATA_SOURCE", False) and not getattr(config, "USE_EXCEL_DATA_SOURCE", True):
             return mysql_not_implemented_payload(domain_key, function_name, fallback_data=fallback_data)
 
     import_path = SERVICE_MODULES.get(domain_key, domain_key)
-
     try:
         module = import_module(import_path)
         func = getattr(module, function_name)
-
         safe_kwargs, dropped_kwargs = filter_callable_kwargs(func, kwargs)
-
         inactive_set = set(inactive_filter_keys or [])
-        active_dropped = [
-            key
-            for key in dropped_kwargs
-            if key not in inactive_set
-        ]
+        active_dropped = [key for key in dropped_kwargs if key not in inactive_set]
 
         if strict_filter_params and active_dropped:
             return contract_mismatch_payload(
@@ -750,20 +825,15 @@ def call_data_service(
                 dropped_kwargs=active_dropped,
                 fallback_data=fallback_data,
             )
-
         return func(*args, **safe_kwargs)
-
     except Exception as exc:
         status_code = 503 if isinstance(exc, (ImportError, AttributeError, ModuleNotFoundError)) else 500
-
+        public_message = "Service function is not available." if status_code == 503 else "Service function failed."
+        logger.exception("Service call failed: %s.%s", import_path, function_name)
         return {
             "__service_error__": True,
             "success": False,
-            "message": (
-                "Service function is not available."
-                if status_code == 503
-                else "Service function failed."
-            ),
+            "message": public_message,
             "data": fallback_data,
             "meta": {
                 "fallback": True,
@@ -771,13 +841,12 @@ def call_data_service(
                 "service": function_name,
                 "status_code": status_code,
             },
-            "errors": [
-                {
-                    "type": exc.__class__.__name__,
-                    "message": str(exc),
-                }
-            ],
+            "errors": [{
+                "type": exc.__class__.__name__,
+                "message": str(exc) if config.DEBUG else public_message,
+            }],
         }
+
 
 
 def safe_call(
@@ -789,25 +858,19 @@ def safe_call(
 ) -> Any:
     if fallback_data is None:
         fallback_data = {}
-
     try:
         module = import_module(import_path)
         func = getattr(module, function_name)
         safe_kwargs, _dropped = filter_callable_kwargs(func, kwargs)
-
         return func(*args, **safe_kwargs)
-
     except Exception as exc:
         status_code = 503 if isinstance(exc, (ImportError, AttributeError, ModuleNotFoundError)) else 500
-
+        public_message = "Service function is not available." if status_code == 503 else "Service function failed."
+        logger.exception("Safe service call failed: %s.%s", import_path, function_name)
         return {
             "__service_error__": True,
             "success": False,
-            "message": (
-                "Service function is not available."
-                if status_code == 503
-                else "Service function failed."
-            ),
+            "message": public_message,
             "data": fallback_data,
             "meta": {
                 "fallback": True,
@@ -815,13 +878,12 @@ def safe_call(
                 "service": function_name,
                 "status_code": status_code,
             },
-            "errors": [
-                {
-                    "type": exc.__class__.__name__,
-                    "message": str(exc),
-                }
-            ],
+            "errors": [{
+                "type": exc.__class__.__name__,
+                "message": str(exc) if config.DEBUG else public_message,
+            }],
         }
+
 
 
 def service_meta(result: Any, service_name: str) -> Dict[str, Any]:
@@ -858,61 +920,66 @@ def service_response(
     service_name: str,
     status_code: int = 200,
 ) -> JSONResponse:
+    payload = unwrap_service_result(result)
+    if is_standard_api_payload(payload):
+        return success_response(data=payload, status_code=status_code)
+    if is_service_error_payload(result):
+        meta = service_meta(result, service_name)
+        response_status = int(meta.get("status_code", 500) or 500)
+        return error_response(
+            message=str(result.get("message") or "Service request failed"),
+            data=result.get("data", {}),
+            errors=result.get("errors", []),
+            meta=meta,
+            status_code=response_status,
+        )
     return success_response(
         message=message,
-        data=unwrap_service_result(result),
+        data=payload,
         meta=service_meta(result, service_name),
         status_code=status_code,
     )
+
 
 
 # ============================================================
 # 5) CORE API
 # ============================================================
 
+def public_validation_summary(validation: Dict[str, Any]) -> Dict[str, Any]:
+    errors = validation.get("errors", []) if isinstance(validation, dict) else []
+    warnings = validation.get("warnings", []) if isinstance(validation, dict) else []
+    return {
+        "status": validation.get("status", "unknown") if isinstance(validation, dict) else "unknown",
+        "error_count": len(errors) if isinstance(errors, list) else 0,
+        "warning_count": len(warnings) if isinstance(warnings, list) else 0,
+        "features": validation.get("features", {}) if isinstance(validation, dict) else {},
+    }
+
+
 @router.get("/health")
 async def api_health() -> JSONResponse:
     validation = validate_basic_config()
-
-    data = {
-        "app": APP_NAME,
-        "short_name": APP_SHORT_NAME,
-        "version": APP_VERSION,
-        "description": APP_DESCRIPTION,
-        "environment": DEFAULT_ENV,
-        "status": validation["status"],
-        "validation": validation,
-    }
-
-    if validation["status"] == "error":
-        return error_response(
-            message="TIPX health check failed",
-            data=data,
-            errors=[
-                {
-                    "type": "ConfigurationError",
-                    "message": "Backend configuration validation failed.",
-                }
-            ],
-            meta={
-                "module": "core",
-            },
-            status_code=500,
-        )
-
     return success_response(
-        message="TIPX health check",
-        data=data,
-        meta={
-            "module": "core",
+        message="TIPX liveness check",
+        data={
+            "app": APP_NAME,
+            "short_name": APP_SHORT_NAME,
+            "version": APP_VERSION,
+            "description": APP_DESCRIPTION,
+            "environment": DEFAULT_ENV,
+            "status": "alive",
+            "readiness": public_validation_summary(validation),
         },
+        meta={"module": "core", "liveness": True},
         status_code=200,
     )
+
+
 
 @router.get("/status")
 async def api_status() -> JSONResponse:
     validation = validate_basic_config()
-
     return success_response(
         message="TIPX system status",
         data={
@@ -923,26 +990,25 @@ async def api_status() -> JSONResponse:
                 "description": APP_DESCRIPTION,
                 "environment": DEFAULT_ENV,
             },
-            "paths": get_system_path_status(),
-            "inputs": get_input_file_status(),
-            "validation": validation,
+            "readiness": public_validation_summary(validation),
+            "data_sources": {
+                "excel_enabled": bool(getattr(config, "USE_EXCEL_DATA_SOURCE", True)),
+                "mysql_business_enabled": bool(getattr(config, "USE_MYSQL_DATA_SOURCE", False)),
+                "flood_module_enabled": bool(getattr(config, "FLOOD_MODULE_ENABLED", True)),
+            },
             "modules": {
-                "company_policy": "company_policy_service.py",
-                "linkage": "linkage_service.py",
-                "flood_spatial": "flood_spatial_service.py",
-                "map_graph": "map_graph_service.py",
-                "dashboard_package": "dashboard_package_service.py",
-                "filter_engine": "filter_engine.py",
-                "data_quality": "data_quality.py",
-                "security": "security.py",
-                "schemas": "schemas.py",
-                "utils": "utils.py",
+                "company_policy": "available",
+                "linkage": "available",
+                "flood_spatial": "available",
+                "map_graph": "available",
+                "dashboard_package": "available",
+                "filter_engine": "available",
+                "data_quality": "available",
             },
         },
-        meta={
-            "module": "core",
-        },
+        meta={"module": "core", "readiness": True},
     )
+
 
 
 @router.get("/config")
@@ -1253,105 +1319,16 @@ async def api_company_detail(
         "company_policy_service.get_company_detail",
     )
 
-@router.get("/companies/ranking/income")
-async def api_companies_ranking_income(request: Request) -> JSONResponse:
-    context = get_common_query_context(request)
-
-    result = call_data_service(
-        "company",
-        "get_company_income_ranking",
-        {
-            "records": [],
-            "total": 0,
-        },
-        context=context,
-    )
-
-    return service_response(result, "Company income ranking", "company_policy_service.get_company_income_ranking")
 
 
-@router.get("/companies/ranking/capital")
-async def api_companies_ranking_capital(request: Request) -> JSONResponse:
-    context = get_common_query_context(request)
-
-    result = call_data_service(
-        "company",
-        "get_company_capital_ranking",
-        {
-            "records": [],
-            "total": 0,
-        },
-        context=context,
-    )
-
-    return service_response(result, "Company capital ranking", "company_policy_service.get_company_capital_ranking")
 
 
-@router.get("/companies/source-flags")
-async def api_companies_source_flags() -> JSONResponse:
-    result = call_data_service(
-        "company",
-        "get_company_source_flags",
-        {
-            "has_policy": 0,
-            "has_linkage": 0,
-            "has_location": 0,
-            "has_flood_context": 0,
-        },
-    )
-
-    return service_response(result, "Company source flags", "company_policy_service.get_company_source_flags")
 
 
-@router.get("/companies/missing-policy")
-async def api_companies_missing_policy(request: Request) -> JSONResponse:
-    context = get_common_query_context(request)
-
-    result = call_data_service(
-        "company",
-        "get_companies_missing_policy",
-        {
-            "records": [],
-            "total": 0,
-        },
-        context=context,
-    )
-
-    return service_response(result, "Companies missing policy", "company_policy_service.get_companies_missing_policy")
 
 
-@router.get("/companies/missing-linkage")
-async def api_companies_missing_linkage(request: Request) -> JSONResponse:
-    context = get_common_query_context(request)
-
-    result = call_data_service(
-        "company",
-        "get_companies_missing_linkage",
-        {
-            "records": [],
-            "total": 0,
-        },
-        context=context,
-    )
-
-    return service_response(result, "Companies missing linkage", "company_policy_service.get_companies_missing_linkage")
 
 
-@router.get("/companies/missing-location")
-async def api_companies_missing_location(request: Request) -> JSONResponse:
-    context = get_common_query_context(request)
-
-    result = call_data_service(
-        "company",
-        "get_companies_missing_location",
-        {
-            "records": [],
-            "total": 0,
-        },
-        context=context,
-    )
-
-    return service_response(result, "Companies missing location", "company_policy_service.get_companies_missing_location")
 
 
 # ============================================================
@@ -3416,6 +3393,7 @@ async def api_admin_scrape_runs(request: Request) -> JSONResponse:
 # 18) CACHE / REBUILD API
 # ============================================================
 
+@router.get("/cache/status")
 async def api_cache_status() -> JSONResponse:
     cache_files = getattr(config, "CACHE_FILES", {})
     cache_registry = getattr(config, "CACHE_REGISTRY", {})
@@ -3711,138 +3689,124 @@ async def api_package_delete(package_id: str) -> JSONResponse:
 # ============================================================
 
 @public_router.get("/packages/{package_id}/meta")
-async def public_package_meta(package_id: str) -> JSONResponse:
+async def public_package_meta(package_id: str, request: Request) -> JSONResponse:
+    token = get_package_access_token(request)
     result = call_data_service(
-        "package",
-        "get_public_package_meta",
-        {
-            "package_id": package_id,
-            "available": False,
-            "meta": {},
-        },
+        "package", "get_public_package_meta",
+        {"package_id": package_id, "available": False, "meta": {}},
         package_id=package_id,
+        context=get_common_query_context(request),
+        token=token,
+        request_meta=get_public_request_meta(request),
     )
-
     return service_response(result, "Public package meta", "dashboard_package_service.get_public_package_meta")
 
 
 @public_router.get("/packages/{package_id}/data")
-async def public_package_data(package_id: str) -> JSONResponse:
+async def public_package_data(package_id: str, request: Request) -> JSONResponse:
     result = call_data_service(
-        "package",
-        "get_public_package_data",
-        {
-            "package_id": package_id,
-            "data": {},
-        },
+        "package", "get_public_package_data",
+        {"package_id": package_id, "data": {}},
         package_id=package_id,
+        context=get_common_query_context(request),
+        token=get_package_access_token(request),
+        request_meta=get_public_request_meta(request),
     )
-
     return service_response(result, "Public package data", "dashboard_package_service.get_public_package_data")
 
 
 @public_router.get("/packages/{package_id}/summary")
-async def public_package_summary(package_id: str) -> JSONResponse:
+async def public_package_summary(package_id: str, request: Request) -> JSONResponse:
     result = call_data_service(
-        "package",
-        "get_public_package_summary",
-        {
-            "package_id": package_id,
-            "summary": {},
-        },
+        "package", "get_public_package_summary",
+        {"package_id": package_id, "summary": {}},
         package_id=package_id,
+        context=get_common_query_context(request),
+        token=get_package_access_token(request),
+        request_meta=get_public_request_meta(request),
     )
-
     return service_response(result, "Public package summary", "dashboard_package_service.get_public_package_summary")
 
 
 @public_router.get("/packages/{package_id}/map")
-async def public_package_map(package_id: str) -> JSONResponse:
+async def public_package_map(package_id: str, request: Request) -> JSONResponse:
     result = call_data_service(
-        "package",
-        "get_public_package_map",
-        {
-            "package_id": package_id,
-            "layers": {},
-        },
+        "package", "get_public_package_map",
+        {"package_id": package_id, "layers": {}},
         package_id=package_id,
+        context=get_common_query_context(request),
+        token=get_package_access_token(request),
+        request_meta=get_public_request_meta(request),
     )
-
     return service_response(result, "Public package map", "dashboard_package_service.get_public_package_map")
 
 
 @public_router.get("/packages/{package_id}/charts")
-async def public_package_charts(package_id: str) -> JSONResponse:
+async def public_package_charts(package_id: str, request: Request) -> JSONResponse:
     result = call_data_service(
-        "package",
-        "get_public_package_charts",
-        {
-            "package_id": package_id,
-            "charts": {},
-        },
+        "package", "get_public_package_charts",
+        {"package_id": package_id, "charts": {}},
         package_id=package_id,
+        context=get_common_query_context(request),
+        token=get_package_access_token(request),
+        request_meta=get_public_request_meta(request),
     )
-
     return service_response(result, "Public package charts", "dashboard_package_service.get_public_package_charts")
 
 
 @public_router.get("/packages/{package_id}/tables")
 async def public_package_tables(package_id: str, request: Request) -> JSONResponse:
-    context = get_common_query_context(request)
-
     result = call_data_service(
-        "package",
-        "get_public_package_tables",
-        {
-            "package_id": package_id,
-            "tables": {},
-        },
+        "package", "get_public_package_tables",
+        {"package_id": package_id, "tables": {}},
         package_id=package_id,
-        context=context,
+        context=get_common_query_context(request),
+        token=get_package_access_token(request),
+        request_meta=get_public_request_meta(request),
     )
-
     return service_response(result, "Public package tables", "dashboard_package_service.get_public_package_tables")
 
 
 @public_router.get("/packages/{package_id}/access-log")
 async def public_package_access_log_read(package_id: str, request: Request) -> JSONResponse:
-    context = get_common_query_context(request)
-
     result = call_data_service(
-        "package",
-        "get_public_package_access_log",
-        {
-            "package_id": package_id,
-            "access_log": [],
-            "total": 0,
-        },
+        "package", "get_public_package_access_log",
+        {"package_id": package_id, "access_log": [], "total": 0},
         package_id=package_id,
-        context=context,
+        context=get_common_query_context(request),
+        token=get_package_access_token(request),
     )
-
     return service_response(result, "Public package access log", "dashboard_package_service.get_public_package_access_log")
 
 
 @public_router.post("/packages/{package_id}/access-log")
 async def public_package_access_log(package_id: str, request: Request) -> JSONResponse:
-    payload = await get_json_payload(request)
+    token = get_package_access_token(request)
+    access_check = call_data_service(
+        "package", "get_public_package_meta",
+        {"package_id": package_id, "available": False, "meta": {}},
+        package_id=package_id,
+        context=get_common_query_context(request),
+        token=token,
+        request_meta=get_public_request_meta(request),
+    )
+    if is_service_error_payload(access_check):
+        return service_response(access_check, "Public package access denied", "dashboard_package_service.get_public_package_meta")
 
+    payload = await get_json_payload(request, default={})
+    request_meta = get_public_request_meta(request)
     result = call_data_service(
-        "package",
-        "write_public_package_access_log",
-        {
-            "package_id": package_id,
-            "logged": False,
-        },
+        "package", "write_public_package_access_log",
+        {"package_id": package_id, "logged": False},
         package_id=package_id,
         payload={
             **payload,
-            "remote_addr": request.client.host if request.client else None,
-            "user_agent": request.headers.get("User-Agent", ""),
+            "remote_addr": request_meta["remote_addr"],
+            "user_agent": request_meta["user_agent"],
+            "request_id": request_meta["request_id"],
             "accessed_at": now_iso(),
         },
     )
-
     return service_response(result, "Public package access logged", "dashboard_package_service.write_public_package_access_log")
 
 

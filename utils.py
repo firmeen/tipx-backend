@@ -231,24 +231,49 @@ def error_payload(
 # 3) PATH / FILE HELPERS
 # ============================================================
 
-def ensure_dir(path: Union[str, Path]) -> Path:
-    """
-    สร้าง folder ถ้ายังไม่มี และคืน Path
-    """
+WINDOWS_ABSOLUTE_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
 
-    target = Path(path)
+
+def is_windows_absolute_path(path: Union[str, Path]) -> bool:
+    return bool(WINDOWS_ABSOLUTE_PATH_PATTERN.match(str(path or "").strip()))
+
+
+def is_foreign_windows_path(path: Union[str, Path]) -> bool:
+    return os.name != "nt" and is_windows_absolute_path(path)
+
+
+def normalize_path(path: Union[str, Path], resolve: bool = False) -> Path:
+    """Normalize a local path without corrupting Windows drive paths on POSIX."""
+
+    raw = str(path or "").strip()
+    if not raw:
+        return Path()
+    if is_foreign_windows_path(raw):
+        return Path(raw)
+    target = Path(raw).expanduser()
+    return target.resolve(strict=False) if resolve else target
+
+
+def ensure_dir(path: Union[str, Path]) -> Path:
+    """Create a local directory and reject foreign absolute drive paths."""
+
+    if is_foreign_windows_path(path):
+        raise OSError(f"Cannot create a Windows absolute path on this platform: {path}")
+    target = normalize_path(path)
     target.mkdir(parents=True, exist_ok=True)
     return target
 
 
-def ensure_parent_dir(path: Union[str, Path]) -> Path:
-    """
-    สร้าง parent folder ของไฟล์
-    """
 
-    target = Path(path)
+def ensure_parent_dir(path: Union[str, Path]) -> Path:
+    """Create a local parent directory and return the normalized file path."""
+
+    if is_foreign_windows_path(path):
+        raise OSError(f"Cannot create a Windows absolute path on this platform: {path}")
+    target = normalize_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     return target
+
 
 def make_atomic_temp_path(
     path: Union[str, Path],
@@ -370,27 +395,26 @@ def atomic_replace_text(
                 pass
 
 def path_exists(path: Union[str, Path]) -> bool:
-    """
-    ตรวจ path exists
-    """
+    if is_foreign_windows_path(path):
+        return False
+    return normalize_path(path).exists()
 
-    return Path(path).exists()
 
 
 def file_exists(path: Union[str, Path]) -> bool:
-    """
-    ตรวจไฟล์ exists
-    """
+    if is_foreign_windows_path(path):
+        return False
+    target = normalize_path(path)
+    return target.exists() and target.is_file()
 
-    return Path(path).exists() and Path(path).is_file()
 
 
 def folder_exists(path: Union[str, Path]) -> bool:
-    """
-    ตรวจ folder exists
-    """
+    if is_foreign_windows_path(path):
+        return False
+    target = normalize_path(path)
+    return target.exists() and target.is_dir()
 
-    return Path(path).exists() and Path(path).is_dir()
 
 
 def safe_filename(value: Any, default: str = "file") -> str:
@@ -1179,21 +1203,6 @@ def get_excel_sheet_names(
             f"{target}"
         ) from exc
 
-def get_excel_sheet_names(path: Union[str, Path]) -> List[str]:
-    """
-    คืนรายชื่อ sheet ใน Excel
-    """
-
-    p = Path(path)
-
-    if not p.exists():
-        return []
-
-    try:
-        excel_file = pd.ExcelFile(p)
-        return list(excel_file.sheet_names)
-    except Exception:
-        return []
 
 
 def read_excel_by_logical_sheet(
@@ -2010,53 +2019,37 @@ def rename_columns_by_candidates(
 
 
 def to_number(value: Any, default: Optional[float] = None) -> Optional[float]:
-    """
-    แปลงค่าเป็น float
-
-    รองรับ:
-    - comma
-    - currency symbols
-    - dash / empty
-    - percentage sign
-    """
+    """Convert a finite numeric value to float."""
 
     if is_empty_value(value):
         return default
-
-    if isinstance(value, (int, float)):
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float, Decimal)):
         try:
-            if math.isnan(float(value)):
-                return default
-        except Exception:
-            pass
-        return float(value)
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return default
+        return number if math.isfinite(number) else default
 
     text = clean_text(value)
-
     if not text:
         return default
-
-    text = text.replace(",", "")
-    text = text.replace("฿", "")
-    text = text.replace("บาท", "")
-    text = text.replace("%", "")
-    text = text.strip()
-
+    text = text.replace(",", "").replace("฿", "").replace("บาท", "").replace("%", "").strip()
     if text.startswith("(") and text.endswith(")"):
         text = "-" + text[1:-1]
-
     text = re.sub(r"[^0-9.\-]", "", text)
-
     if text in {"", "-", ".", "-."}:
         return default
-
     try:
-        return float(text)
-    except Exception:
+        number = float(text)
+    except (TypeError, ValueError, OverflowError):
         try:
-            return float(Decimal(text))
-        except (InvalidOperation, ValueError):
+            number = float(Decimal(text))
+        except (InvalidOperation, ValueError, OverflowError):
             return default
+    return number if math.isfinite(number) else default
+
 
 
 def to_int(value: Any, default: Optional[int] = None) -> Optional[int]:
@@ -2124,43 +2117,65 @@ def to_datetime(value: Any, default: Optional[datetime] = None) -> Optional[date
         return default
 
 
-def dataframe_to_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    """
-    แปลง DataFrame เป็น list dict แบบ JSON safe
+def dataframe_to_records(value: Any) -> List[Dict[str, Any]]:
+    """Normalize supported record containers into JSON-safe dictionaries.
+
+    Supported inputs are DataFrame, Series, list/tuple/iterable of dictionaries,
+    dictionary wrappers using records/items/data, graph wrappers using nodes/edges,
+    a single dictionary, and None.
     """
 
-    if df is None or df.empty:
+    if value is None:
         return []
 
-    clean_df = df.copy()
-    clean_df = clean_df.where(pd.notnull(clean_df), None)
+    if isinstance(value, pd.DataFrame):
+        if value.empty:
+            return []
+        frame = value.copy()
+        frame = frame.where(pd.notnull(frame), None)
+        raw_records = frame.to_dict(orient="records")
+        return [to_jsonable(dict(record)) for record in raw_records if isinstance(record, dict)]
 
-    return [
-        to_jsonable(record)
-        for record in clean_df.to_dict(orient="records")
-    ]
+    if isinstance(value, pd.Series):
+        return [to_jsonable(dict(value.to_dict()))]
+
+    if isinstance(value, dict):
+        for key in ("records", "items"):
+            if key in value:
+                return dataframe_to_records(value.get(key))
+        if "data" in value:
+            nested = dataframe_to_records(value.get("data"))
+            if nested:
+                return nested
+        if "nodes" in value or "edges" in value:
+            graph_records: List[Dict[str, Any]] = []
+            for key, kind in (("nodes", "node"), ("edges", "edge")):
+                for record in dataframe_to_records(value.get(key)):
+                    item = dict(record)
+                    item.setdefault("record_kind", kind)
+                    graph_records.append(to_jsonable(item))
+            if graph_records:
+                return graph_records
+        return [to_jsonable(dict(value))]
+
+    if isinstance(value, (str, bytes, bytearray, Path)):
+        return []
+
+    if isinstance(value, Iterable):
+        return [to_jsonable(dict(record)) for record in value if isinstance(record, dict)]
+
+    return []
+
 
 
 def records_to_dataframe(records: Any) -> pd.DataFrame:
-    """
-    แปลง records เป็น DataFrame
-    """
-
-    if records is None:
-        return pd.DataFrame()
+    """Convert any supported record container to a detached DataFrame."""
 
     if isinstance(records, pd.DataFrame):
         return records.copy()
+    normalized = dataframe_to_records(records)
+    return pd.DataFrame(normalized)
 
-    if isinstance(records, dict):
-        if "records" in records and isinstance(records["records"], list):
-            return pd.DataFrame(records["records"])
-        return pd.DataFrame([records])
-
-    if isinstance(records, list):
-        return pd.DataFrame(records)
-
-    return pd.DataFrame()
 
 
 def clean_dataframe_common(df: pd.DataFrame) -> pd.DataFrame:
@@ -3332,16 +3347,13 @@ def read_cache(
     cache_key: str,
     default: Optional[Any] = None,
 ) -> Any:
-    try:
-        return read_json(
-            get_cache_file_path(
-                cache_key
-            ),
-            default=default,
-        )
+    """Read a cache payload; missing cache is normal, corrupt cache is an error."""
 
-    except Exception:
+    cache_path = get_cache_file_path(cache_key)
+    if not cache_path.exists():
         return deepcopy(default)
+    return read_json(cache_path, default=default)
+
 
 
 def write_cache(
@@ -3466,6 +3478,15 @@ def write_cache(
     }
 
 
+def is_failed_cache_payload(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if data.get("__service_error__") is True or data.get("success") is False:
+        return True
+    meta = data.get("meta")
+    return isinstance(meta, dict) and bool(meta.get("fallback") or meta.get("degraded") and meta.get("status_code", 200) >= 500)
+
+
 def get_or_build_cache(
     cache_key: str,
     builder: Callable[[], Any],
@@ -3473,65 +3494,30 @@ def get_or_build_cache(
     force_refresh: bool = False,
     source: str = "",
 ) -> Dict[str, Any]:
-    if (
-        not force_refresh
-        and is_cache_valid(
-            cache_key,
-            ttl_seconds=ttl_seconds,
-        )
-    ):
-        return {
-            "data": read_cache(
-                cache_key,
-                default={},
-            ),
-            "cache_used": True,
-            "cache_key": cache_key,
-        }
+    """Read or build cache without persisting failed service payloads."""
 
-    cache_path = get_cache_file_path(
-        cache_key
-    )
+    if not force_refresh and is_cache_valid(cache_key, ttl_seconds=ttl_seconds):
+        return {"data": read_cache(cache_key, default={}), "cache_used": True, "cache_key": cache_key, "cache_written": False}
 
-    build_lock_path = cache_path.with_name(
-        f"{cache_path.name}.build"
-    )
-
-    with file_write_lock(
-        build_lock_path,
-        timeout_seconds=30.0,
-        stale_seconds=300.0,
-    ):
-        if (
-            not force_refresh
-            and is_cache_valid(
-                cache_key,
-                ttl_seconds=ttl_seconds,
-            )
-        ):
-            return {
-                "data": read_cache(
-                    cache_key,
-                    default={},
-                ),
-                "cache_used": True,
-                "cache_key": cache_key,
-            }
+    cache_path = get_cache_file_path(cache_key)
+    build_lock_path = cache_path.with_name(f"{cache_path.name}.build")
+    with file_write_lock(build_lock_path, timeout_seconds=30.0, stale_seconds=300.0):
+        if not force_refresh and is_cache_valid(cache_key, ttl_seconds=ttl_seconds):
+            return {"data": read_cache(cache_key, default={}), "cache_used": True, "cache_key": cache_key, "cache_written": False}
 
         data = builder()
+        if is_failed_cache_payload(data):
+            return {
+                "data": data,
+                "cache_used": False,
+                "cache_key": cache_key,
+                "cache_written": False,
+                "degraded": True,
+            }
+        write_cache(cache_key, data, ttl_seconds=ttl_seconds, source=source)
 
-        write_cache(
-            cache_key,
-            data,
-            ttl_seconds=ttl_seconds,
-            source=source,
-        )
+    return {"data": data, "cache_used": False, "cache_key": cache_key, "cache_written": True}
 
-    return {
-        "data": data,
-        "cache_used": False,
-        "cache_key": cache_key,
-    }
 
 
 def clear_cache(
@@ -3724,31 +3710,6 @@ def write_records_export(
         f"{normalized_format}"
     )
 
-def write_records_export(
-    path: Union[str, Path],
-    records: List[Dict[str, Any]],
-    file_format: str = "json",
-) -> Path:
-    """
-    export records เป็น json/csv/xlsx
-    """
-
-    file_format = clean_text_lower(file_format)
-
-    target = Path(path)
-
-    if file_format == "json":
-        return write_json(target, records)
-
-    df = records_to_dataframe(records)
-
-    if file_format == "csv":
-        return write_csv(target, df)
-
-    if file_format in {"xlsx", "excel"}:
-        return write_excel(target, {"data": df})
-
-    raise ValueError(f"Unsupported export format: {file_format}")
 
 
 # ============================================================

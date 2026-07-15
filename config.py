@@ -39,6 +39,7 @@ backend/config.py
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -57,7 +58,7 @@ APP_DESCRIPTION: str = (
 )
 
 DEFAULT_ENV: str = os.getenv("TIPX_ENV", "development").strip().lower()
-DEBUG: bool = os.getenv("TIPX_DEBUG", "true").strip().lower() in {"1", "true", "yes", "y"}
+DEBUG: bool = os.getenv("TIPX_DEBUG", "false").strip().lower() in {"1", "true", "yes", "y"}
 TESTING: bool = os.getenv("TIPX_TESTING", "false").strip().lower() in {"1", "true", "yes", "y"}
 
 API_PREFIX: str = "/api"
@@ -102,6 +103,42 @@ DATA_SOURCE_NOT_IMPLEMENTED_MESSAGE: str = (
 
 BACKEND_DIR: Path = Path(__file__).resolve().parent
 PROJECT_ROOT: Path = BACKEND_DIR.parent
+
+WINDOWS_ABSOLUTE_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def is_windows_absolute_path(value: Any) -> bool:
+    return bool(WINDOWS_ABSOLUTE_PATH_PATTERN.match(str(value or "").strip()))
+
+
+def is_path_compatible_with_runtime(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if os.name != "nt" and is_windows_absolute_path(text):
+        return False
+    return True
+
+
+def resolve_config_path(value: Any, base: Optional[Path] = None) -> Path:
+    text = os.path.expandvars(str(value or "").strip())
+    if not text:
+        return Path(base or BACKEND_DIR)
+    if os.name != "nt" and is_windows_absolute_path(text):
+        return Path(text.replace("\\", "/"))
+    path = Path(text).expanduser()
+    if not path.is_absolute() and base is not None:
+        path = base / path
+    return path.resolve(strict=False)
+
+
+def config_path_exists(value: Any) -> bool:
+    if not is_path_compatible_with_runtime(value):
+        return False
+    try:
+        return Path(value).exists()
+    except OSError:
+        return False
 
 INPUT_DIR: Path = PROJECT_ROOT / "input"
 CACHE_DIR: Path = PROJECT_ROOT / "cache"
@@ -173,67 +210,55 @@ output_fl/
 DEFAULT_FLOOD_PIPELINE_BASE_DIR: str = r"C:/Users/afimeenu/project/main"
 DEFAULT_FLOOD_OUTPUT_DIR: str = r"C:/Users/afimeenu/project/main/output_flood"
 
-FLOOD_PIPELINE_BASE_DIR: Path = Path(
+FLOOD_PIPELINE_BASE_DIR: Path = resolve_config_path(
     os.getenv("TIPX_FLOOD_PIPELINE_BASE_DIR", DEFAULT_FLOOD_PIPELINE_BASE_DIR)
-).expanduser().resolve()
+)
 
 PIPELINE_BASE_DIR: Path = FLOOD_PIPELINE_BASE_DIR
 
-FLOOD_OUTPUT_DIR: Path = Path(
+FLOOD_OUTPUT_DIR: Path = resolve_config_path(
     os.getenv("TIPX_FLOOD_OUTPUT_DIR", DEFAULT_FLOOD_OUTPUT_DIR)
-).expanduser().resolve()
+)
 
-PIPELINE_OUTPUT_DIR: Path = Path(
+PIPELINE_OUTPUT_DIR: Path = resolve_config_path(
     os.getenv("TIPX_FLOOD_PIPELINE_OUTPUT_DIR", str(FLOOD_OUTPUT_DIR))
-).expanduser().resolve()
+)
 
-FLOOD_EXCEL_DATABASE_DIR: Path = Path(
+FLOOD_EXCEL_DATABASE_DIR: Path = resolve_config_path(
     os.getenv(
         "TIPX_FLOOD_EXCEL_DATABASE_DIR",
         str(PIPELINE_OUTPUT_DIR / "excel_database"),
     )
-).expanduser().resolve()
+)
 
 EXCEL_DATABASE_DIR: Path = FLOOD_EXCEL_DATABASE_DIR
 
-FLOOD_MASTER_DIR: Path = Path(
-    os.getenv(
-        "TIPX_FLOOD_MASTER_DIR",
-        str(FLOOD_EXCEL_DATABASE_DIR / "master"),
-    )
-).expanduser().resolve()
-
-FLOOD_LATEST_DIR: Path = Path(
-    os.getenv(
-        "TIPX_FLOOD_LATEST_DIR",
-        str(FLOOD_EXCEL_DATABASE_DIR / "latest"),
-    )
-).expanduser().resolve()
-
-FLOOD_HISTORY_DIR: Path = Path(
-    os.getenv(
-        "TIPX_FLOOD_HISTORY_DIR",
-        str(FLOOD_EXCEL_DATABASE_DIR / "history"),
-    )
-).expanduser().resolve()
+FLOOD_MASTER_DIR: Path = resolve_config_path(
+    os.getenv("TIPX_FLOOD_MASTER_DIR", str(FLOOD_EXCEL_DATABASE_DIR / "master"))
+)
+FLOOD_LATEST_DIR: Path = resolve_config_path(
+    os.getenv("TIPX_FLOOD_LATEST_DIR", str(FLOOD_EXCEL_DATABASE_DIR / "latest"))
+)
+FLOOD_HISTORY_DIR: Path = resolve_config_path(
+    os.getenv("TIPX_FLOOD_HISTORY_DIR", str(FLOOD_EXCEL_DATABASE_DIR / "history"))
+)
 
 MASTER_EXCEL_DIR: Path = FLOOD_MASTER_DIR
 LATEST_EXCEL_DIR: Path = FLOOD_LATEST_DIR
 HISTORY_EXCEL_DIR: Path = FLOOD_HISTORY_DIR
 
-FLOOD_LATEST_DATABASE_PATH: Path = Path(
+FLOOD_LATEST_DATABASE_PATH: Path = resolve_config_path(
     os.getenv(
         "TIPX_FLOOD_LATEST_DATABASE_PATH",
         str(FLOOD_LATEST_DIR / "latest_database.xlsx"),
     )
-).expanduser().resolve()
-
-FLOOD_MASTER_DATABASE_PATH: Path = Path(
+)
+FLOOD_MASTER_DATABASE_PATH: Path = resolve_config_path(
     os.getenv(
         "TIPX_FLOOD_MASTER_DATABASE_PATH",
         str(FLOOD_MASTER_DIR / "master_database.xlsx"),
     )
-).expanduser().resolve()
+)
 
 LATEST_EXCEL_FILE: Path = FLOOD_LATEST_DATABASE_PATH
 MASTER_EXCEL_FILE: Path = FLOOD_MASTER_DATABASE_PATH
@@ -255,12 +280,9 @@ LARGE_DAM_HISTORY_DIR: Path = FLOOD_HISTORY_LARGE_DAM_DIR
 MEDIUM_DAM_HISTORY_DIR: Path = FLOOD_HISTORY_MEDIUM_DAM_DIR
 ALL_LONG_HISTORY_DIR: Path = FLOOD_HISTORY_ALL_LONG_DIR
 
-FLOOD_PREDICTION_DIR: Path = Path(
-    os.getenv(
-        "TIPX_FLOOD_PREDICTION_DIR",
-        str(FLOOD_PIPELINE_BASE_DIR / "predict"),
-    )
-).expanduser().resolve()
+FLOOD_PREDICTION_DIR: Path = resolve_config_path(
+    os.getenv("TIPX_FLOOD_PREDICTION_DIR", str(FLOOD_PIPELINE_BASE_DIR / "predict"))
+)
 
 PREDICTION_DATA_DIR: Path = FLOOD_PREDICTION_DIR
 PREDICTION_FILE_PREFIX: str = "predict"
@@ -2260,6 +2282,33 @@ CORS_ALLOW_ORIGINS: List[str] = [
     ).split(",")
     if origin.strip()
 ]
+CORS_ALLOW_CREDENTIALS: bool = os.getenv(
+    "TIPX_CORS_ALLOW_CREDENTIALS", "false"
+).strip().lower() in {"1", "true", "yes", "y"}
+CORS_ALLOW_METHODS: List[str] = [
+    item.strip().upper()
+    for item in os.getenv(
+        "TIPX_CORS_ALLOW_METHODS",
+        "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    ).split(",")
+    if item.strip()
+]
+CORS_ALLOW_HEADERS: List[str] = [
+    item.strip()
+    for item in os.getenv(
+        "TIPX_CORS_ALLOW_HEADERS",
+        "Content-Type,Authorization,X-Requested-With,X-Request-ID,X-Correlation-ID,X-TIPX-Package-Token,X-Package-Token",
+    ).split(",")
+    if item.strip()
+]
+TRUSTED_HOSTS: List[str] = [
+    item.strip()
+    for item in os.getenv("TIPX_TRUSTED_HOSTS", "localhost,127.0.0.1,testserver").split(",")
+    if item.strip()
+]
+PACKAGE_TOKEN_HEADER_NAME: str = os.getenv(
+    "TIPX_PACKAGE_TOKEN_HEADER_NAME", "X-TIPX-Package-Token"
+).strip()
 
 JSON_SORT_KEYS: bool = False
 JSON_AS_ASCII: bool = False
@@ -2325,7 +2374,6 @@ MASK_DIRECTOR_VISIBLE_FIRST_CHARS: int = 2
 MYSQL_HOST: str = os.getenv("MYSQL_HOST", "127.0.0.1")
 MYSQL_PORT: int = int(os.getenv("MYSQL_PORT", "3307"))
 MYSQL_USER: str = os.getenv("MYSQL_USER", "tipx")
-# MYSQL_PASSWORD: str = os.getenv("MYSQL_PASSWORD", "tipx1722569")
 MYSQL_PASSWORD: str = os.getenv("MYSQL_PASSWORD", "").strip()
 MYSQL_DATABASE: str = os.getenv("MYSQL_DATABASE", "tipx_login")
 MYSQL_CHARSET: str = os.getenv("MYSQL_CHARSET", "utf8mb4")
@@ -2461,17 +2509,17 @@ AUTH_SKIP_OPTIONS_REQUEST: bool = True
 
 AUTH_PUBLIC_EXACT_PATHS: List[str] = [
     "/",
-    "/health",
-    "/status",
     "/favicon.ico",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
     f"{API_PREFIX}/health",
     f"{API_PREFIX}/status",
+    f"{API_PREFIX}/docs",
+    f"{API_PREFIX}/redoc",
+    f"{API_PREFIX}/openapi.json",
     f"{API_PREFIX}/auth/login",
     f"{API_PREFIX}/auth/status",
+    f"{API_PREFIX}/auth/contract",
 ]
+
 
 AUTH_PUBLIC_PREFIXES: List[str] = [
     "/static",
@@ -3082,13 +3130,8 @@ REQUIRED_DIRECTORIES: List[Path] = [
 
 
 def ensure_directories() -> None:
-    """
-    สร้าง directory พื้นฐานของระบบ
-
-    เรียกตอน import config เพื่อให้ service อื่นใช้ path ได้ทันที
-    """
-
-    directories = [
+    """Create writable runtime directories without creating foreign external paths."""
+    internal_directories = [
         INPUT_DIR,
         CACHE_DIR,
         OUTPUT_DIR,
@@ -3100,6 +3143,15 @@ def ensure_directories() -> None:
         DATA_QUALITY_OUTPUT_DIR,
         POLICY_INPUT_DIR,
         LINKAGE_INPUT_DIR,
+        WEB_DATA_DIR,
+        UPLOAD_DIR,
+        UPLOAD_ENTITY_DIR,
+        UPLOAD_LOG_DIR,
+        UPLOAD_ERROR_REPORT_DIR,
+        WEB_CACHE_DIR,
+        WEB_LOG_DIR,
+    ]
+    external_directories = [
         FLOOD_OUTPUT_DIR,
         FLOOD_EXCEL_DATABASE_DIR,
         FLOOD_LATEST_DIR,
@@ -3114,17 +3166,16 @@ def ensure_directories() -> None:
         FLOOD_HISTORY_MEDIUM_DAM_DIR,
         FLOOD_HISTORY_ALL_LONG_DIR,
         FLOOD_PREDICTION_DIR,
-        WEB_DATA_DIR,
-        UPLOAD_DIR,
-        UPLOAD_ENTITY_DIR,
-        UPLOAD_LOG_DIR,
-        UPLOAD_ERROR_REPORT_DIR,
-        WEB_CACHE_DIR,
-        WEB_LOG_DIR,
     ]
 
-    for directory in directories:
+    for directory in internal_directories:
         directory.mkdir(parents=True, exist_ok=True)
+
+    if os.getenv("TIPX_CREATE_EXTERNAL_DIRS", "false").strip().lower() in {"1", "true", "yes", "y"}:
+        for directory in external_directories:
+            if is_path_compatible_with_runtime(directory):
+                directory.mkdir(parents=True, exist_ok=True)
+
 
 
 # ============================================================
@@ -3281,7 +3332,7 @@ def get_history_file(data_type: Any, year: int | str, month: int | str) -> Path:
 
 
 def find_latest_prediction_file() -> Optional[Path]:
-    if not FLOOD_PREDICTION_DIR.exists():
+    if not config_path_exists(FLOOD_PREDICTION_DIR):
         return None
 
     files = [
@@ -3820,7 +3871,7 @@ def validate_basic_config() -> Dict[str, Any]:
         )
 
     if USE_EXCEL_DATA_SOURCE:
-        if not FLOOD_OUTPUT_DIR.exists():
+        if not config_path_exists(FLOOD_OUTPUT_DIR):
             warnings.append(
                 {
                     "code": "flood_output_dir_missing",
@@ -3829,7 +3880,7 @@ def validate_basic_config() -> Dict[str, Any]:
                 }
             )
 
-        if not FLOOD_EXCEL_DATABASE_DIR.exists():
+        if not config_path_exists(FLOOD_EXCEL_DATABASE_DIR):
             warnings.append(
                 {
                     "code": "flood_excel_database_dir_missing",
@@ -3838,7 +3889,7 @@ def validate_basic_config() -> Dict[str, Any]:
                 }
             )
 
-        if not FLOOD_LATEST_DATABASE_PATH.exists():
+        if not config_path_exists(FLOOD_LATEST_DATABASE_PATH):
             warnings.append(
                 {
                     "code": "flood_latest_database_missing",
@@ -3847,7 +3898,7 @@ def validate_basic_config() -> Dict[str, Any]:
                 }
             )
 
-        if not FLOOD_MASTER_DATABASE_PATH.exists():
+        if not config_path_exists(FLOOD_MASTER_DATABASE_PATH):
             warnings.append(
                 {
                     "code": "flood_master_database_missing",
@@ -3856,7 +3907,7 @@ def validate_basic_config() -> Dict[str, Any]:
                 }
             )
 
-        if not FLOOD_HISTORY_DIR.exists():
+        if not config_path_exists(FLOOD_HISTORY_DIR):
             warnings.append(
                 {
                     "code": "flood_history_dir_missing",
@@ -3865,7 +3916,7 @@ def validate_basic_config() -> Dict[str, Any]:
                 }
             )
 
-        if not FLOOD_PREDICTION_DIR.exists():
+        if not config_path_exists(FLOOD_PREDICTION_DIR):
             warnings.append(
                 {
                     "code": "flood_prediction_dir_missing",
@@ -3873,6 +3924,30 @@ def validate_basic_config() -> Dict[str, Any]:
                     "path": str(FLOOD_PREDICTION_DIR),
                 }
             )
+
+    if CORS_ALLOW_CREDENTIALS and "*" in CORS_ALLOW_ORIGINS:
+        errors.append({
+            "code": "cors_wildcard_credentials",
+            "message": "Wildcard CORS origin cannot be used with credentials.",
+        })
+
+    if DEFAULT_ENV in {"production", "prod"} and not CORS_ALLOW_ORIGINS:
+        warnings.append({
+            "code": "cors_origins_empty",
+            "message": "No production CORS origins are configured.",
+        })
+
+    if ENABLE_PACKAGE_ACCESS_TOKEN:
+        if not SECRET_KEY:
+            errors.append({
+                "code": "package_secret_missing",
+                "message": "TIPX_SECRET_KEY is required when package access tokens are enabled.",
+            })
+        if not PACKAGE_TOKEN_SALT:
+            errors.append({
+                "code": "package_token_salt_missing",
+                "message": "TIPX_PACKAGE_TOKEN_SALT is required when package access tokens are enabled.",
+            })
 
     if AUTH_ENABLED:
         if not MYSQL_HOST:
@@ -4033,6 +4108,14 @@ def validate_basic_config() -> Dict[str, Any]:
         "status": status,
         "errors": errors,
         "warnings": warnings,
+        "features": {
+            "auth_enabled": AUTH_ENABLED,
+            "auth_ready": bool(AUTH_ENABLED and not any(item.get("code", "").startswith("auth_") for item in errors)),
+            "package_token_enabled": ENABLE_PACKAGE_ACCESS_TOKEN,
+            "package_security_ready": bool(not ENABLE_PACKAGE_ACCESS_TOKEN or (SECRET_KEY and PACKAGE_TOKEN_SALT)),
+            "excel_source_enabled": USE_EXCEL_DATA_SOURCE,
+            "mysql_business_source_enabled": USE_MYSQL_DATA_SOURCE,
+        },
     }
 
 # ============================================================
@@ -4115,5 +4198,5 @@ class FlaskConfig:
 # 27) INITIAL DIRECTORY CREATION
 # ============================================================
 
-if os.getenv("TIPX_AUTO_CREATE_DIRS", "true").strip().lower() in {"1", "true", "yes", "y"}:
+if os.getenv("TIPX_AUTO_CREATE_DIRS", "false").strip().lower() in {"1", "true", "yes", "y"}:
     ensure_directories()

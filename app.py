@@ -42,6 +42,8 @@ import json
 import logging
 import os
 import traceback
+import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -51,6 +53,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -96,7 +99,11 @@ ENABLE_REQUEST_LOG: bool = config.ENABLE_REQUEST_LOG
 ENABLE_PIPELINE_LOG: bool = config.ENABLE_PIPELINE_LOG
 
 CORS_ENABLED: bool = config.CORS_ENABLED
-CORS_ALLOW_ORIGINS: List[str] = getattr(config, "CORS_ALLOW_ORIGINS", ["*"])
+CORS_ALLOW_ORIGINS: List[str] = getattr(config, "CORS_ALLOW_ORIGINS", [])
+CORS_ALLOW_CREDENTIALS: bool = bool(getattr(config, "CORS_ALLOW_CREDENTIALS", False))
+CORS_ALLOW_METHODS: List[str] = list(getattr(config, "CORS_ALLOW_METHODS", ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]))
+CORS_ALLOW_HEADERS: List[str] = list(getattr(config, "CORS_ALLOW_HEADERS", ["Content-Type", "Authorization", "X-Request-ID"]))
+TRUSTED_HOSTS: List[str] = list(getattr(config, "TRUSTED_HOSTS", ["localhost", "127.0.0.1", "testserver"]))
 
 JSON_AS_ASCII: bool = config.JSON_AS_ASCII
 JSON_SORT_KEYS: bool = config.JSON_SORT_KEYS
@@ -276,19 +283,14 @@ def app_json_response(
 
 
 def serialize_exception(exc: Exception, include_traceback: bool = False) -> Dict[str, Any]:
-    """
-    แปลง exception เป็น dict สำหรับส่งออก error response
-    """
-
-    error_payload: Dict[str, Any] = {
+    payload: Dict[str, Any] = {
         "type": exc.__class__.__name__,
-        "message": str(exc),
+        "message": str(exc) if DEBUG else "Internal server error",
     }
+    if include_traceback and DEBUG:
+        payload["traceback"] = traceback.format_exc()
+    return payload
 
-    if include_traceback:
-        error_payload["traceback"] = traceback.format_exc()
-
-    return error_payload
 
 # ============================================================
 # 3.1) AUTH / REQUEST GUARD HELPERS
@@ -334,11 +336,16 @@ def get_user_agent(request: Request) -> str:
 
 
 def get_request_id(request: Request) -> str:
-    return (
+    existing = str(getattr(request.state, "request_id", "") or "").strip()
+    if existing:
+        return existing[:128]
+    value = (
         request.headers.get("x-request-id")
         or request.headers.get("x-correlation-id")
         or ""
-    )
+    ).strip()
+    return value[:128] if value else uuid.uuid4().hex
+
 
 
 def get_authorization_header(request: Request) -> str:
@@ -469,6 +476,25 @@ def should_skip_middleware_audit(path: str, method: str) -> bool:
     return False
 
 
+SENSITIVE_REQUEST_KEYS = {
+    "authorization", "token", "access_token", "package_token", "password",
+    "secret", "api_key", "apikey", "jwt", "refresh_token",
+}
+
+
+def sanitize_query_params(request: Request) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for key, value in request.query_params.multi_items():
+        safe_key = str(key)
+        safe_value: Any = "[REDACTED]" if safe_key.lower() in SENSITIVE_REQUEST_KEYS else str(value)[:500]
+        if safe_key in result:
+            existing = result[safe_key]
+            result[safe_key] = existing + [safe_value] if isinstance(existing, list) else [existing, safe_value]
+        else:
+            result[safe_key] = safe_value
+    return result
+
+
 def write_auth_audit_safe(
     request: Request,
     response_status_code: int,
@@ -519,7 +545,7 @@ def write_auth_audit_safe(
             user_agent=get_user_agent(request),
             request_id=get_request_id(request),
             details={
-                "query_params": dict(request.query_params),
+                "query_params": sanitize_query_params(request),
                 "reason": auth_result.get("reason", "") if isinstance(auth_result, dict) else "",
                 "rule_name": auth_result.get("rule_name", "") if isinstance(auth_result, dict) else "",
                 **(details or {}),
@@ -728,6 +754,7 @@ def create_app() -> FastAPI:
         docs_url=f"{API_PREFIX}/docs",
         redoc_url=f"{API_PREFIX}/redoc",
         openapi_url=f"{API_PREFIX}/openapi.json",
+        lifespan=app_lifespan,
     )
 
     app.state.tipx_config = config.CONFIG
@@ -738,17 +765,12 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     register_api_routes(app)
     register_frontend_routes(app)
-    register_startup_event(app)
 
     startup_report = build_startup_report()
     logger.info("TIPX FastAPI backend created successfully")
     logger.info(
-        json.dumps(
-            startup_report,
-            ensure_ascii=False,
-            indent=2,
-            default=str,
-        )
+        "TIPX startup validation status=%s",
+        startup_report.get("validation", {}).get("status", "unknown"),
     )
 
     return app
@@ -758,45 +780,28 @@ def create_app() -> FastAPI:
 # ============================================================
 
 def configure_cors(app: FastAPI) -> None:
-    """
-    ตั้งค่า CORS
-
-    ใช้สำหรับ:
-    - frontend dev server
-    - local dashboard
-    - external viewer local test
-    - Authorization Bearer token
-    - request id / correlation id สำหรับ audit log
-    """
-
     if not CORS_ENABLED:
         logger.info("CORS disabled")
         return
 
+    if CORS_ALLOW_CREDENTIALS and "*" in CORS_ALLOW_ORIGINS:
+        raise RuntimeError("Wildcard CORS origin cannot be used with credentials")
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=CORS_ALLOW_ORIGINS,
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=[
-            "Content-Type",
-            "Authorization",
-            "X-Requested-With",
-            "X-Request-ID",
-            "X-Correlation-ID",
-        ],
+        allow_credentials=CORS_ALLOW_CREDENTIALS,
+        allow_methods=CORS_ALLOW_METHODS,
+        allow_headers=CORS_ALLOW_HEADERS,
         expose_headers=[
-            "X-TIPX-App",
-            "X-TIPX-Version",
-            "X-TIPX-Environment",
-            "X-TIPX-Duration-Ms",
-            "X-TIPX-Auth",
-            "X-TIPX-Role",
-            "X-Request-ID",
+            "X-TIPX-App", "X-TIPX-Version", "X-TIPX-Environment",
+            "X-TIPX-Duration-Ms", "X-TIPX-Auth", "X-TIPX-Role", "X-Request-ID",
         ],
     )
-
+    if TRUSTED_HOSTS:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=TRUSTED_HOSTS)
     logger.info("CORS enabled")
+
 
 
 # ============================================================
@@ -823,6 +828,7 @@ def register_request_middleware(app: FastAPI) -> None:
         path = str(request.url.path)
         method = str(request.method)
         request_id = get_request_id(request)
+        request.state.request_id = request_id
 
         auth_result: Dict[str, Any] = {
             "allowed": True,
@@ -838,7 +844,7 @@ def register_request_middleware(app: FastAPI) -> None:
                 method,
                 path,
                 request.client.host if request.client else None,
-                dict(request.query_params),
+                sanitize_query_params(request),
                 request_id,
             )
 
@@ -862,8 +868,7 @@ def register_request_middleware(app: FastAPI) -> None:
                 response.headers["X-TIPX-Auth"] = "denied"
                 response.headers["X-TIPX-Auth-Reason"] = str(auth_result.get("reason", "denied"))
 
-                if request_id:
-                    response.headers["X-Request-ID"] = request_id
+                response.headers["X-Request-ID"] = request_id
 
                 write_auth_audit_safe(
                     request=request,
@@ -927,8 +932,7 @@ def register_request_middleware(app: FastAPI) -> None:
         if isinstance(user, dict) and user.get("role"):
             response.headers["X-TIPX-Role"] = str(user.get("role"))
 
-        if request_id:
-            response.headers["X-Request-ID"] = request_id
+        response.headers["X-Request-ID"] = request_id
 
         write_auth_audit_safe(
             request=request,
@@ -987,10 +991,7 @@ def register_frontend_routes(app: FastAPI) -> None:
         return app_json_response(
             success=False,
             message="Frontend file not found",
-            data={
-                "filename": filename,
-                "frontend_dir": str(FRONTEND_DIR),
-            },
+            data={"filename": filename},
             errors=[
                 {
                     "code": "frontend_file_not_found",
@@ -1010,10 +1011,7 @@ def register_frontend_routes(app: FastAPI) -> None:
         return app_json_response(
             success=False,
             message="Asset file not found",
-            data={
-                "filename": filename,
-                "assets_dir": str(FRONTEND_DIR / "assets"),
-            },
+            data={"filename": filename},
             errors=[
                 {
                     "code": "asset_file_not_found",
@@ -1025,7 +1023,7 @@ def register_frontend_routes(app: FastAPI) -> None:
 
     @app.get("/{spa_path:path}", include_in_schema=False)
     async def spa_fallback(spa_path: str):
-        if spa_path.startswith("api/") or spa_path.startswith("api"):
+        if spa_path == "api" or spa_path.startswith("api/"):
             return app_json_response(
                 success=False,
                 message="API route not found",
@@ -1121,7 +1119,7 @@ def register_fallback_api_routes(app: FastAPI, route_error: Exception) -> None:
                 "version": APP_VERSION,
                 "environment": DEFAULT_ENV,
                 "api_routes_registered": False,
-                "route_error": str(route_error),
+                "route_error": str(route_error) if DEBUG else "API router unavailable",
                 "validation": validation,
                 "auth": {
                     "enabled": AUTH_ENABLED,
@@ -1159,7 +1157,7 @@ def register_fallback_api_routes(app: FastAPI, route_error: Exception) -> None:
                 "inputs": config.get_input_file_status(),
                 "validation": config.validate_basic_config(),
                 "api_routes_registered": False,
-                "route_error": str(route_error),
+                "route_error": str(route_error) if DEBUG else "API router unavailable",
             },
             meta={
                 "fallback": True,
@@ -1269,7 +1267,7 @@ def register_fallback_api_routes(app: FastAPI, route_error: Exception) -> None:
             data={
                 "routes": routes,
                 "api_routes_registered": False,
-                "route_error": str(route_error),
+                "route_error": str(route_error) if DEBUG else "API router unavailable",
                 "auth": {
                     "enabled": AUTH_ENABLED,
                     "auth_service_loaded": AUTH_SERVICE_LOADED,
@@ -1358,9 +1356,12 @@ def register_exception_handlers(app: FastAPI) -> None:
                 status_code=413,
             )
 
+        public_detail = (
+            str(exc.detail) if exc.status_code < 500 and exc.detail else "Internal server error"
+        )
         return app_json_response(
             success=False,
-            message=str(exc.detail) if exc.detail else "HTTP error",
+            message=public_detail,
             data={
                 "path": request.url.path,
                 "method": request.method,
@@ -1368,7 +1369,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             errors=[
                 {
                     "code": f"http_{exc.status_code}",
-                    "message": str(exc.detail),
+                    "message": public_detail,
                 }
             ],
             status_code=exc.status_code,
@@ -1426,59 +1427,42 @@ def register_exception_handlers(app: FastAPI) -> None:
 # 11) STARTUP EVENT / STARTUP REPORT
 # ============================================================
 
-def register_startup_event(app: FastAPI) -> None:
-    """
-    register startup event
+@asynccontextmanager
+async def app_lifespan(app: FastAPI):
+    config.ensure_directories()
+    app.state.startup_validation = config.validate_basic_config()
+    app.state.auth_startup = {
+        "success": not AUTH_ENABLED,
+        "message": "auth_disabled" if not AUTH_ENABLED else "auth_not_initialized",
+        "data": {},
+    }
 
-    ทำตอนเริ่มระบบ:
-    - ensure directories
-    - initialize auth database/table/fixed users
-    - startup report
-    """
-
-    @app.on_event("startup")
-    async def startup_event() -> None:
-        config.ensure_directories()
-
-        auth_startup_result: Dict[str, Any] = {
-            "success": False,
-            "message": "auth_service_not_loaded",
-            "data": {},
-        }
-
-        if AUTH_ENABLED:
-            if AUTH_SERVICE_LOADED and auth_service is not None:
-                try:
-                    auth_startup_result = auth_service.startup_auth()
-                    app.state.auth_startup = auth_startup_result
-
-                    if auth_startup_result.get("success"):
-                        logger.info("Auth startup completed")
-                    else:
-                        logger.warning(
-                            "Auth startup degraded: %s",
-                            json.dumps(auth_startup_result, ensure_ascii=False, default=str),
-                        )
-
-                except Exception as exc:
-                    app.state.auth_startup = {
-                        "success": False,
-                        "message": str(exc),
-                        "error_type": exc.__class__.__name__,
-                    }
-                    logger.exception("Auth startup failed: %s", str(exc))
-
-            else:
+    if AUTH_ENABLED:
+        if AUTH_SERVICE_LOADED and auth_service is not None:
+            try:
+                result = auth_service.startup_auth()
+                app.state.auth_startup = result
+                if result.get("success"):
+                    logger.info("Auth startup completed")
+                else:
+                    logger.warning("Auth startup degraded")
+            except Exception as exc:
                 app.state.auth_startup = {
                     "success": False,
-                    "message": "AUTH_ENABLED=true but auth_service import failed",
-                    "import_error": AUTH_SERVICE_IMPORT_ERROR,
+                    "message": "Auth startup failed",
+                    "error_type": exc.__class__.__name__,
                 }
-                logger.error("AUTH_ENABLED=true but auth_service import failed: %s", AUTH_SERVICE_IMPORT_ERROR)
+                logger.exception("Auth startup failed")
+        else:
+            app.state.auth_startup = {
+                "success": False,
+                "message": "Auth service unavailable",
+            }
+            logger.error("Auth service unavailable")
 
-        startup_report = build_startup_report()
-        logger.info("TIPX FastAPI startup completed")
-        logger.info(json.dumps(startup_report, ensure_ascii=False, indent=2, default=str))
+    logger.info("TIPX FastAPI startup completed")
+    yield
+
 
 
 def build_startup_report() -> Dict[str, Any]:
