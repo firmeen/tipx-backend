@@ -1,0 +1,34 @@
+name: Phase 1 snapshot
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@v4
+
+      - name: Verify source files
+        run: |
+          python -m py_compile filter_engine.py utils.py api_routes.py config.py app.py
+
+      - name: Upload Phase 1 files
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase1-source
+          path: |
+            filter_engine.py
+            utils.py
+            api_routes.py
+            config.py
+            app.py
+            requirements.txt
+          if-no-files-found: error
+          retention-days: 1
