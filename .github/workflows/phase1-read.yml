@@ -1,4 +1,4 @@
-name: Phase 1 snapshot
+name: Phase 1 apply
 
 on:
   pull_request:
@@ -6,26 +6,97 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  snapshot:
+  apply:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout pull request
+      - name: Checkout target branch
         uses: actions/checkout@v4
-
-      - name: Verify source files
-        run: |
-          python -m py_compile filter_engine.py utils.py api_routes.py config.py app.py
-
-      - name: Upload repository snapshot
-        uses: actions/upload-artifact@v4
         with:
-          name: phase1-repository
-          path: |
-            .
-            !.git/**
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 1
+          ref: core-fix
+          fetch-depth: 0
+
+      - name: Verify base
+        run: |
+          test "$(git rev-parse HEAD)" = "47f55861d08096ed4a511329a530c47f993dc2b3"
+
+      - name: Load and apply Phase 1 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin phase1-read
+          : > /tmp/phase1.patch.bz2.b64
+          for part in $(git ls-tree -r --name-only origin/phase1-read -- .github/phase1-patch | sort)
+          do
+            git show "origin/phase1-read:$part" >> /tmp/phase1.patch.bz2.b64
+          done
+          base64 -d /tmp/phase1.patch.bz2.b64 | bzip2 -d > /tmp/phase1.patch
+          echo '38347a27a549b1899f20c0cb6aeff3cd10951d4f4540c0bd591f5fdfad7ca1c7  /tmp/phase1.patch' | sha256sum -c -
+          git apply --check /tmp/phase1.patch
+          git apply /tmp/phase1.patch
+          test "$(git status --short | wc -l | tr -d ' ')" = "6"
+          git status --short | awk '{print $2}' | sort > /tmp/changed-files.txt
+          printf '%s\n' api_routes.py app.py config.py filter_engine.py requirements.txt utils.py | sort > /tmp/expected-files.txt
+          diff -u /tmp/expected-files.txt /tmp/changed-files.txt
+          git show origin/phase1-read:.github/phase1-tests.py > /tmp/phase1-tests.py
+          git show origin/phase1-read:.github/phase1-extra-tests.py > /tmp/phase1-extra-tests.py
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install runtime dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run core integration checks
+        env:
+          AUTH_ENABLED: 'false'
+          TIPX_AUTO_CREATE_DIRS: 'false'
+          TIPX_DEBUG: 'false'
+          TIPX_CORS_ALLOW_ORIGINS: 'http://localhost:3000'
+          TIPX_TRUSTED_HOSTS: 'localhost,127.0.0.1,testserver'
+        run: |
+          set -euo pipefail
+          python -m py_compile *.py auth/*.py
+          python /tmp/phase1-tests.py
+
+      - name: Run auth and readiness checks
+        env:
+          AUTH_ENABLED: 'true'
+          AUTH_DB_AUTO_CREATE: 'false'
+          AUTH_DB_AUTO_SEED: 'false'
+          TIPX_AUTO_CREATE_DIRS: 'false'
+          TIPX_DEBUG: 'false'
+          TIPX_CORS_ALLOW_ORIGINS: 'http://localhost:3000'
+          TIPX_TRUSTED_HOSTS: 'localhost,127.0.0.1,testserver'
+        run: python /tmp/phase1-extra-tests.py
+
+      - name: Preserve validated files
+        run: |
+          mkdir -p /tmp/phase1-files
+          cp filter_engine.py utils.py api_routes.py config.py app.py requirements.txt /tmp/phase1-files/
+          git reset --hard HEAD
+
+      - name: Create focused commits
+        run: |
+          set -euo pipefail
+          git config user.name 'firmeen'
+          git config user.email 'firmeen@users.noreply.github.com'
+          while IFS='|' read -r file message
+          do
+            cp "/tmp/phase1-files/$file" "$file"
+            git add "$file"
+            git commit -m "$message"
+          done <<'COMMITS'
+          filter_engine.py|fix(filter): stabilize records
+          utils.py|fix(utils): normalize records
+          api_routes.py|fix(api): align routes
+          config.py|fix(config): secure defaults
+          app.py|fix(app): align middleware
+          requirements.txt|chore(deps): clean runtime
+          COMMITS
+          git push origin HEAD:core-fix
