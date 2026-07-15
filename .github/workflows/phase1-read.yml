@@ -19,16 +19,13 @@ jobs:
         run: |
           python -m py_compile filter_engine.py utils.py api_routes.py config.py app.py
 
-      - name: Upload Phase 1 files
+      - name: Upload repository snapshot
         uses: actions/upload-artifact@v4
         with:
-          name: phase1-source
+          name: phase1-repository
           path: |
-            filter_engine.py
-            utils.py
-            api_routes.py
-            config.py
-            app.py
-            requirements.txt
+            .
+            !.git/**
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
