@@ -60,9 +60,9 @@ jobs:
           TIPX_CORS_ALLOW_ORIGINS: 'http://localhost:3000'
           TIPX_TRUSTED_HOSTS: 'localhost,127.0.0.1,testserver'
         run: |
-          set -euo pipefail
-          python -m py_compile *.py auth/*.py
-          python /tmp/phase1-tests.py
+          set -o pipefail
+          python -m py_compile *.py auth/*.py 2>&1 | tee /tmp/compile.log
+          python /tmp/phase1-tests.py 2>&1 | tee /tmp/core-tests.log
 
       - name: Run auth and readiness checks
         env:
@@ -73,7 +73,21 @@ jobs:
           TIPX_DEBUG: 'false'
           TIPX_CORS_ALLOW_ORIGINS: 'http://localhost:3000'
           TIPX_TRUSTED_HOSTS: 'localhost,127.0.0.1,testserver'
-        run: python /tmp/phase1-extra-tests.py
+        run: |
+          set -o pipefail
+          python /tmp/phase1-extra-tests.py 2>&1 | tee /tmp/readiness-tests.log
+
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase1-test-output
+          path: |
+            /tmp/compile.log
+            /tmp/core-tests.log
+            /tmp/readiness-tests.log
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Preserve validated files
         run: |
