@@ -1,0 +1,193 @@
+name: Filter fix
+
+on:
+  push:
+    branches:
+      - filter-fix
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: filter-fix
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pandas numpy openpyxl
+
+      - name: Patch and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("filter_engine.py")
+          text = path.read_text(encoding="utf-8")
+
+          old_records = '''def records_to_record_list(records: Any, target: Optional[str] = None) -> List[Dict[str, Any]]:
+              """
+              Convert service/cache/DataFrame inputs into a detached list of record dicts.
+              """
+
+              if records is None:
+                  return []
+
+              if isinstance(records, dict):
+                  if not records:
+                      return []
+                  extracted = normalize_cache_payload_to_records(records, target=target)
+                  if extracted:
+                      return [deepcopy(record) for record in extracted if isinstance(record, dict)]
+                  return [deepcopy(records)]
+
+              return [deepcopy(record) for record in dataframe_to_records(records) if isinstance(record, dict)]
+          '''.replace("          ", "")
+
+          new_records = '''def records_to_record_list(records: Any, target: Optional[str] = None) -> List[Dict[str, Any]]:
+              """
+              Convert service/cache/DataFrame inputs into a detached list of record dicts.
+              """
+
+              if records is None:
+                  return []
+
+              if isinstance(records, dict):
+                  if not records:
+                      return []
+
+                  extracted = normalize_cache_payload_to_records(
+                      records,
+                      target=target,
+                  )
+
+                  if extracted:
+                      return [
+                          deepcopy(record)
+                          for record in extracted
+                          if isinstance(record, dict)
+                      ]
+
+                  return [deepcopy(records)]
+
+              if isinstance(records, (list, tuple, set)):
+                  return [
+                      deepcopy(record)
+                      for record in records
+                      if isinstance(record, dict)
+                  ]
+
+              converted = dataframe_to_records(records)
+
+              return [
+                  deepcopy(record)
+                  for record in converted
+                  if isinstance(record, dict)
+              ]
+          '''.replace("          ", "")
+
+          old_advanced = '''def apply_advanced_filter(
+              records: List[Dict[str, Any]],
+              advanced: Optional[Dict[str, Any]] = None,
+          ) -> List[Dict[str, Any]]:
+              """
+              apply advanced filter group
+              """
+
+              advanced = advanced or {}
+
+              if not advanced:
+                  return list(records)
+
+              return [
+                  record
+                  for record in records
+                  if evaluate_filter_group(record, advanced)
+              ]
+          '''.replace("          ", "")
+
+          new_advanced = '''def apply_advanced_filter(
+              records: List[Dict[str, Any]],
+              advanced: Optional[Dict[str, Any]] = None,
+          ) -> List[Dict[str, Any]]:
+              """
+              apply advanced filter group
+              """
+
+              advanced = advanced or {}
+
+              conditions = (
+                  advanced.get("conditions", [])
+                  if isinstance(advanced, dict)
+                  else []
+              )
+              groups = (
+                  advanced.get("groups", [])
+                  if isinstance(advanced, dict)
+                  else []
+              )
+
+              if (
+                  not isinstance(advanced, dict)
+                  or not advanced
+                  or (not conditions and not groups)
+              ):
+                  return list(records)
+
+              return [
+                  record
+                  for record in records
+                  if evaluate_filter_group(record, advanced)
+              ]
+          '''.replace("          ", "")
+
+          if old_records not in text:
+              raise SystemExit("records_to_record_list block not found")
+          if old_advanced not in text:
+              raise SystemExit("apply_advanced_filter block not found")
+
+          text = text.replace(old_records, new_records, 1)
+          text = text.replace(old_advanced, new_advanced, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          python -m py_compile filter_engine.py utils.py config.py schemas.py
+
+          python - <<'PY'
+          import pandas as pd
+          import filter_engine
+
+          result = filter_engine.run_filter_self_test()
+          assert result["ready"] is True
+          assert result["sample_result"]["total"] == 1
+          assert result["prediction_result"]["total"] == 1
+          assert filter_engine.records_to_record_list([{"id": 1}]) == [{"id": 1}]
+          assert filter_engine.records_to_record_list(({"id": 2},)) == [{"id": 2}]
+          assert filter_engine.records_to_record_list(pd.DataFrame([{"id": 3}])) == [{"id": 3}]
+          assert filter_engine.apply_advanced_filter(
+              [{"id": 1}],
+              {"conditions": [], "groups": []},
+          ) == [{"id": 1}]
+          PY
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/filter-fix.yml
+          git add filter_engine.py
+          git commit -m "fix(filter): stabilize records"
+          git push origin HEAD:filter-fix
