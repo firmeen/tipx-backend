@@ -27,7 +27,14 @@ AUTH_SERVICE_NAME: str = "auth_service"
 MYSQL_HOST: str = getattr(config, "MYSQL_HOST", os.getenv("MYSQL_HOST", "127.0.0.1"))
 MYSQL_PORT: int = int(getattr(config, "MYSQL_PORT", os.getenv("MYSQL_PORT", "3307")))
 MYSQL_USER: str = getattr(config, "MYSQL_USER", os.getenv("MYSQL_USER", "tipx"))
-MYSQL_PASSWORD: str = getattr(config, "MYSQL_PASSWORD", os.getenv("MYSQL_PASSWORD", "tipx1722569"))
+MYSQL_PASSWORD: str = str(
+    getattr(
+        config,
+        "MYSQL_PASSWORD",
+        os.getenv("MYSQL_PASSWORD", ""),
+    )
+    or ""
+)
 MYSQL_DATABASE: str = getattr(config, "MYSQL_DATABASE", os.getenv("MYSQL_DATABASE", "tipx_login"))
 MYSQL_CHARSET: str = getattr(config, "MYSQL_CHARSET", os.getenv("MYSQL_CHARSET", "utf8mb4"))
 MYSQL_CONNECT_TIMEOUT_SECONDS: int = int(getattr(config, "MYSQL_CONNECT_TIMEOUT_SECONDS", 10))
@@ -37,7 +44,13 @@ AUTH_MYSQL_TABLE_AUDIT_LOGS: str = getattr(config, "AUTH_MYSQL_TABLE_AUDIT_LOGS"
 
 AUTH_ENABLED: bool = bool(getattr(config, "AUTH_ENABLED", True))
 AUTH_DB_AUTO_CREATE: bool = bool(getattr(config, "AUTH_DB_AUTO_CREATE", True))
-AUTH_DB_AUTO_SEED: bool = bool(getattr(config, "AUTH_DB_AUTO_SEED", True))
+AUTH_DB_AUTO_SEED: bool = bool(
+    getattr(
+        config,
+        "AUTH_DB_AUTO_SEED",
+        False,
+    )
+)
 AUTH_SEED_OVERWRITE_PASSWORD: bool = bool(getattr(config, "AUTH_SEED_OVERWRITE_PASSWORD", False))
 
 AUTH_ROLES: List[str] = list(getattr(config, "AUTH_ROLES", ["admin", "user", "viewer"]))
@@ -57,32 +70,7 @@ AUTH_FIXED_USERS: List[Dict[str, Any]] = list(
     getattr(
         config,
         "AUTH_FIXED_USERS",
-        [
-            {
-                "username": "admin",
-                "password": "change-me-admin",
-                "role": "admin",
-                "display_name": "TIPX Admin",
-                "is_active": True,
-                "fixed": True,
-            },
-            {
-                "username": "user",
-                "password": "change-me-user",
-                "role": "user",
-                "display_name": "TIPX User",
-                "is_active": True,
-                "fixed": True,
-            },
-            {
-                "username": "viewer",
-                "password": "change-me-viewer",
-                "role": "viewer",
-                "display_name": "TIPX Viewer",
-                "is_active": True,
-                "fixed": True,
-            },
-        ],
+        [],
     )
 )
 
@@ -91,11 +79,15 @@ PASSWORD_HASH_ITERATIONS: int = int(getattr(config, "PASSWORD_HASH_ITERATIONS", 
 PASSWORD_HASH_SALT_BYTES: int = int(getattr(config, "PASSWORD_HASH_SALT_BYTES", 16))
 PASSWORD_HASH_PEPPER: str = getattr(config, "PASSWORD_HASH_PEPPER", "")
 
-JWT_SECRET_KEY: str = getattr(
-    config,
-    "JWT_SECRET_KEY",
-    getattr(config, "SECRET_KEY", "tipx-development-secret-key-change-in-production"),
+JWT_SECRET_KEY: str = str(
+    getattr(
+        config,
+        "JWT_SECRET_KEY",
+        getattr(config, "SECRET_KEY", ""),
+    )
+    or ""
 )
+
 JWT_ALGORITHM: str = getattr(config, "JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES: int = int(getattr(config, "JWT_EXPIRE_MINUTES", 480))
 JWT_ISSUER: str = getattr(config, "JWT_ISSUER", "TIPX")
@@ -362,34 +354,37 @@ def quote_identifier(identifier: str) -> str:
 
     return f"`{text}`"
 
-
-def get_mysql_connection(include_database: bool = True) -> Any:
+def get_mysql_connection(
+    include_database: bool = True,
+) -> Any:
     driver_name, driver = get_mysql_driver()
 
-    common_kwargs = {
+    base_kwargs: Dict[str, Any] = {
         "host": MYSQL_HOST,
         "port": MYSQL_PORT,
         "user": MYSQL_USER,
         "password": MYSQL_PASSWORD,
         "charset": MYSQL_CHARSET,
-        "connect_timeout": MYSQL_CONNECT_TIMEOUT_SECONDS,
     }
 
     if include_database:
-        common_kwargs["database"] = MYSQL_DATABASE
+        base_kwargs["database"] = MYSQL_DATABASE
 
     if driver_name == "mysql_connector":
-        return driver.connect(**common_kwargs)
+        return driver.connect(
+            **base_kwargs,
+            connection_timeout=MYSQL_CONNECT_TIMEOUT_SECONDS,
+        )
 
     if driver_name == "pymysql":
         return driver.connect(
-            **common_kwargs,
+            **base_kwargs,
+            connect_timeout=MYSQL_CONNECT_TIMEOUT_SECONDS,
             cursorclass=driver.cursors.DictCursor,
             autocommit=False,
         )
 
     raise RuntimeError("unsupported mysql driver")
-
 
 @contextmanager
 def mysql_cursor(
@@ -566,7 +561,6 @@ def create_auth_tables_if_needed() -> Dict[str, Any]:
             "error": str(exc),
         }
 
-
 def init_auth_storage() -> Dict[str, Any]:
     if not AUTH_ENABLED:
         return make_auth_response(
@@ -580,26 +574,80 @@ def init_auth_storage() -> Dict[str, Any]:
             },
         )
 
-    db_result = {
+    db_result: Dict[str, Any] = {
         "created": False,
         "database": MYSQL_DATABASE,
         "error": "",
+        "reason": "AUTH_DB_AUTO_CREATE=false",
     }
 
     if AUTH_DB_AUTO_CREATE:
         db_result = create_auth_database_if_needed()
 
     table_result = create_auth_tables_if_needed()
-    seed_result = seed_fixed_users() if AUTH_DB_AUTO_SEED else {
-        "seeded": False,
-        "reason": "AUTH_DB_AUTO_SEED=false",
-    }
+    tables_ready = bool(
+        table_result.get("created")
+        and not table_result.get("error")
+    )
 
-    ok = bool(table_result.get("created")) and not table_result.get("error")
+    if AUTH_DB_AUTO_SEED and tables_ready:
+        seed_result = seed_fixed_users()
+    elif AUTH_DB_AUTO_SEED:
+        seed_result = {
+            "seeded": False,
+            "reason": "auth tables are not ready",
+            "results": [],
+            "errors": [],
+            "fixed_user_count": len(AUTH_FIXED_USERS),
+            "overwrite_password": AUTH_SEED_OVERWRITE_PASSWORD,
+        }
+    else:
+        seed_result = {
+            "seeded": False,
+            "reason": "AUTH_DB_AUTO_SEED=false",
+            "results": [],
+            "errors": [],
+            "fixed_user_count": len(AUTH_FIXED_USERS),
+            "overwrite_password": AUTH_SEED_OVERWRITE_PASSWORD,
+        }
+
+    seed_ready = (
+        not AUTH_DB_AUTO_SEED
+        or bool(seed_result.get("seeded"))
+    )
+
+    ok = tables_ready and seed_ready
+
+    errors: List[Dict[str, Any]] = []
+
+    if not tables_ready:
+        errors.append(
+            {
+                "type": "AuthTableInitError",
+                "message": (
+                    table_result.get("error")
+                    or db_result.get("error")
+                    or "auth table initialization failed"
+                ),
+            }
+        )
+
+    if AUTH_DB_AUTO_SEED and not seed_ready:
+        errors.append(
+            {
+                "type": "AuthSeedError",
+                "message": "Fixed user seed failed.",
+                "details": seed_result.get("errors", []),
+            }
+        )
 
     return make_auth_response(
         success=ok,
-        message="Auth storage initialized." if ok else "Auth storage initialization failed.",
+        message=(
+            "Auth storage initialized."
+            if ok
+            else "Auth storage initialization failed."
+        ),
         data={
             "auth_enabled": AUTH_ENABLED,
             "database": MYSQL_DATABASE,
@@ -611,15 +659,10 @@ def init_auth_storage() -> Dict[str, Any]:
             "mysql_host": MYSQL_HOST,
             "mysql_port": MYSQL_PORT,
             "mysql_database": MYSQL_DATABASE,
+            "status_code": 200 if ok else 503,
         },
-        errors=[] if ok else [
-            {
-                "type": "AuthStorageInitError",
-                "message": table_result.get("error") or db_result.get("error") or "unknown error",
-            }
-        ],
+        errors=errors,
     )
-
 
 # ============================================================
 # 5) PASSWORD HASH
@@ -634,18 +677,38 @@ def b64url_decode_bytes(value: str) -> bytes:
     padding = "=" * (-len(text) % 4)
     return base64.urlsafe_b64decode((text + padding).encode("ascii"))
 
-
 def create_password_hash(password: str) -> str:
-    raw_password = clean_text(password)
+    raw_password = (
+        ""
+        if password is None
+        else str(password)
+    )
 
-    if not raw_password:
+    if raw_password == "":
         raise ValueError("password is required")
 
     if PASSWORD_HASH_SCHEME != "pbkdf2_sha256":
-        raise ValueError(f"unsupported password hash scheme: {PASSWORD_HASH_SCHEME}")
+        raise ValueError(
+            f"unsupported password hash scheme: {PASSWORD_HASH_SCHEME}"
+        )
 
-    salt = secrets.token_bytes(PASSWORD_HASH_SALT_BYTES)
-    password_bytes = (raw_password + PASSWORD_HASH_PEPPER).encode("utf-8")
+    if PASSWORD_HASH_ITERATIONS <= 0:
+        raise ValueError(
+            "PASSWORD_HASH_ITERATIONS must be greater than zero"
+        )
+
+    if PASSWORD_HASH_SALT_BYTES <= 0:
+        raise ValueError(
+            "PASSWORD_HASH_SALT_BYTES must be greater than zero"
+        )
+
+    salt = secrets.token_bytes(
+        PASSWORD_HASH_SALT_BYTES
+    )
+
+    password_bytes = (
+        raw_password + str(PASSWORD_HASH_PEPPER or "")
+    ).encode("utf-8")
 
     digest = hashlib.pbkdf2_hmac(
         "sha256",
@@ -663,25 +726,44 @@ def create_password_hash(password: str) -> str:
         ]
     )
 
+def verify_password(
+    password: str,
+    password_hash: str,
+) -> bool:
+    raw_password = (
+        ""
+        if password is None
+        else str(password)
+    )
 
-def verify_password(password: str, password_hash: str) -> bool:
-    raw_password = clean_text(password)
     stored = clean_text(password_hash)
 
-    if not raw_password or not stored:
+    if raw_password == "" or not stored:
         return False
 
     try:
-        scheme, iterations_text, salt_text, digest_text = stored.split("$", 3)
+        scheme, iterations_text, salt_text, digest_text = stored.split(
+            "$",
+            3,
+        )
 
-        if scheme != "pbkdf2_sha256":
+        if scheme != PASSWORD_HASH_SCHEME:
             return False
 
         iterations = int(iterations_text)
+
+        if iterations <= 0:
+            return False
+
         salt = b64url_decode_bytes(salt_text)
         expected_digest = b64url_decode_bytes(digest_text)
 
-        password_bytes = (raw_password + PASSWORD_HASH_PEPPER).encode("utf-8")
+        if not salt or not expected_digest:
+            return False
+
+        password_bytes = (
+            raw_password + str(PASSWORD_HASH_PEPPER or "")
+        ).encode("utf-8")
 
         actual_digest = hashlib.pbkdf2_hmac(
             "sha256",
@@ -690,11 +772,13 @@ def verify_password(password: str, password_hash: str) -> bool:
             iterations,
         )
 
-        return hmac.compare_digest(actual_digest, expected_digest)
+        return hmac.compare_digest(
+            actual_digest,
+            expected_digest,
+        )
 
     except Exception:
         return False
-
 
 # ============================================================
 # 6) USER STORAGE / SEED
@@ -717,14 +801,20 @@ def sanitize_user_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]
     }
 
 
-def get_user_by_username(username: str, include_password_hash: bool = False) -> Optional[Dict[str, Any]]:
+def get_user_by_username(
+    username: str,
+    include_password_hash: bool = False,
+) -> Optional[Dict[str, Any]]:
     clean_username = clean_text(username)
 
     if not clean_username:
         return None
 
     try:
-        with mysql_cursor(include_database=True, dictionary=True) as (_, cursor):
+        with mysql_cursor(
+            include_database=True,
+            dictionary=True,
+        ) as (_, cursor):
             cursor.execute(
                 f"""
                 SELECT
@@ -756,9 +846,11 @@ def get_user_by_username(username: str, include_password_hash: bool = False) -> 
         return row
 
     except Exception as exc:
-        safe_error_log("get_user_by_username failed", exc)
-        return None
-
+        safe_error_log(
+            "get_user_by_username failed",
+            exc,
+        )
+        raise
 
 def list_auth_users() -> Dict[str, Any]:
     try:
@@ -799,13 +891,36 @@ def list_auth_users() -> Dict[str, Any]:
             status_code=500,
         )
 
+def upsert_fixed_user(
+    user_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    username = clean_text(
+        user_config.get("username")
+    )
 
-def upsert_fixed_user(user_config: Dict[str, Any]) -> Dict[str, Any]:
-    username = clean_text(user_config.get("username"))
-    password = clean_text(user_config.get("password"))
-    role = clean_text(user_config.get("role"))
-    display_name = clean_text(user_config.get("display_name"), username)
-    is_active = 1 if to_bool(user_config.get("is_active"), True) else 0
+    raw_password = (
+        ""
+        if user_config.get("password") is None
+        else str(user_config.get("password"))
+    )
+
+    role = clean_text(
+        user_config.get("role")
+    )
+
+    display_name = clean_text(
+        user_config.get("display_name"),
+        username,
+    )
+
+    is_active = (
+        1
+        if to_bool(
+            user_config.get("is_active"),
+            True,
+        )
+        else 0
+    )
 
     if not username:
         return {
@@ -825,23 +940,32 @@ def upsert_fixed_user(user_config: Dict[str, Any]) -> Dict[str, Any]:
             "error": f"invalid role: {role}",
         }
 
-    if not password:
-        return {
-            "username": username,
-            "role": role,
-            "created": False,
-            "updated": False,
-            "error": "password is required",
-        }
-
-    password_hash = create_password_hash(password)
-
     try:
-        existing = get_user_by_username(username, include_password_hash=True)
+        existing = get_user_by_username(
+            username,
+            include_password_hash=True,
+        )
 
-        with mysql_cursor(include_database=True, dictionary=True) as (_, cursor):
+        with mysql_cursor(
+            include_database=True,
+            dictionary=True,
+        ) as (_, cursor):
             if existing:
                 if AUTH_SEED_OVERWRITE_PASSWORD:
+                    if raw_password == "":
+                        return {
+                            "username": username,
+                            "role": role,
+                            "created": False,
+                            "updated": False,
+                            "password_updated": False,
+                            "error": "password is required when overwrite is enabled",
+                        }
+
+                    password_hash = create_password_hash(
+                        raw_password
+                    )
+
                     cursor.execute(
                         f"""
                         UPDATE {quote_identifier(AUTH_MYSQL_TABLE_USERS)}
@@ -900,6 +1024,20 @@ def upsert_fixed_user(user_config: Dict[str, Any]) -> Dict[str, Any]:
                     "error": "",
                 }
 
+            if raw_password == "":
+                return {
+                    "username": username,
+                    "role": role,
+                    "created": False,
+                    "updated": False,
+                    "password_updated": False,
+                    "error": "password is required for a new fixed user",
+                }
+
+            password_hash = create_password_hash(
+                raw_password
+            )
+
             cursor.execute(
                 f"""
                 INSERT INTO {quote_identifier(AUTH_MYSQL_TABLE_USERS)}
@@ -935,15 +1073,19 @@ def upsert_fixed_user(user_config: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     except Exception as exc:
-        safe_error_log(f"upsert_fixed_user failed username={username}", exc)
+        safe_error_log(
+            f"upsert_fixed_user failed username={username}",
+            exc,
+        )
+
         return {
             "username": username,
             "role": role,
             "created": False,
             "updated": False,
+            "password_updated": False,
             "error": str(exc),
         }
-
 
 def seed_fixed_users() -> Dict[str, Any]:
     results = [upsert_fixed_user(item) for item in AUTH_FIXED_USERS]
@@ -997,78 +1139,141 @@ def jwt_b64_decode(value: str) -> Any:
     raw = b64url_decode_bytes(value)
     return json.loads(raw.decode("utf-8"))
 
-
 def sign_jwt_message(message: str) -> str:
     if JWT_ALGORITHM != "HS256":
-        raise ValueError(f"unsupported JWT_ALGORITHM: {JWT_ALGORITHM}")
+        raise ValueError(
+            f"unsupported JWT_ALGORITHM: {JWT_ALGORITHM}"
+        )
+
+    secret_key = str(
+        JWT_SECRET_KEY or ""
+    )
+
+    if secret_key == "":
+        raise RuntimeError(
+            "JWT_SECRET_KEY is not configured"
+        )
 
     digest = hmac.new(
-        JWT_SECRET_KEY.encode("utf-8"),
+        secret_key.encode("utf-8"),
         message.encode("ascii"),
         hashlib.sha256,
     ).digest()
 
     return b64url_encode_bytes(digest)
 
-
 def create_access_token(
     user: Dict[str, Any],
     expire_minutes: Optional[int] = None,
     extra_claims: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    username = clean_text(user.get("username"))
-    role = clean_text(user.get("role"))
+    username = clean_text(
+        user.get("username")
+    )
+
+    role = clean_text(
+        user.get("role")
+    )
 
     if not username:
-        raise ValueError("username is required for JWT")
+        raise ValueError(
+            "username is required for JWT"
+        )
 
     if role not in AUTH_ROLES:
-        raise ValueError(f"invalid role for JWT: {role}")
+        raise ValueError(
+            f"invalid role for JWT: {role}"
+        )
+
+    effective_expire_minutes = int(
+        JWT_EXPIRE_MINUTES
+        if expire_minutes is None
+        else expire_minutes
+    )
+
+    if effective_expire_minutes <= 0:
+        raise ValueError(
+            "JWT expiration must be greater than zero"
+        )
 
     issued_at = now_utc()
-    expires_at = issued_at + timedelta(minutes=int(expire_minutes or JWT_EXPIRE_MINUTES))
+    expires_at = issued_at + timedelta(
+        minutes=effective_expire_minutes
+    )
 
     header = {
         "typ": "JWT",
         "alg": JWT_ALGORITHM,
     }
 
-    payload = {
+    payload: Dict[str, Any] = {
+        **dict(extra_claims or {}),
         "sub": username,
         "username": username,
         "role": role,
-        "display_name": clean_text(user.get("display_name"), username),
+        "display_name": clean_text(
+            user.get("display_name"),
+            username,
+        ),
         "iss": JWT_ISSUER,
         "aud": JWT_AUDIENCE,
         "iat": utc_timestamp(issued_at),
         "nbf": utc_timestamp(issued_at),
         "exp": utc_timestamp(expires_at),
         "token_type": "access",
-        **(extra_claims or {}),
     }
 
-    encoded_header = jwt_b64_encode(header)
-    encoded_payload = jwt_b64_encode(payload)
-    signing_input = f"{encoded_header}.{encoded_payload}"
-    signature = sign_jwt_message(signing_input)
-    token = f"{signing_input}.{signature}"
+    encoded_header = jwt_b64_encode(
+        header
+    )
+
+    encoded_payload = jwt_b64_encode(
+        payload
+    )
+
+    signing_input = (
+        f"{encoded_header}.{encoded_payload}"
+    )
+
+    signature = sign_jwt_message(
+        signing_input
+    )
+
+    token = (
+        f"{signing_input}.{signature}"
+    )
 
     return {
         "access_token": token,
         "token_type": AUTH_TOKEN_TYPE,
-        "expires_at": expires_at.isoformat(timespec="seconds"),
-        "expires_in": int((expires_at - issued_at).total_seconds()),
+        "expires_at": expires_at.isoformat(
+            timespec="seconds"
+        ),
+        "expires_in": int(
+            (
+                expires_at - issued_at
+            ).total_seconds()
+        ),
         "payload": payload,
     }
 
-
-def decode_access_token(token: str, verify_exp: bool = True) -> Dict[str, Any]:
+def decode_access_token(
+    token: str,
+    verify_exp: bool = True,
+) -> Dict[str, Any]:
     clean_token = clean_text(token)
 
     if not clean_token:
         return {
             "valid": False,
             "reason": "missing_token",
+            "payload": {},
+        }
+
+    if len(clean_token) > 8192:
+        return {
+            "valid": False,
+            "reason": "token_too_large",
             "payload": {},
         }
 
@@ -1083,65 +1288,157 @@ def decode_access_token(token: str, verify_exp: bool = True) -> Dict[str, Any]:
             }
 
         encoded_header, encoded_payload, signature = parts
-        signing_input = f"{encoded_header}.{encoded_payload}"
-        expected_signature = sign_jwt_message(signing_input)
 
-        if not hmac.compare_digest(signature, expected_signature):
+        signing_input = (
+            f"{encoded_header}.{encoded_payload}"
+        )
+
+        expected_signature = sign_jwt_message(
+            signing_input
+        )
+
+        if not hmac.compare_digest(
+            signature,
+            expected_signature,
+        ):
             return {
                 "valid": False,
                 "reason": "invalid_signature",
                 "payload": {},
             }
 
-        header = jwt_b64_decode(encoded_header)
-        payload = jwt_b64_decode(encoded_payload)
+        header = jwt_b64_decode(
+            encoded_header
+        )
+
+        payload = jwt_b64_decode(
+            encoded_payload
+        )
+
+        if not isinstance(header, dict):
+            return {
+                "valid": False,
+                "reason": "invalid_header",
+                "payload": {},
+            }
+
+        if not isinstance(payload, dict):
+            return {
+                "valid": False,
+                "reason": "invalid_payload",
+                "payload": {},
+            }
+
+        if header.get("typ") != "JWT":
+            return {
+                "valid": False,
+                "reason": "invalid_token_type_header",
+                "payload": {},
+            }
 
         if header.get("alg") != JWT_ALGORITHM:
             return {
                 "valid": False,
                 "reason": "invalid_algorithm",
-                "payload": payload,
+                "payload": {},
+            }
+
+        if payload.get("token_type") != "access":
+            return {
+                "valid": False,
+                "reason": "invalid_token_type",
+                "payload": {},
             }
 
         if payload.get("iss") != JWT_ISSUER:
             return {
                 "valid": False,
                 "reason": "invalid_issuer",
-                "payload": payload,
+                "payload": {},
             }
 
         if payload.get("aud") != JWT_AUDIENCE:
             return {
                 "valid": False,
                 "reason": "invalid_audience",
-                "payload": payload,
+                "payload": {},
             }
 
-        now_ts = utc_timestamp()
-        skew = JWT_CLOCK_SKEW_SECONDS
+        subject = clean_text(
+            payload.get("sub")
+        )
 
-        if verify_exp:
-            if int(payload.get("nbf", 0)) > now_ts + skew:
-                return {
-                    "valid": False,
-                    "reason": "token_not_active",
-                    "payload": payload,
-                }
+        username = clean_text(
+            payload.get("username")
+        )
 
-            if int(payload.get("exp", 0)) < now_ts - skew:
-                return {
-                    "valid": False,
-                    "reason": "token_expired",
-                    "payload": payload,
-                }
+        if (
+            not subject
+            or not username
+            or subject != username
+        ):
+            return {
+                "valid": False,
+                "reason": "invalid_subject",
+                "payload": {},
+            }
 
-        role = clean_text(payload.get("role"))
+        role = clean_text(
+            payload.get("role")
+        )
 
         if role not in AUTH_ROLES:
             return {
                 "valid": False,
                 "reason": "invalid_role",
-                "payload": payload,
+                "payload": {},
+            }
+
+        try:
+            issued_at = int(
+                payload.get("iat")
+            )
+
+            not_before = int(
+                payload.get("nbf")
+            )
+
+            expires_at = int(
+                payload.get("exp")
+            )
+
+        except Exception:
+            return {
+                "valid": False,
+                "reason": "invalid_time_claims",
+                "payload": {},
+            }
+
+        now_ts = utc_timestamp()
+        skew = max(
+            0,
+            JWT_CLOCK_SKEW_SECONDS,
+        )
+
+        if issued_at > now_ts + skew:
+            return {
+                "valid": False,
+                "reason": "invalid_issued_at",
+                "payload": {},
+            }
+
+        if not_before > now_ts + skew:
+            return {
+                "valid": False,
+                "reason": "token_not_active",
+                "payload": {},
+            }
+
+        if verify_exp and expires_at <= now_ts - skew:
+            return {
+                "valid": False,
+                "reason": "token_expired",
+                "payload": {},
             }
 
         return {
@@ -1155,24 +1452,36 @@ def decode_access_token(token: str, verify_exp: bool = True) -> Dict[str, Any]:
             "valid": False,
             "reason": "decode_error",
             "payload": {},
-            "error": str(exc),
+            "error": (
+                str(exc)
+                if getattr(config, "DEBUG", False)
+                else ""
+            ),
         }
 
-
-def extract_bearer_token(authorization_header: str) -> str:
-    header = clean_text(authorization_header)
+def extract_bearer_token(
+    authorization_header: str,
+) -> str:
+    header = clean_text(
+        authorization_header
+    )
 
     if not header:
         return ""
 
-    if header.lower().startswith(AUTH_TOKEN_PREFIX.lower()):
-        return header[len(AUTH_TOKEN_PREFIX):].strip()
+    token_prefix = clean_text(
+        AUTH_TOKEN_PREFIX,
+        "Bearer ",
+    )
 
-    if header.lower().startswith("bearer "):
-        return header[7:].strip()
+    if not header.lower().startswith(
+        token_prefix.lower()
+    ):
+        return ""
 
-    return header
-
+    return header[
+        len(token_prefix):
+    ].strip()
 
 def get_user_from_token(token: str, verify_db_active: bool = False) -> Dict[str, Any]:
     decoded = decode_access_token(token)
@@ -1247,18 +1556,31 @@ def get_user_from_authorization_header(
 # 8) LOGIN / ME / LOGOUT
 # ============================================================
 
-def authenticate_user(username: str, password: str) -> Dict[str, Any]:
-    clean_username = clean_text(username)
-    clean_password = clean_text(password)
+def authenticate_user(
+    username: str,
+    password: str,
+) -> Dict[str, Any]:
+    clean_username = clean_text(
+        username
+    )
 
-    if not clean_username or not clean_password:
+    raw_password = (
+        ""
+        if password is None
+        else str(password)
+    )
+
+    if not clean_username or raw_password == "":
         return make_auth_error(
             message="username and password are required.",
             error_type="InvalidCredentials",
             status_code=400,
         )
 
-    user = get_user_by_username(clean_username, include_password_hash=True)
+    user = get_user_by_username(
+        clean_username,
+        include_password_hash=True,
+    )
 
     if not user:
         return make_auth_error(
@@ -1267,23 +1589,49 @@ def authenticate_user(username: str, password: str) -> Dict[str, Any]:
             status_code=401,
         )
 
-    if not bool(int(user.get("is_active", 0) or 0)):
+    try:
+        is_active = bool(
+            int(
+                user.get(
+                    "is_active",
+                    0,
+                )
+                or 0
+            )
+        )
+    except Exception:
+        is_active = False
+
+    if not is_active:
         return make_auth_error(
             message="User is inactive.",
             error_type="UserInactive",
             status_code=403,
         )
 
-    if not verify_password(clean_password, clean_text(user.get("password_hash"))):
+    if not verify_password(
+        raw_password,
+        clean_text(
+            user.get("password_hash")
+        ),
+    ):
         return make_auth_error(
             message="Invalid username or password.",
             error_type="InvalidCredentials",
             status_code=401,
         )
 
-    safe_user = sanitize_user_row(user) or {}
-    token_payload = create_access_token(safe_user)
-    update_last_login(clean_username)
+    safe_user = sanitize_user_row(
+        user
+    ) or {}
+
+    token_payload = create_access_token(
+        safe_user
+    )
+
+    update_last_login(
+        clean_username
+    )
 
     return make_auth_response(
         success=True,
@@ -1300,7 +1648,6 @@ def authenticate_user(username: str, password: str) -> Dict[str, Any]:
             "username": safe_user.get("username"),
         },
     )
-
 
 def get_current_user(authorization_header: str, verify_db_active: bool = False) -> Dict[str, Any]:
     result = get_user_from_authorization_header(
@@ -1630,21 +1977,39 @@ def should_audit_request(
     if not AUDIT_ENABLED:
         return False
 
-    clean_method = normalize_method(method)
-    clean_action = clean_text(action)
+    clean_method = normalize_method(
+        method
+    )
+
+    clean_action = clean_text(
+        action
+    )
 
     if not clean_action:
         return False
 
-    if clean_action == "read_api" and clean_method == "GET" and not AUDIT_LOG_SUCCESS_READS:
-        if status_code is None or int(status_code) < 400:
-            return False
+    if (
+        clean_method == "GET"
+        and not AUDIT_LOG_SUCCESS_READS
+        and (
+            status_code is None
+            or int(status_code) < 400
+        )
+    ):
+        return False
 
-    if is_public_path(path, method) and clean_action not in {"login_success", "login_failed", "logout"}:
+    if (
+        is_public_path(path, method)
+        and clean_action
+        not in {
+            "login_success",
+            "login_failed",
+            "logout",
+        }
+    ):
         return False
 
     return True
-
 
 def write_audit_log(
     action: str,
@@ -1864,14 +2229,35 @@ def get_frontend_auth_contract() -> Dict[str, Any]:
 # ============================================================
 
 def test_mysql_connection() -> Dict[str, Any]:
+    driver_name = ""
+
     try:
-        with mysql_cursor(include_database=False, dictionary=True) as (_, cursor):
-            cursor.execute("SELECT 1 AS ok")
-            row = fetchone(cursor)
+        driver_name = get_mysql_driver()[0]
+
+        with mysql_cursor(
+            include_database=False,
+            dictionary=True,
+        ) as (_, cursor):
+            cursor.execute(
+                "SELECT 1 AS ok"
+            )
+
+            row = fetchone(
+                cursor
+            )
 
         return {
-            "connected": bool(row and int(row.get("ok", 0)) == 1),
-            "driver": get_mysql_driver()[0],
+            "connected": bool(
+                row
+                and int(
+                    row.get(
+                        "ok",
+                        0,
+                    )
+                )
+                == 1
+            ),
+            "driver": driver_name,
             "host": MYSQL_HOST,
             "port": MYSQL_PORT,
             "database": MYSQL_DATABASE,
@@ -1879,42 +2265,118 @@ def test_mysql_connection() -> Dict[str, Any]:
         }
 
     except Exception as exc:
+        safe_error_log(
+            "test_mysql_connection failed",
+            exc,
+        )
+
         return {
             "connected": False,
-            "driver": "",
-            "host": MYSQL_HOST,
-            "port": MYSQL_PORT,
-            "database": MYSQL_DATABASE,
-            "error": str(exc),
+            "driver": driver_name,
+            "host": MYSQL_HOST if getattr(config, "DEBUG", False) else "",
+            "port": MYSQL_PORT if getattr(config, "DEBUG", False) else None,
+            "database": MYSQL_DATABASE if getattr(config, "DEBUG", False) else "",
+            "error": (
+                str(exc)
+                if getattr(config, "DEBUG", False)
+                else "MySQL connection unavailable."
+            ),
         }
-
 
 def get_auth_status() -> Dict[str, Any]:
     mysql_status = test_mysql_connection()
 
+    fixed_usernames = [
+        clean_text(
+            item.get("username")
+        )
+        for item in AUTH_FIXED_USERS
+        if (
+            isinstance(item, dict)
+            and clean_text(
+                item.get("username")
+            )
+        )
+    ]
+
+    expected_fixed_user_count = len(
+        set(fixed_usernames)
+    )
+
     users_ready = False
     user_count = 0
+    storage_error = ""
 
     if mysql_status.get("connected"):
         try:
-            with mysql_cursor(include_database=True, dictionary=True) as (_, cursor):
+            with mysql_cursor(
+                include_database=True,
+                dictionary=True,
+            ) as (_, cursor):
                 cursor.execute(
                     f"""
                     SELECT COUNT(*) AS total
                     FROM {quote_identifier(AUTH_MYSQL_TABLE_USERS)}
+                    WHERE is_fixed = 1
+                      AND is_active = 1
                     """
                 )
-                row = fetchone(cursor) or {}
-                user_count = int(row.get("total", 0) or 0)
-                users_ready = user_count >= 3
-        except Exception:
+
+                row = fetchone(
+                    cursor
+                ) or {}
+
+                user_count = int(
+                    row.get(
+                        "total",
+                        0,
+                    )
+                    or 0
+                )
+
+                users_ready = bool(
+                    expected_fixed_user_count > 0
+                    and user_count
+                    >= expected_fixed_user_count
+                )
+
+        except Exception as exc:
+            safe_error_log(
+                "get_auth_status storage check failed",
+                exc,
+            )
+
             users_ready = False
 
+            storage_error = (
+                str(exc)
+                if getattr(config, "DEBUG", False)
+                else "Auth storage unavailable."
+            )
+
+    jwt_ready = bool(
+        str(JWT_SECRET_KEY or "")
+    )
+
+    ready = bool(
+        not AUTH_ENABLED
+        or (
+            mysql_status.get("connected")
+            and users_ready
+            and jwt_ready
+        )
+    )
+
     return make_auth_response(
-        success=True,
-        message="Auth status loaded.",
+        success=ready,
+        message=(
+            "Auth status loaded."
+            if ready
+            else "Auth service is not ready."
+        ),
         data={
             "enabled": AUTH_ENABLED,
+            "ready": ready,
             "mysql": mysql_status,
             "storage": {
                 "database": MYSQL_DATABASE,
@@ -1922,15 +2384,17 @@ def get_auth_status() -> Dict[str, Any]:
                 "audit_logs_table": AUTH_MYSQL_TABLE_AUDIT_LOGS,
                 "users_ready": users_ready,
                 "user_count": user_count,
+                "expected_fixed_user_count": expected_fixed_user_count,
                 "auto_create": AUTH_DB_AUTO_CREATE,
                 "auto_seed": AUTH_DB_AUTO_SEED,
+                "error": storage_error,
             },
             "jwt": {
                 "algorithm": JWT_ALGORITHM,
                 "expire_minutes": JWT_EXPIRE_MINUTES,
                 "issuer": JWT_ISSUER,
                 "audience": JWT_AUDIENCE,
-                "secret_configured": bool(JWT_SECRET_KEY),
+                "secret_configured": jwt_ready,
             },
             "password_hash": {
                 "scheme": PASSWORD_HASH_SCHEME,
@@ -1939,11 +2403,7 @@ def get_auth_status() -> Dict[str, Any]:
                 "pepper_configured": bool(PASSWORD_HASH_PEPPER),
             },
             "roles": list(AUTH_ROLES),
-            "fixed_usernames": [
-                clean_text(item.get("username"))
-                for item in AUTH_FIXED_USERS
-                if isinstance(item, dict)
-            ],
+            "fixed_usernames": fixed_usernames,
             "route_guard": {
                 "public_exact_paths": list(AUTH_PUBLIC_EXACT_PATHS),
                 "public_prefixes": list(AUTH_PUBLIC_PREFIXES),
@@ -1955,8 +2415,20 @@ def get_auth_status() -> Dict[str, Any]:
                 "action_rule_count": len(AUDIT_ACTION_PATH_RULES),
             },
         },
+        meta={
+            "status_code": 200 if ready else 503,
+        },
+        errors=(
+            []
+            if ready
+            else [
+                {
+                    "type": "AuthServiceNotReady",
+                    "message": "Authentication service is not ready.",
+                }
+            ]
+        ),
     )
-
 
 def run_auth_self_test() -> Dict[str, Any]:
     password = f"self-test-{secrets.token_hex(8)}"
@@ -2020,6 +2492,69 @@ def startup_auth() -> Dict[str, Any]:
                 "enabled": False,
             },
         )
+
+    if not str(JWT_SECRET_KEY or ""):
+        return make_auth_error(
+            message="JWT_SECRET_KEY is not configured.",
+            error_type="AuthConfigurationError",
+            status_code=500,
+            field="JWT_SECRET_KEY",
+        )
+
+    if JWT_ALGORITHM != "HS256":
+        return make_auth_error(
+            message="Unsupported JWT algorithm.",
+            error_type="AuthConfigurationError",
+            status_code=500,
+            data={
+                "algorithm": JWT_ALGORITHM,
+            },
+            field="JWT_ALGORITHM",
+        )
+
+    if JWT_EXPIRE_MINUTES <= 0:
+        return make_auth_error(
+            message="JWT_EXPIRE_MINUTES must be greater than zero.",
+            error_type="AuthConfigurationError",
+            status_code=500,
+            field="JWT_EXPIRE_MINUTES",
+        )
+
+    if AUTH_DB_AUTO_SEED:
+        if not AUTH_FIXED_USERS:
+            return make_auth_error(
+                message="AUTH_FIXED_USERS is empty while auto seed is enabled.",
+                error_type="AuthConfigurationError",
+                status_code=500,
+                field="AUTH_FIXED_USERS",
+            )
+
+        missing_password_users = [
+            clean_text(
+                item.get("username")
+            )
+            for item in AUTH_FIXED_USERS
+            if (
+                isinstance(item, dict)
+                and str(
+                    item.get("password")
+                    if item.get("password") is not None
+                    else ""
+                )
+                == ""
+            )
+        ]
+
+        if missing_password_users:
+            return make_auth_error(
+                message="Fixed-user passwords are not configured.",
+                error_type="AuthConfigurationError",
+                status_code=500,
+                data={
+                    "usernames": missing_password_users,
+                },
+                field="AUTH_FIXED_USERS",
+            )
 
     return init_auth_storage()
 

@@ -171,8 +171,21 @@ def error_payload(
         field=field,
     )
 
+def exception_payload(
+    exc: Exception,
+    message: str = "Auth route failed.",
+    status_code: int = 500,
+) -> Dict[str, Any]:
+    debug_enabled = bool(getattr(config, "DEBUG", False))
 
-def exception_payload(exc: Exception, message: str = "Auth route failed.", status_code: int = 500) -> Dict[str, Any]:
+    error_item: Dict[str, Any] = {
+        "type": exc.__class__.__name__,
+        "message": str(exc) if debug_enabled else message,
+    }
+
+    if debug_enabled:
+        error_item["traceback"] = traceback.format_exc()
+
     return auth_service.make_auth_response(
         success=False,
         message=message,
@@ -181,15 +194,8 @@ def exception_payload(exc: Exception, message: str = "Auth route failed.", statu
             "status_code": status_code,
             "error_type": exc.__class__.__name__,
         },
-        errors=[
-            {
-                "type": exc.__class__.__name__,
-                "message": str(exc),
-                "traceback": traceback.format_exc() if getattr(config, "DEBUG", False) else "",
-            }
-        ],
+        errors=[error_item],
     )
-
 
 # ============================================================
 # 4) REQUEST HELPERS
@@ -318,16 +324,20 @@ def get_authenticated_user_from_request(
     authorization: Optional[str] = None,
     verify_db_active: bool = False,
 ) -> Dict[str, Any]:
-    state_user = get_state_user(request)
+    if not verify_db_active:
+        state_user = get_state_user(request)
 
-    if state_user:
-        return {
-            "authenticated": True,
-            "reason": "request_state_user",
-            "user": state_user,
-        }
+        if state_user:
+            return {
+                "authenticated": True,
+                "reason": "request_state_user",
+                "user": state_user,
+            }
 
-    header = get_authorization_header(authorization, request)
+    header = get_authorization_header(
+        authorization=authorization,
+        request=request,
+    )
 
     return auth_service.get_user_from_authorization_header(
         authorization_header=header,
@@ -368,16 +378,22 @@ def require_role_for_route(
     allowed_roles: List[str],
     verify_db_active: bool = False,
 ) -> Dict[str, Any]:
+    effective_verify_db_active = bool(
+        verify_db_active
+        or getattr(config, "AUTH_ENABLED", True)
+    )
+
     auth_result = require_authenticated_user(
         request=request,
         authorization=authorization,
-        verify_db_active=verify_db_active,
+        verify_db_active=effective_verify_db_active,
     )
 
     if not auth_result.get("allowed"):
         return auth_result
 
     user = auth_result.get("user") or {}
+
     role_result = auth_service.require_roles(
         user=user,
         allowed_roles=allowed_roles,
@@ -394,11 +410,10 @@ def require_role_for_route(
     return {
         "allowed": False,
         "user": user,
-        "reason": "role_forbidden",
+        "reason": role_result.get("reason", "role_forbidden"),
         "status_code": 403,
         "allowed_roles": allowed_roles,
     }
-
 
 def forbidden_response(reason: str = "forbidden", status_code: int = 403) -> JSONResponse:
     return auth_json_response(
@@ -451,22 +466,18 @@ def ensure_auth_storage_initialized(force: bool = False) -> Dict[str, Any]:
 # ============================================================
 
 @router.get("/status")
-async def auth_status(
-    init: bool = Query(default=False, description="Initialize auth DB/table/user seed before returning status."),
-) -> JSONResponse:
+async def auth_status() -> JSONResponse:
     """
     Public auth status endpoint
 
     ใช้สำหรับ:
     - frontend ตรวจว่า auth เปิดอยู่ไหม
     - backend ตรวจ MySQL auth config
-    - ไม่คืน password / secret / hash
+    - ไม่สร้าง Database, Table หรือ Fixed User
+    - ไม่คืน Password, Secret หรือ Password Hash
     """
 
     try:
-        if init:
-            ensure_auth_storage_initialized(force=False)
-
         payload = auth_service.get_auth_status()
 
         return auth_json_response(
@@ -476,12 +487,19 @@ async def auth_status(
         )
 
     except Exception as exc:
-        auth_service.safe_error_log("auth_status route failed", exc)
-        return auth_json_response(
-            exception_payload(exc, "Auth status failed.", status_code=500),
-            default_error=500,
+        auth_service.safe_error_log(
+            "auth_status route failed",
+            exc,
         )
 
+        return auth_json_response(
+            exception_payload(
+                exc,
+                "Auth status failed.",
+                status_code=500,
+            ),
+            default_error=500,
+        )
 
 @router.get("/contract")
 async def auth_contract() -> JSONResponse:
@@ -511,43 +529,95 @@ async def auth_contract() -> JSONResponse:
             default_error=500,
         )
 
-
 @router.post("/login")
 async def login(
     request: Request,
     body: Optional[LoginRequest] = None,
 ) -> JSONResponse:
     """
-    Login ด้วย fixed username/password
+    Login ด้วย Fixed Username และ Password
 
     Body:
         {
           "username": "admin",
-          "password": "..."
-        }
-
-    Response:
-        {
-          "access_token": "...",
-          "token_type": "Bearer",
-          "expires_at": "...",
-          "user": {
-            "username": "...",
-            "role": "admin|user|viewer"
-          }
+          "password": "...",
+          "remember": false
         }
     """
 
-    login_payload = await extract_login_payload(request, body)
-    username = auth_service.clean_text(login_payload.get("username"))
-    password = auth_service.clean_text(login_payload.get("password"))
+    login_payload = await extract_login_payload(
+        request=request,
+        body=body,
+    )
+
+    username = auth_service.clean_text(
+        login_payload.get("username")
+    )
+
+    password = str(
+        login_payload.get("password") or ""
+    )
 
     client_ip = get_client_ip(request)
     user_agent = get_user_agent(request)
     request_id = get_request_id(request)
 
+    if not username or not password:
+        result = error_payload(
+            message="username and password are required.",
+            error_type="InvalidCredentials",
+            status_code=400,
+        )
+
+        auth_service.write_login_audit(
+            username=username,
+            success=False,
+            role="",
+            method=request.method,
+            path=str(request.url.path),
+            status_code=400,
+            ip_address=client_ip,
+            user_agent=user_agent,
+            request_id=request_id,
+            reason="username and password are required.",
+        )
+
+        return auth_json_response(
+            result,
+            default_error=400,
+        )
+
     try:
-        ensure_auth_storage_initialized(force=False)
+        storage_result = ensure_auth_storage_initialized(
+            force=False
+        )
+
+        if not storage_result.get("success"):
+            auth_service.safe_error_log(
+                "login blocked because auth storage is unavailable"
+            )
+
+            auth_service.write_login_audit(
+                username=username,
+                success=False,
+                role="",
+                method=request.method,
+                path=str(request.url.path),
+                status_code=503,
+                ip_address=client_ip,
+                user_agent=user_agent,
+                request_id=request_id,
+                reason="auth_storage_unavailable",
+            )
+
+            return auth_json_response(
+                error_payload(
+                    message="Authentication service unavailable.",
+                    error_type="AuthStorageUnavailable",
+                    status_code=503,
+                ),
+                default_error=503,
+            )
 
         result = auth_service.authenticate_user(
             username=username,
@@ -560,14 +630,16 @@ async def login(
             default_error=401,
         )
 
-        user = {}
+        user: Dict[str, Any] = {}
 
         if result.get("success"):
-            user = (
-                result.get("data", {}).get("user", {})
-                if isinstance(result.get("data"), dict)
-                else {}
-            )
+            result_data = result.get("data")
+
+            if isinstance(result_data, dict):
+                result_user = result_data.get("user")
+
+                if isinstance(result_user, dict):
+                    user = result_user
 
         auth_service.write_login_audit(
             username=username,
@@ -579,7 +651,7 @@ async def login(
             ip_address=client_ip,
             user_agent=user_agent,
             request_id=request_id,
-            reason=result.get("message", ""),
+            reason=str(result.get("message") or ""),
         )
 
         return auth_json_response(
@@ -589,7 +661,10 @@ async def login(
         )
 
     except Exception as exc:
-        auth_service.safe_error_log("login route failed", exc)
+        auth_service.safe_error_log(
+            "login route failed",
+            exc,
+        )
 
         auth_service.write_login_audit(
             username=username,
@@ -601,14 +676,17 @@ async def login(
             ip_address=client_ip,
             user_agent=user_agent,
             request_id=request_id,
-            reason=str(exc),
+            reason=exc.__class__.__name__,
         )
 
         return auth_json_response(
-            exception_payload(exc, "Login failed.", status_code=500),
+            exception_payload(
+                exc,
+                "Login failed.",
+                status_code=500,
+            ),
             default_error=500,
         )
-
 
 # ============================================================
 # 7) AUTHENTICATED ROUTES
@@ -617,16 +695,20 @@ async def login(
 @router.get("/me")
 async def me(
     request: Request,
-    authorization: Optional[str] = Header(default=None, alias="Authorization"),
-    verify_db_active: bool = Query(default=False),
+    authorization: Optional[str] = Header(
+        default=None,
+        alias="Authorization",
+    ),
+    verify_db_active: bool = Query(default=True),
 ) -> JSONResponse:
     """
-    คืน current user จาก JWT
+    คืน Current User จาก JWT
 
-    ใช้โดย frontend route guard:
-    - ตรวจ token ยัง valid ไหม
-    - อ่าน role
-    - อ่าน frontend contract
+    ใช้โดย Frontend Route Guard:
+    - ตรวจว่า Token ยัง Valid
+    - ตรวจว่า User ใน Database ยัง Active
+    - อ่าน Role
+    - อ่าน Frontend Contract
     """
 
     try:
@@ -663,43 +745,71 @@ async def me(
             message="Current user loaded.",
             meta={
                 "reason": auth_result.get("reason"),
+                "db_active_verified": verify_db_active,
             },
         )
 
         return auth_json_response(payload)
 
     except Exception as exc:
-        auth_service.safe_error_log("me route failed", exc)
-        return auth_json_response(
-            exception_payload(exc, "Current user failed.", status_code=500),
-            default_error=500,
+        auth_service.safe_error_log(
+            "me route failed",
+            exc,
         )
 
+        return auth_json_response(
+            exception_payload(
+                exc,
+                "Current user failed.",
+                status_code=500,
+            ),
+            default_error=500,
+        )
 
 @router.post("/logout")
 async def logout(
     request: Request,
     body: Optional[LogoutRequest] = None,
-    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+    authorization: Optional[str] = Header(
+        default=None,
+        alias="Authorization",
+    ),
 ) -> JSONResponse:
     """
-    Logout แบบ stateless JWT
+    Logout แบบ Stateless JWT
 
     หมายเหตุ:
-    - ไม่มี session table
-    - ไม่มี token blacklist
-    - backend แค่เขียน audit log
-    - frontend ต้องลบ token เอง
+    - ไม่มี Session Table
+    - ไม่มี Token Blacklist
+    - Backend เขียน Audit Log
+    - Frontend ต้องลบ Token ตาม client_should_clear_token
     """
 
     try:
-        auth_result = get_authenticated_user_from_request(
+        auth_result = require_authenticated_user(
             request=request,
             authorization=authorization,
-            verify_db_active=False,
+            verify_db_active=True,
         )
 
-        user = auth_result.get("user") if auth_result.get("authenticated") else None
+        if not auth_result.get("allowed"):
+            return auth_json_response(
+                error_payload(
+                    message="Not authenticated.",
+                    error_type="NotAuthenticated",
+                    status_code=401,
+                    data={
+                        "authenticated": False,
+                        "reason": auth_result.get(
+                            "reason",
+                            "not_authenticated",
+                        ),
+                    },
+                ),
+                default_error=401,
+            )
+
+        user = auth_result.get("user") or {}
 
         result = auth_service.logout_user(
             user=user,
@@ -712,18 +822,38 @@ async def logout(
         )
 
         if isinstance(result.get("data"), dict):
-            result["data"]["client_should_clear_token"] = True
-            result["data"]["reason"] = getattr(body, "reason", "") if body else ""
+            result["data"]["client_should_clear_token"] = bool(
+                getattr(
+                    body,
+                    "clear_client_token",
+                    True,
+                )
+            )
+
+            result["data"]["reason"] = auth_service.clean_text(
+                getattr(
+                    body,
+                    "reason",
+                    "",
+                )
+            )
 
         return auth_json_response(result)
 
     except Exception as exc:
-        auth_service.safe_error_log("logout route failed", exc)
-        return auth_json_response(
-            exception_payload(exc, "Logout failed.", status_code=500),
-            default_error=500,
+        auth_service.safe_error_log(
+            "logout route failed",
+            exc,
         )
 
+        return auth_json_response(
+            exception_payload(
+                exc,
+                "Logout failed.",
+                status_code=500,
+            ),
+            default_error=500,
+        )
 
 # ============================================================
 # 8) ADMIN AUTH MANAGEMENT ROUTES

@@ -50,16 +50,12 @@ Schema ที่รองรับ:
 """
 
 from __future__ import annotations
-try:
-    import bootstrap
-    BOOTSTRAP_LOADED = True
-except Exception as e:
-    bootstrap = None
-    BOOTSTRAP_LOADED = False
-    BOOTSTRAP_ERROR = str(e)
+
 from dataclasses import asdict, dataclass, field as dc_field
 from datetime import datetime
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple, Union
+
 
 from config import (
     APP_SHORT_NAME,
@@ -74,8 +70,14 @@ from config import (
     FILTER_LOGICAL_OPERATORS,
     PACKAGE_COMPONENTS,
     PACKAGE_SECURITY_OPTIONS,
+    PACKAGE_DEFAULT_EXPIRE_DAYS,
+    PACKAGE_MAX_EXPIRE_DAYS,
     DATA_QUALITY_SEVERITIES,
     DATA_QUALITY_CATEGORIES,
+    PREDICTION_REQUIRED_COLUMNS,
+    PREDICTION_SUPPORTED_COLUMNS,
+    ENTITY_REQUIRED_COLUMNS,
+    ENTITY_SUPPORTED_COLUMNS,
 )
 
 
@@ -2440,63 +2442,33 @@ FLOOD_INPUT_SCHEMA.update(
     {
         "prediction_latest": SheetSchema(
             key="prediction_latest",
-            display_name="predict_*.xlsx",
-            description="ไฟล์ prediction ล่าสุด ใช้สร้าง prediction latest/map/location-debug/risk-distribution",
-            required_columns=[
-                "station_id",
-                "base_date",
-                "target_date",
-                "forecast_horizon_day",
-            ],
+            display_name="predict_YYYY_MM_DD.xlsx",
+            description=(
+                "ไฟล์ prediction ล่าสุด ใช้สร้าง "
+                "prediction latest/map/location-debug/risk-distribution"
+            ),
+            required_columns=list(PREDICTION_REQUIRED_COLUMNS),
             optional_columns=[
-                "station_name",
-                "station_code",
-                "matched_station_id",
-                "matched_station_code",
-                "province",
-                "province_model",
-                "warning_level",
-                "warning_level_predict",
-                "risk_level",
-                "predicted_level_m",
-                "latest_value",
-                "latest_unit",
-                "percent_to_bank",
-                "from_bank_m",
-                "latitude",
-                "longitude",
-                "map_ready",
-                "focus_level",
-                "focus_fallback",
-                "focus_fallback_reason",
+                column
+                for column in PREDICTION_SUPPORTED_COLUMNS
+                if column not in set(PREDICTION_REQUIRED_COLUMNS)
             ],
             source_type="excel",
         ),
         "uploaded_entity": SheetSchema(
             key="uploaded_entity",
-            display_name="uploaded_entity.csv",
-            description="ไฟล์ uploaded entity overlay จากผู้ใช้ ใช้เฉพาะ displayable records สำหรับ public map",
-            required_columns=[
-                "entity_id",
-                "entity_type",
-                "entity_name_th",
-                "province_name_th",
-                "latitude",
-                "longitude",
-            ],
+            display_name="uploaded_entity.csv/.xlsx/.xls",
+            description=(
+                "ไฟล์ uploaded entity overlay จากผู้ใช้ "
+                "ใช้เฉพาะ displayable records สำหรับ public map"
+            ),
+            required_columns=list(ENTITY_REQUIRED_COLUMNS),
             optional_columns=[
-                "upload_id",
-                "entity_name_en",
-                "province",
-                "risk_group",
-                "risk_level",
-                "source_type",
-                "map_ready",
-                "has_location",
-                "is_displayable",
-                "validation_reasons",
+                column
+                for column in ENTITY_SUPPORTED_COLUMNS
+                if column not in set(ENTITY_REQUIRED_COLUMNS)
             ],
-            source_type="csv_upload",
+            source_type="tabular_upload",
         ),
     }
 )
@@ -4461,13 +4433,15 @@ def get_fields_by_group(group: str) -> List[Dict[str, Any]]:
     ]
 
 
-def get_filterable_fields(target: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_filterable_fields(
+    target: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """
-    คืน field ที่ filter ได้
+    คืน field ที่ filter ได้ตาม target
 
     Args:
         target:
-            company / policy / linkage / flood / prediction / entity / map / dashboard
+            target ของ dataset หรือ runtime view
     """
 
     fields = [
@@ -4476,133 +4450,200 @@ def get_filterable_fields(target: Optional[str] = None) -> List[Dict[str, Any]]:
         if field_def.filterable
     ]
 
-    if target:
-        target_groups = {
-            "company": {
-                "identity",
-                "company",
-                "company_profile",
-                "financial",
-                "location",
-                "source_flag",
-                "policy_summary",
-                "linkage_summary",
-                "flood",
-                "data_quality",
-            },
-            "policy": {
-                "identity",
-                "company",
-                "policy",
-                "policy_financial",
-                "policy_summary",
-            },
-            "linkage": {
-                "identity",
-                "company",
-                "linkage",
-                "linkage_summary",
-                "policy_summary",
-                "flood",
-            },
-            "director": {
-                "linkage",
-                "linkage_summary",
-            },
-            "flood": {
-                "location",
-                "flood",
-                "spatial",
-                "data_source",
-            },
-            "flood_rainfall_latest": {
-                "location",
-                "flood",
-                "data_source",
-                "source_flag",
-            },
-            "flood_waterlevel_latest": {
-                "location",
-                "flood",
-                "data_source",
-                "source_flag",
-            },
-            "flood_dam_latest": {
-                "location",
-                "flood",
-                "data_source",
-                "source_flag",
-            },
-            "flood_prediction_latest": {
-                "prediction",
-                "flood",
-                "location",
-                "map",
-                "data_source",
-                "source_flag",
-            },
-            "flood_prediction_map": {
-                "prediction",
-                "flood",
-                "location",
-                "map",
-                "data_source",
-                "source_flag",
-            },
-            "uploaded_entity_latest": {
-                "entity",
-                "location",
-                "map",
-                "source_flag",
-            },
-            "map_layers": {
-                "map",
-                "flood",
-                "prediction",
-                "entity",
-                "location",
-                "source_flag",
-            },
-            "dashboard_province_insights": {
-                "dashboard",
-                "flood",
-                "prediction",
-                "location",
-            },
-            "map": {
-                "map",
-                "location",
-                "flood",
-                "prediction",
-                "entity",
-                "source_flag",
-            },
-            "dashboard": {
-                "dashboard",
-                "flood",
-                "prediction",
-                "location",
-                "data_quality",
-            },
-            "data_quality": {
-                "data_quality",
-                "cache",
-                "data_source",
-            },
-            "cache_registry": {
-                "cache",
-            },
-        }.get(target, set())
+    target_key = str(target or "").strip().lower()
 
-        if target_groups:
-            fields = [
-                field_def
-                for field_def in fields
-                if field_def.group in target_groups
-            ]
+    if not target_key:
+        return [
+            field_definition_to_dict(field_def)
+            for field_def in fields
+        ]
 
-    return [field_definition_to_dict(field_def) for field_def in fields]
+    target_groups: Dict[str, set[str]] = {
+        "company": {
+            "identity",
+            "company",
+            "company_profile",
+            "financial",
+            "location",
+            "source_flag",
+            "policy_summary",
+            "linkage_summary",
+            "flood",
+            "data_quality",
+        },
+        "policy": {
+            "identity",
+            "company",
+            "policy",
+            "policy_financial",
+            "policy_summary",
+        },
+        "linkage": {
+            "identity",
+            "company",
+            "linkage",
+            "linkage_summary",
+            "policy_summary",
+            "flood",
+        },
+        "director": {
+            "linkage",
+            "linkage_summary",
+        },
+        "flood": {
+            "location",
+            "flood",
+            "spatial",
+            "data_source",
+            "source_flag",
+        },
+        "spatial": {
+            "identity",
+            "company",
+            "location",
+            "flood",
+            "spatial",
+            "source_flag",
+        },
+        "flood_rainfall_latest": {
+            "location",
+            "flood",
+            "data_source",
+            "source_flag",
+        },
+        "flood_waterlevel_latest": {
+            "location",
+            "flood",
+            "data_source",
+            "source_flag",
+        },
+        "flood_dam_latest": {
+            "location",
+            "flood",
+            "data_source",
+            "source_flag",
+        },
+        "flood_prediction_latest": {
+            "prediction",
+            "flood",
+            "location",
+            "map",
+            "data_source",
+            "source_flag",
+        },
+        "flood_prediction_map": {
+            "prediction",
+            "flood",
+            "location",
+            "map",
+            "data_source",
+            "source_flag",
+        },
+        "prediction_map_view": {
+            "prediction",
+            "flood",
+            "location",
+            "map",
+            "data_source",
+            "source_flag",
+        },
+        "uploaded_entity_latest": {
+            "entity",
+            "location",
+            "map",
+            "source_flag",
+        },
+        "entity_overlay_view": {
+            "entity",
+            "location",
+            "map",
+            "source_flag",
+        },
+        "map_layers": {
+            "map",
+            "flood",
+            "prediction",
+            "entity",
+            "location",
+            "source_flag",
+        },
+        "map": {
+            "map",
+            "location",
+            "flood",
+            "prediction",
+            "entity",
+            "source_flag",
+        },
+        "dashboard_province_insights": {
+            "dashboard",
+            "flood",
+            "prediction",
+            "location",
+        },
+        "province_insight_view": {
+            "dashboard",
+            "flood",
+            "prediction",
+            "location",
+        },
+        "dashboard": {
+            "dashboard",
+            "flood",
+            "prediction",
+            "location",
+            "data_quality",
+            "policy_summary",
+            "linkage_summary",
+        },
+        "flood_dashboard_view": {
+            "dashboard",
+            "flood",
+            "prediction",
+            "location",
+            "data_quality",
+        },
+        "data_quality": {
+            "data_quality",
+            "cache",
+            "data_source",
+            "general",
+        },
+        "package": {
+            "identity",
+            "company",
+            "company_profile",
+            "financial",
+            "location",
+            "source_flag",
+            "policy",
+            "policy_financial",
+            "policy_summary",
+            "linkage",
+            "linkage_summary",
+            "flood",
+            "spatial",
+            "prediction",
+            "entity",
+            "map",
+            "dashboard",
+            "data_quality",
+        },
+        "cache_registry": {
+            "cache",
+        },
+    }
 
+    allowed_groups = target_groups.get(target_key)
+
+    if allowed_groups is None:
+        return []
+
+    return [
+        field_definition_to_dict(field_def)
+        for field_def in fields
+        if field_def.group in allowed_groups
+    ]
 
 def get_searchable_fields(target: Optional[str] = None) -> List[str]:
     """
@@ -4733,12 +4774,11 @@ def validate_required_columns(
         "required_columns": list(required_columns),
     }
 
-def validate_filter_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+def validate_filter_payload(
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
     """
-    validate filter payload แบบเบื้องต้น
-
-    ไม่ apply filter จริง
-    แค่ตรวจ target/operator/field ตาม final schema contract
+    ตรวจ Filter Payload ตาม Field Dictionary และ Runtime Target
     """
 
     errors: List[Dict[str, Any]] = []
@@ -4756,37 +4796,82 @@ def validate_filter_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             "warnings": [],
         }
 
-    target = payload.get("target", "company")
+    target = str(
+        payload.get("target", "company")
+        or "company"
+    ).strip().lower()
 
     if target not in RUNTIME_FILTER_TARGETS:
         errors.append(
             {
                 "code": "invalid_filter_target",
                 "message": f"target ไม่ถูกต้อง: {target}",
-                "allowed_targets": RUNTIME_FILTER_TARGETS,
+                "allowed_targets": list(RUNTIME_FILTER_TARGETS),
             }
         )
 
+    allowed_fields = {
+        field_item["name"]
+        for field_item in get_filterable_fields(target)
+    }
+
     filters = payload.get("filters", {})
-    if filters and not isinstance(filters, dict):
+
+    if not isinstance(filters, dict):
         errors.append(
             {
                 "code": "invalid_filters",
                 "message": "filters ต้องเป็น object",
             }
         )
+    else:
+        for raw_field_name in filters.keys():
+            field_name = str(raw_field_name or "").strip()
+            base_field = field_name
 
-    if isinstance(filters, dict):
-        for field_name in filters.keys():
-            base_field = str(field_name)
-            if base_field.endswith("_min") or base_field.endswith("_max"):
+            if (
+                base_field.endswith("_min")
+                or base_field.endswith("_max")
+            ):
                 base_field = base_field[:-4]
 
-            if base_field not in FIELD_DEFINITIONS:
-                warnings.append(
+            field_definition = FIELD_DEFINITIONS.get(base_field)
+
+            if field_definition is None:
+                errors.append(
                     {
                         "code": "unknown_filter_field",
-                        "message": f"ไม่พบ field ใน dictionary: {base_field}",
+                        "message": (
+                            "ไม่พบ field ใน dictionary: "
+                            f"{base_field}"
+                        ),
+                        "field": field_name,
+                    }
+                )
+                continue
+
+            if not field_definition.filterable:
+                errors.append(
+                    {
+                        "code": "field_not_filterable",
+                        "message": (
+                            f"field ไม่รองรับ filter: {base_field}"
+                        ),
+                        "field": field_name,
+                    }
+                )
+                continue
+
+            if allowed_fields and base_field not in allowed_fields:
+                errors.append(
+                    {
+                        "code": "field_not_allowed_for_target",
+                        "message": (
+                            f"field {base_field} "
+                            f"ไม่รองรับ target {target}"
+                        ),
+                        "field": field_name,
+                        "target": target,
                     }
                 )
 
@@ -4801,51 +4886,161 @@ def validate_filter_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
                 }
             )
         else:
-            logic = advanced.get("logic", "AND")
+            logic = str(
+                advanced.get("logic", "AND")
+                or "AND"
+            ).strip().upper()
 
             if logic not in FILTER_LOGICAL_OPERATORS:
                 errors.append(
                     {
                         "code": "invalid_filter_logic",
-                        "message": f"logical operator ไม่ถูกต้อง: {logic}",
+                        "message": (
+                            "logical operator ไม่ถูกต้อง: "
+                            f"{logic}"
+                        ),
+                        "allowed_operators": list(
+                            FILTER_LOGICAL_OPERATORS
+                        ),
                     }
                 )
 
-            for condition in advanced.get("conditions", []):
+            conditions = advanced.get(
+                "conditions",
+                [],
+            )
+
+            if not isinstance(conditions, list):
+                errors.append(
+                    {
+                        "code": "invalid_filter_conditions",
+                        "message": "conditions ต้องเป็น list",
+                    }
+                )
+                conditions = []
+
+            for index, condition in enumerate(conditions):
                 if not isinstance(condition, dict):
                     errors.append(
                         {
                             "code": "invalid_filter_condition",
                             "message": "condition ต้องเป็น object",
+                            "index": index,
                         }
                     )
                     continue
 
-                field_name = condition.get("field")
-                operator = condition.get("operator") or condition.get("op")
+                field_name = str(
+                    condition.get("field")
+                    or ""
+                ).strip()
+
+                operator = str(
+                    condition.get("operator")
+                    or condition.get("op")
+                    or ""
+                ).strip()
 
                 if not field_name:
                     errors.append(
                         {
                             "code": "filter_field_missing",
-                            "message": "filter condition ไม่มี field",
+                            "message": (
+                                "filter condition ไม่มี field"
+                            ),
+                            "index": index,
                         }
                     )
                     continue
 
-                if field_name not in FIELD_DEFINITIONS:
-                    warnings.append(
+                field_definition = FIELD_DEFINITIONS.get(
+                    field_name
+                )
+
+                if field_definition is None:
+                    errors.append(
                         {
                             "code": "unknown_filter_field",
-                            "message": f"ไม่พบ field ใน dictionary: {field_name}",
+                            "message": (
+                                "ไม่พบ field ใน dictionary: "
+                                f"{field_name}"
+                            ),
+                            "field": field_name,
+                            "index": index,
+                        }
+                    )
+                elif not field_definition.filterable:
+                    errors.append(
+                        {
+                            "code": "field_not_filterable",
+                            "message": (
+                                "field ไม่รองรับ filter: "
+                                f"{field_name}"
+                            ),
+                            "field": field_name,
+                            "index": index,
+                        }
+                    )
+                elif (
+                    allowed_fields
+                    and field_name not in allowed_fields
+                ):
+                    errors.append(
+                        {
+                            "code": "field_not_allowed_for_target",
+                            "message": (
+                                f"field {field_name} "
+                                f"ไม่รองรับ target {target}"
+                            ),
+                            "field": field_name,
+                            "target": target,
+                            "index": index,
                         }
                     )
 
-                if operator and operator not in FILTER_OPERATORS:
+                if not operator:
+                    errors.append(
+                        {
+                            "code": "filter_operator_missing",
+                            "message": (
+                                "filter condition ไม่มี operator"
+                            ),
+                            "field": field_name,
+                            "index": index,
+                        }
+                    )
+                elif operator not in FILTER_OPERATORS:
                     errors.append(
                         {
                             "code": "invalid_filter_operator",
-                            "message": f"operator ไม่ถูกต้อง: {operator}",
+                            "message": (
+                                "operator ไม่ถูกต้อง: "
+                                f"{operator}"
+                            ),
+                            "field": field_name,
+                            "index": index,
+                            "allowed_operators": list(
+                                FILTER_OPERATORS
+                            ),
+                        }
+                    )
+
+                if (
+                    operator
+                    not in {
+                        "is_empty",
+                        "is_not_empty",
+                    }
+                    and "value" not in condition
+                ):
+                    errors.append(
+                        {
+                            "code": "filter_value_missing",
+                            "message": (
+                                "filter condition ไม่มี value"
+                            ),
+                            "field": field_name,
+                            "index": index,
                         }
                     )
 
@@ -4855,15 +5050,32 @@ def validate_filter_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         "warnings": warnings,
     }
 
-def validate_package_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+def validate_package_request(
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
     """
-    validate package request
+    Validate Package Request ตาม Package Contract กลาง
     """
 
     errors: List[Dict[str, Any]] = []
     warnings: List[Dict[str, Any]] = []
 
-    package_name = str(payload.get("package_name", "")).strip()
+    if not isinstance(payload, dict):
+        return {
+            "valid": False,
+            "errors": [
+                {
+                    "code": "invalid_package_payload",
+                    "message": "payload ต้องเป็น object",
+                }
+            ],
+            "warnings": [],
+        }
+
+    package_name = str(
+        payload.get("package_name", "")
+        or ""
+    ).strip()
 
     if not package_name:
         errors.append(
@@ -4873,7 +5085,10 @@ def validate_package_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
-    components = payload.get("components", PACKAGE_COMPONENTS)
+    components = payload.get(
+        "components",
+        list(PACKAGE_COMPONENTS),
+    )
 
     if not isinstance(components, list):
         errors.append(
@@ -4883,42 +5098,146 @@ def validate_package_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
     else:
-        unknown_components = [
-            component
+        normalized_components = [
+            str(component or "").strip()
             for component in components
-            if component not in PACKAGE_COMPONENTS
+            if str(component or "").strip()
         ]
 
-        if unknown_components:
-            warnings.append(
+        if not normalized_components:
+            errors.append(
                 {
-                    "code": "unknown_package_components",
-                    "message": "พบ component ที่ไม่รู้จัก",
-                    "components": unknown_components,
+                    "code": "package_components_required",
+                    "message": (
+                        "ต้องเลือก package component "
+                        "อย่างน้อย 1 รายการ"
+                    ),
                 }
             )
 
-    security = payload.get("security", {})
+        unknown_components = sorted(
+            {
+                component
+                for component in normalized_components
+                if component not in PACKAGE_COMPONENTS
+            }
+        )
 
-    if security and not isinstance(security, dict):
+        if unknown_components:
+            errors.append(
+                {
+                    "code": "unknown_package_components",
+                    "message": (
+                        "พบ package component ที่ไม่รองรับ"
+                    ),
+                    "components": unknown_components,
+                    "allowed_components": list(
+                        PACKAGE_COMPONENTS
+                    ),
+                }
+            )
+
+        duplicate_components = sorted(
+            {
+                component
+                for component in normalized_components
+                if normalized_components.count(component) > 1
+            }
+        )
+
+        if duplicate_components:
+            warnings.append(
+                {
+                    "code": "duplicate_package_components",
+                    "message": (
+                        "พบ package component ซ้ำ"
+                    ),
+                    "components": duplicate_components,
+                }
+            )
+
+    security = payload.get(
+        "security",
+        dict(PACKAGE_SECURITY_OPTIONS),
+    )
+
+    if not isinstance(security, dict):
         errors.append(
             {
                 "code": "package_security_invalid",
                 "message": "security ต้องเป็น object",
             }
         )
+    else:
+        unknown_security_keys = sorted(
+            {
+                str(key)
+                for key in security.keys()
+                if key not in PACKAGE_SECURITY_OPTIONS
+            }
+        )
 
-    expire_days = payload.get("expire_days", 30)
+        if unknown_security_keys:
+            errors.append(
+                {
+                    "code": "unknown_package_security_options",
+                    "message": (
+                        "พบ security option ที่ไม่รองรับ"
+                    ),
+                    "fields": unknown_security_keys,
+                    "allowed_fields": list(
+                        PACKAGE_SECURITY_OPTIONS.keys()
+                    ),
+                }
+            )
+
+        for field_name, value in security.items():
+            if (
+                field_name in PACKAGE_SECURITY_OPTIONS
+                and not isinstance(value, bool)
+            ):
+                errors.append(
+                    {
+                        "code": "package_security_value_invalid",
+                        "message": (
+                            f"security.{field_name} "
+                            "ต้องเป็น boolean"
+                        ),
+                        "field": field_name,
+                    }
+                )
+
+    expire_days = payload.get(
+        "expire_days",
+        PACKAGE_DEFAULT_EXPIRE_DAYS,
+    )
 
     try:
         expire_days_int = int(expire_days)
+
         if expire_days_int <= 0:
-            warnings.append(
+            errors.append(
                 {
-                    "code": "package_no_expire_or_invalid",
-                    "message": "expire_days น้อยกว่าหรือเท่ากับ 0",
+                    "code": "package_expire_days_invalid",
+                    "message": (
+                        "expire_days ต้องมากกว่า 0"
+                    ),
                 }
             )
+        elif expire_days_int > PACKAGE_MAX_EXPIRE_DAYS:
+            errors.append(
+                {
+                    "code": "package_expire_days_exceeded",
+                    "message": (
+                        "expire_days ต้องไม่เกิน "
+                        f"{PACKAGE_MAX_EXPIRE_DAYS}"
+                    ),
+                    "max_expire_days": (
+                        PACKAGE_MAX_EXPIRE_DAYS
+                    ),
+                }
+            )
+
     except Exception:
         errors.append(
             {
@@ -4933,33 +5252,233 @@ def validate_package_request(payload: Dict[str, Any]) -> Dict[str, Any]:
         "warnings": warnings,
     }
 
-
 # ============================================================
 # 18) FRONTEND CONTRACT HELPERS
 # ============================================================
 
 def get_api_route_catalog() -> Dict[str, List[Dict[str, Any]]]:
     """
-    คืน route catalog รวม endpoint เดิม + flood runtime ใหม่
+    สร้าง Route Catalog จาก FastAPI Router ที่ใช้งานจริง
     """
 
-    return API_ROUTE_CATALOG
+    catalog: Dict[str, List[Dict[str, Any]]] = {}
+    seen: set[Tuple[str, str]] = set()
+    router_sources: List[Tuple[Any, str]] = []
+
+    try:
+        from api_routes import router as api_router
+
+        router_sources.append(
+            (
+                api_router,
+                "",
+            )
+        )
+    except Exception:
+        pass
+
+    try:
+        from auth.auth_routes import router as auth_router
+
+        router_sources.append(
+            (
+                auth_router,
+                API_PREFIX,
+            )
+        )
+    except Exception:
+        pass
+
+    group_mapping: Dict[str, str] = {
+        "health": "core",
+        "status": "core",
+        "config": "core",
+        "paths": "core",
+        "inputs": "core",
+        "routes": "core",
+        "schema": "core",
+        "auth": "auth",
+        "companies": "company",
+        "policy": "policy",
+        "linkage": "linkage",
+        "flood": "flood",
+        "latest": "flood",
+        "history": "flood",
+        "master": "flood",
+        "prediction": "prediction",
+        "forecast": "prediction",
+        "spatial": "spatial",
+        "upload": "upload",
+        "map": "map",
+        "charts": "dashboard",
+        "dashboard": "dashboard",
+        "summary": "dashboard",
+        "filter": "filter",
+        "data-quality": "data_quality",
+        "admin": "data_quality",
+        "cache": "cache",
+        "detail": "detail",
+        "search": "detail",
+        "packages": "package",
+        "public": "package",
+    }
+
+    for router_source, path_prefix in router_sources:
+        for route in getattr(
+            router_source,
+            "routes",
+            [],
+        ):
+            route_path = str(
+                getattr(route, "path", "")
+                or ""
+            ).strip()
+
+            if not route_path:
+                continue
+
+            full_path = route_path
+
+            if (
+                path_prefix
+                and not full_path.startswith(path_prefix)
+            ):
+                full_path = (
+                    f"{path_prefix.rstrip('/')}/"
+                    f"{full_path.lstrip('/')}"
+                )
+
+            methods = sorted(
+                method
+                for method in (
+                    getattr(route, "methods", set())
+                    or set()
+                )
+                if method not in {
+                    "HEAD",
+                    "OPTIONS",
+                }
+            )
+
+            if not methods:
+                continue
+
+            relative_path = full_path
+
+            if relative_path.startswith(API_PREFIX):
+                relative_path = relative_path[
+                    len(API_PREFIX):
+                ]
+
+            first_segment = (
+                relative_path
+                .strip("/")
+                .split("/", 1)[0]
+            )
+
+            group = group_mapping.get(
+                first_segment,
+                first_segment or "core",
+            )
+
+            description = str(
+                getattr(route, "summary", "")
+                or ""
+            ).strip()
+
+            if not description:
+                route_description = str(
+                    getattr(route, "description", "")
+                    or ""
+                ).strip()
+
+                if route_description:
+                    description = (
+                        route_description.splitlines()[0]
+                    )
+
+            if not description:
+                description = str(
+                    getattr(route, "name", "")
+                    or ""
+                )
+
+            for method in methods:
+                route_key = (
+                    method,
+                    full_path,
+                )
+
+                if route_key in seen:
+                    continue
+
+                seen.add(route_key)
+
+                catalog.setdefault(
+                    group,
+                    [],
+                ).append(
+                    {
+                        "method": method,
+                        "path": full_path,
+                        "name": str(
+                            getattr(route, "name", "")
+                            or ""
+                        ),
+                        "description": description,
+                    }
+                )
+
+    if not catalog:
+        fallback_catalog = deepcopy(
+            API_ROUTE_CATALOG
+        )
+
+        for routes in fallback_catalog.values():
+            for route in routes:
+                route["path"] = (
+                    str(route.get("path") or "")
+                    .replace("<", "{")
+                    .replace(">", "}")
+                )
+
+        return fallback_catalog
+
+    return {
+        group: sorted(
+            routes,
+            key=lambda item: (
+                item.get("path", ""),
+                item.get("method", ""),
+            ),
+        )
+        for group, routes in sorted(
+            catalog.items(),
+            key=lambda item: item[0],
+        )
+    }
 
 
 def flatten_api_route_catalog() -> List[Dict[str, Any]]:
     """
-    คืน route catalog แบบ list สำหรับ frontend dev doc
+    คืน Route Catalog แบบ Flat List
     """
 
     records: List[Dict[str, Any]] = []
 
-    for group, routes in API_ROUTE_CATALOG.items():
+    for group, routes in get_api_route_catalog().items():
         for route in routes:
             item = dict(route)
             item["group"] = group
             records.append(item)
 
-    return records
+    return sorted(
+        records,
+        key=lambda item: (
+            item.get("path", ""),
+            item.get("method", ""),
+        ),
+    )
 
 def get_prediction_contract_schema() -> Dict[str, Any]:
     """
@@ -5080,25 +5599,26 @@ def get_frontend_field_dictionary() -> Dict[str, Any]:
 
 def get_frontend_schema_bundle() -> Dict[str, Any]:
     """
-    คืน schema bundle ทั้งหมดที่ frontend ต้องใช้
+    คืน Schema Bundle ทั้งหมดที่ Frontend ต้องใช้
     """
 
     uploaded_entity_schema = FLOOD_INPUT_SCHEMA.get(
         "uploaded_entity",
         SheetSchema(
             key="uploaded_entity",
-            display_name="uploaded_entity.csv",
+            display_name="uploaded_entity.csv/.xlsx/.xls",
             description="uploaded entity fallback schema",
-            required_columns=[
-                "entity_id",
-                "entity_type",
-                "entity_name_th",
-                "province_name_th",
-                "latitude",
-                "longitude",
+            required_columns=list(
+                ENTITY_REQUIRED_COLUMNS
+            ),
+            optional_columns=[
+                column
+                for column in ENTITY_SUPPORTED_COLUMNS
+                if column not in set(
+                    ENTITY_REQUIRED_COLUMNS
+                )
             ],
-            optional_columns=[],
-            source_type="csv_upload",
+            source_type="tabular_upload",
         ),
     )
 
@@ -5106,26 +5626,32 @@ def get_frontend_schema_bundle() -> Dict[str, Any]:
         "prediction_latest",
         SheetSchema(
             key="prediction_latest",
-            display_name="predict_*.xlsx",
+            display_name="predict_YYYY_MM_DD.xlsx",
             description="prediction fallback schema",
-            required_columns=[
-                "station_id",
-                "base_date",
-                "target_date",
-                "forecast_horizon_day",
+            required_columns=list(
+                PREDICTION_REQUIRED_COLUMNS
+            ),
+            optional_columns=[
+                column
+                for column in PREDICTION_SUPPORTED_COLUMNS
+                if column not in set(
+                    PREDICTION_REQUIRED_COLUMNS
+                )
             ],
-            optional_columns=[],
             source_type="excel",
         ),
     )
 
-    return {
+    route_catalog = get_api_route_catalog()
+    route_list = flatten_api_route_catalog()
+
+    bundle: Dict[str, Any] = {
         "api": {
             "prefix": API_PREFIX,
             "public_prefix": PUBLIC_API_PREFIX,
             "response_example": make_api_schema_example(),
-            "routes": API_ROUTE_CATALOG,
-            "route_list": flatten_api_route_catalog(),
+            "routes": route_catalog,
+            "route_list": route_list,
         },
         "fields": get_frontend_field_dictionary(),
         "datasets": get_all_dataset_schemas(),
@@ -5134,14 +5660,24 @@ def get_frontend_schema_bundle() -> Dict[str, Any]:
         "filter": {
             "payload_example": FILTER_PAYLOAD_EXAMPLE,
             "operators": FILTER_OPERATORS,
-            "logical_operators": FILTER_LOGICAL_OPERATORS,
+            "logical_operators": (
+                FILTER_LOGICAL_OPERATORS
+            ),
             "targets": RUNTIME_FILTER_TARGETS,
         },
         "map": {
             "layer_schema": MAP_LAYER_SCHEMA,
-            "merged_layers_schema": MERGED_MAP_LAYERS_PAYLOAD_SCHEMA,
-            "feature_property_schema": MAP_FEATURE_PROPERTY_SCHEMA,
-            "canonical_layer_order": MERGED_MAP_LAYERS_PAYLOAD_SCHEMA["layer_order"],
+            "merged_layers_schema": (
+                MERGED_MAP_LAYERS_PAYLOAD_SCHEMA
+            ),
+            "feature_property_schema": (
+                MAP_FEATURE_PROPERTY_SCHEMA
+            ),
+            "canonical_layer_order": (
+                MERGED_MAP_LAYERS_PAYLOAD_SCHEMA[
+                    "layer_order"
+                ]
+            ),
         },
         "graph": {
             "node_schema": GRAPH_NODE_SCHEMA,
@@ -5149,38 +5685,64 @@ def get_frontend_schema_bundle() -> Dict[str, Any]:
             "payload_schema": GRAPH_PAYLOAD_SCHEMA,
         },
         "dashboard": {
-            "summary_card_schema": SUMMARY_CARD_SCHEMA,
-            "dashboard_summary_schema": DASHBOARD_SUMMARY_SCHEMA,
-            "province_insights_schema": DASHBOARD_PROVINCE_INSIGHTS_SCHEMA,
-            "chart_payload_schema": CHART_PAYLOAD_SCHEMA,
+            "summary_card_schema": (
+                SUMMARY_CARD_SCHEMA
+            ),
+            "dashboard_summary_schema": (
+                DASHBOARD_SUMMARY_SCHEMA
+            ),
+            "province_insights_schema": (
+                DASHBOARD_PROVINCE_INSIGHTS_SCHEMA
+            ),
+            "chart_payload_schema": (
+                CHART_PAYLOAD_SCHEMA
+            ),
         },
         "prediction": {
             **get_prediction_contract_schema(),
-            "input_schema": sheet_schema_to_dict(prediction_schema),
+            "input_schema": sheet_schema_to_dict(
+                prediction_schema
+            ),
         },
         "entity": {
-            "record_schema": UPLOADED_ENTITY_RECORD_SCHEMA,
-            "input_schema": sheet_schema_to_dict(uploaded_entity_schema),
-            "required_fields": uploaded_entity_schema.required_columns,
+            "record_schema": (
+                UPLOADED_ENTITY_RECORD_SCHEMA
+            ),
+            "input_schema": sheet_schema_to_dict(
+                uploaded_entity_schema
+            ),
+            "required_fields": list(
+                uploaded_entity_schema.required_columns
+            ),
             "public_policy": {
                 "displayable_only": True,
                 "remove_internal_paths": True,
                 "remove_raw_invalid_rows": True,
             },
         },
-        "cache_rebuild": get_cache_rebuild_contract_schema(),
+        "cache_rebuild": (
+            get_cache_rebuild_contract_schema()
+        ),
         "package": {
             "request_schema": asdict(
                 PackageRequestSchema(
                     package_name="Example Package",
-                    description="Example dashboard snapshot",
+                    description=(
+                        "Example dashboard snapshot"
+                    ),
                 )
             ),
             "meta_schema": PACKAGE_META_SCHEMA,
-            "snapshot_schema": PACKAGE_SNAPSHOT_SCHEMA,
+            "snapshot_schema": (
+                PACKAGE_SNAPSHOT_SCHEMA
+            ),
             "public_schema": PUBLIC_PACKAGE_SCHEMA,
             "security_schema": MASKING_SCHEMA,
-            "checksum_components": PACKAGE_SNAPSHOT_SCHEMA["checksum_components"],
+            "checksum_components": (
+                PACKAGE_SNAPSHOT_SCHEMA[
+                    "checksum_components"
+                ]
+            ),
         },
         "data_quality": {
             "issue_schema": asdict(
@@ -5192,11 +5754,19 @@ def get_frontend_schema_bundle() -> Dict[str, Any]:
                     message="Example issue",
                 )
             ),
-            "summary_schema": DATA_QUALITY_SUMMARY_SCHEMA,
-            "severities": DATA_QUALITY_SEVERITIES,
-            "categories": DATA_QUALITY_CATEGORIES,
+            "summary_schema": (
+                DATA_QUALITY_SUMMARY_SCHEMA
+            ),
+            "severities": (
+                DATA_QUALITY_SEVERITIES
+            ),
+            "categories": (
+                DATA_QUALITY_CATEGORIES
+            ),
         },
     }
+
+    return deepcopy(bundle)
 
 # ============================================================
 # 19) DEFAULT EMPTY PAYLOADS
@@ -5361,13 +5931,19 @@ EMPTY_PAYLOADS: Dict[str, Any] = {
     "public_package": PUBLIC_PACKAGE_SCHEMA,
 }
 
-def get_empty_payload(key: str) -> Any:
+def get_empty_payload(
+    key: str,
+) -> Any:
     """
-    คืน empty payload ตาม key
+    คืน Empty Payload ตาม Key โดยไม่คืน Reference ของ Global Object
     """
 
-    return EMPTY_PAYLOADS.get(key, {})
+    payload = EMPTY_PAYLOADS.get(
+        str(key or "").strip(),
+        {},
+    )
 
+    return deepcopy(payload)
 
 # ============================================================
 # 20) MODULE SUMMARY
@@ -5375,7 +5951,7 @@ def get_empty_payload(key: str) -> Any:
 
 def get_schema_summary() -> Dict[str, Any]:
     """
-    คืน summary ของ schemas.py
+    คืน Summary ของ schemas.py
     """
 
     required_runtime_inputs = [
@@ -5415,17 +5991,30 @@ def get_schema_summary() -> Dict[str, Any]:
         if key not in DATASET_SCHEMAS
     ]
 
+    route_catalog = get_api_route_catalog()
+    route_list = flatten_api_route_catalog()
+
     return {
         "field_count": len(FIELD_DEFINITIONS),
         "field_group_count": len(FIELD_GROUPS),
         "dataset_count": len(DATASET_SCHEMAS),
-        "policy_input_sheet_count": len(POLICY_INPUT_SCHEMA),
-        "flood_input_sheet_count": len(FLOOD_INPUT_SCHEMA),
-        "api_group_count": len(API_ROUTE_CATALOG),
-        "api_route_count": len(flatten_api_route_catalog()),
-        "table_view_count": len(TABLE_VIEW_SCHEMAS),
-        "package_component_count": len(PACKAGE_COMPONENTS),
-        "data_quality_category_count": len(DATA_QUALITY_CATEGORIES),
+        "policy_input_sheet_count": len(
+            POLICY_INPUT_SCHEMA
+        ),
+        "flood_input_sheet_count": len(
+            FLOOD_INPUT_SCHEMA
+        ),
+        "api_group_count": len(route_catalog),
+        "api_route_count": len(route_list),
+        "table_view_count": len(
+            TABLE_VIEW_SCHEMAS
+        ),
+        "package_component_count": len(
+            PACKAGE_COMPONENTS
+        ),
+        "data_quality_category_count": len(
+            DATA_QUALITY_CATEGORIES
+        ),
         "runtime_contracts": [
             "DataSourceConfigSchema",
             "FloodLatestRecord",
@@ -5436,13 +6025,28 @@ def get_schema_summary() -> Dict[str, Any]:
             "CacheRegistryItemSchema",
             "RebuildPhaseResultSchema",
         ],
-        "runtime_filter_targets": RUNTIME_FILTER_TARGETS,
-        "new_runtime_datasets": required_runtime_datasets,
-        "required_runtime_inputs": required_runtime_inputs,
-        "missing_runtime_inputs": missing_inputs,
-        "missing_runtime_datasets": missing_datasets,
-        "contract_ready": not missing_inputs and not missing_datasets,
-        "schema_bundle_version": SCHEMA_BUNDLE_VERSION,
+        "runtime_filter_targets": list(
+            RUNTIME_FILTER_TARGETS
+        ),
+        "new_runtime_datasets": (
+            required_runtime_datasets
+        ),
+        "required_runtime_inputs": (
+            required_runtime_inputs
+        ),
+        "missing_runtime_inputs": (
+            missing_inputs
+        ),
+        "missing_runtime_datasets": (
+            missing_datasets
+        ),
+        "contract_ready": (
+            not missing_inputs
+            and not missing_datasets
+        ),
+        "schema_bundle_version": (
+            SCHEMA_BUNDLE_VERSION
+        ),
     }
 
 SCHEMA_BUNDLE_VERSION: str = "1.0.0"

@@ -38,13 +38,7 @@ from __future__ import annotations
 import json
 import math
 import re
-try:
-    import bootstrap
-    BOOTSTRAP_LOADED = True
-except Exception as e:
-    bootstrap = None
-    BOOTSTRAP_LOADED = False
-    BOOTSTRAP_ERROR = str(e)
+
 import uuid
 from copy import deepcopy
 from datetime import date, datetime

@@ -8,7 +8,7 @@ secret.txt
 *.pyc
 __pycache__/
 
-index.html
+*.html
 *.zip
 
 

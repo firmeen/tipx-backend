@@ -56,6 +56,7 @@ backend/utils.py
 """
 
 from __future__ import annotations
+
 import csv
 import hashlib
 import json
@@ -63,20 +64,19 @@ import math
 import os
 import re
 import shutil
+import time
 import unicodedata
 import zipfile
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 import pandas as pd
+
 import config
-"""
-
-
-"""
 from config import (
     APP_SHORT_NAME,
     APP_VERSION,
@@ -250,6 +250,124 @@ def ensure_parent_dir(path: Union[str, Path]) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     return target
 
+def make_atomic_temp_path(
+    path: Union[str, Path],
+) -> Path:
+    target = ensure_parent_dir(path)
+    suffix = target.suffix or ".tmp"
+    stem = target.stem if target.suffix else target.name
+
+    return target.with_name(
+        f".{stem}.{os.getpid()}.{time.time_ns()}{suffix}"
+    )
+
+
+@contextmanager
+def file_write_lock(
+    path: Union[str, Path],
+    timeout_seconds: float = 10.0,
+    stale_seconds: float = 120.0,
+):
+    target = ensure_parent_dir(path)
+    lock_path = target.with_name(
+        f".{target.name}.lock"
+    )
+    started_at = time.monotonic()
+    lock_fd: Optional[int] = None
+
+    while True:
+        try:
+            lock_fd = os.open(
+                str(lock_path),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            )
+            os.write(
+                lock_fd,
+                f"{os.getpid()}|{now_iso()}".encode("utf-8"),
+            )
+            break
+
+        except FileExistsError:
+            try:
+                lock_age = (
+                    time.time()
+                    - lock_path.stat().st_mtime
+                )
+
+                if (
+                    stale_seconds > 0
+                    and lock_age > stale_seconds
+                ):
+                    lock_path.unlink(
+                        missing_ok=True
+                    )
+                    continue
+
+            except FileNotFoundError:
+                continue
+
+            if (
+                time.monotonic() - started_at
+                >= timeout_seconds
+            ):
+                raise TimeoutError(
+                    "Timed out waiting for file lock: "
+                    f"{lock_path}"
+                )
+
+            time.sleep(0.05)
+
+    try:
+        yield target
+
+    finally:
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+
+        try:
+            lock_path.unlink(
+                missing_ok=True
+            )
+        except OSError:
+            pass
+
+
+def atomic_replace_text(
+    path: Union[str, Path],
+    content: str,
+    encoding: str = DEFAULT_ENCODING,
+) -> Path:
+    target = ensure_parent_dir(path)
+    temp_path = make_atomic_temp_path(
+        target
+    )
+
+    try:
+        with temp_path.open(
+            "w",
+            encoding=encoding,
+            newline="",
+        ) as file:
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+
+        os.replace(
+            temp_path,
+            target,
+        )
+
+        return target
+
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
 
 def path_exists(path: Union[str, Path]) -> bool:
     """
@@ -380,20 +498,31 @@ def remove_file(path: Union[str, Path], missing_ok: bool = True) -> bool:
 # ============================================================
 
 def to_jsonable(value: Any) -> Any:
-    """
-    แปลง object ให้เป็น JSON serializable
-
-    รองรับ:
-    - pandas NaN / NaT
-    - datetime / date
-    - Decimal
-    - Path
-    - set / tuple
-    - DataFrame / Series
-    """
-
     if value is None:
         return None
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, float):
+        return (
+            value
+            if math.isfinite(value)
+            else None
+        )
+
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, Decimal):
+        return (
+            float(value)
+            if value.is_finite()
+            else None
+        )
 
     try:
         if pd.isna(value):
@@ -401,26 +530,44 @@ def to_jsonable(value: Any) -> Any:
     except Exception:
         pass
 
-    if isinstance(value, (datetime, date)):
+    if isinstance(
+        value,
+        (
+            datetime,
+            date,
+        ),
+    ):
         return value.isoformat()
-
-    if isinstance(value, Decimal):
-        return float(value)
 
     if isinstance(value, Path):
         return str(value)
 
     if isinstance(value, dict):
-        return {str(k): to_jsonable(v) for k, v in value.items()}
+        return {
+            str(key): to_jsonable(item)
+            for key, item in value.items()
+        }
 
-    if isinstance(value, (list, tuple, set)):
-        return [to_jsonable(item) for item in value]
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+        ),
+    ):
+        return [
+            to_jsonable(item)
+            for item in value
+        ]
 
     if isinstance(value, pd.DataFrame):
         return dataframe_to_records(value)
 
     if isinstance(value, pd.Series):
-        return to_jsonable(value.to_dict())
+        return to_jsonable(
+            value.to_dict()
+        )
 
     try:
         import numpy as np
@@ -429,17 +576,26 @@ def to_jsonable(value: Any) -> Any:
             return int(value)
 
         if isinstance(value, np.floating):
-            return float(value)
+            number = float(value)
+
+            return (
+                number
+                if math.isfinite(number)
+                else None
+            )
 
         if isinstance(value, np.ndarray):
-            return value.tolist()
+            return to_jsonable(
+                value.tolist()
+            )
 
         if isinstance(value, np.bool_):
             return bool(value)
+
     except Exception:
         pass
 
-    return value
+    return str(value)
 
 
 def read_text(path: Union[str, Path], encoding: str = DEFAULT_ENCODING) -> str:
@@ -449,32 +605,47 @@ def read_text(path: Union[str, Path], encoding: str = DEFAULT_ENCODING) -> str:
 
     return Path(path).read_text(encoding=encoding)
 
-
-def write_text(path: Union[str, Path], content: str, encoding: str = DEFAULT_ENCODING) -> Path:
-    """
-    เขียน text file
-    """
-
+def write_text(
+    path: Union[str, Path],
+    content: str,
+    encoding: str = DEFAULT_ENCODING,
+) -> Path:
     target = ensure_parent_dir(path)
-    target.write_text(content, encoding=encoding)
-    return target
+
+    with file_write_lock(target):
+        return atomic_replace_text(
+            target,
+            str(content),
+            encoding=encoding,
+        )
 
 
-def read_json(path: Union[str, Path], default: Optional[Any] = None, encoding: str = DEFAULT_ENCODING) -> Any:
-    """
-    อ่าน JSON file
-    """
+def read_json(
+    path: Union[str, Path],
+    default: Optional[Any] = None,
+    encoding: str = DEFAULT_ENCODING,
+) -> Any:
+    target = Path(path)
 
-    p = Path(path)
-
-    if not p.exists():
+    if not target.exists():
         return deepcopy(default)
+
+    if not target.is_file():
+        raise IsADirectoryError(
+            str(target)
+        )
 
     try:
-        with p.open("r", encoding=encoding) as f:
-            return json.load(f)
-    except Exception:
-        return deepcopy(default)
+        with target.open(
+            "r",
+            encoding=encoding,
+        ) as file:
+            return json.load(file)
+
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid JSON file: {target}"
+        ) from exc
 
 
 def write_json(
@@ -483,70 +654,198 @@ def write_json(
     encoding: str = DEFAULT_ENCODING,
     indent: int = 2,
 ) -> Path:
-    """
-    เขียน JSON file
-    """
-
     target = ensure_parent_dir(path)
 
-    with target.open("w", encoding=encoding) as f:
-        json.dump(
-            to_jsonable(data),
-            f,
-            ensure_ascii=False,
-            indent=indent,
+    serialized = json.dumps(
+        to_jsonable(data),
+        ensure_ascii=False,
+        indent=indent,
+        allow_nan=False,
+    )
+
+    with file_write_lock(target):
+        return atomic_replace_text(
+            target,
+            serialized,
+            encoding=encoding,
         )
 
-    return target
 
-
-def append_jsonl(path: Union[str, Path], record: Dict[str, Any], encoding: str = DEFAULT_ENCODING) -> Path:
-    """
-    append JSON Lines
-    """
-
+def append_jsonl(
+    path: Union[str, Path],
+    record: Dict[str, Any],
+    encoding: str = DEFAULT_ENCODING,
+) -> Path:
     target = ensure_parent_dir(path)
 
-    with target.open("a", encoding=encoding) as f:
-        f.write(json.dumps(to_jsonable(record), ensure_ascii=False) + "\n")
+    line = json.dumps(
+        to_jsonable(record),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+    with file_write_lock(target):
+        with target.open(
+            "a",
+            encoding=encoding,
+            newline="",
+        ) as file:
+            file.write(line + "\n")
+            file.flush()
+            os.fsync(file.fileno())
 
     return target
 
+def sanitize_spreadsheet_value(
+    value: Any,
+) -> Any:
+    if value is None:
+        return None
 
-def read_csv(path: Union[str, Path], **kwargs: Any) -> pd.DataFrame:
-    """
-    อ่าน CSV เป็น DataFrame
-    """
+    if not isinstance(value, str):
+        return value
 
-    p = Path(path)
+    stripped = value.lstrip()
 
-    if not p.exists():
+    if stripped.startswith(
+        (
+            "=",
+            "+",
+            "-",
+            "@",
+        )
+    ):
+        return f"'{value}"
+
+    return value
+
+
+def sanitize_spreadsheet_dataframe(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    if df is None:
         return pd.DataFrame()
 
-    default_kwargs = {
-        "encoding": kwargs.pop("encoding", DEFAULT_ENCODING),
-    }
+    result = df.copy()
 
-    default_kwargs.update(kwargs)
+    if result.empty:
+        return result
 
-    try:
-        return pd.read_csv(p, **default_kwargs)
-    except UnicodeDecodeError:
-        return pd.read_csv(p, encoding="utf-8-sig", **kwargs)
-    except Exception:
+    if hasattr(result, "map"):
+        return result.map(
+            sanitize_spreadsheet_value
+        )
+
+    return result.applymap(
+        sanitize_spreadsheet_value
+    )
+
+def read_csv(
+    path: Union[str, Path],
+    **kwargs: Any,
+) -> pd.DataFrame:
+    target = Path(path)
+
+    if not target.exists():
+        return pd.DataFrame()
+
+    if not target.is_file():
+        raise IsADirectoryError(
+            str(target)
+        )
+
+    requested_encoding = kwargs.pop(
+        "encoding",
+        None,
+    )
+
+    encoding_candidates: List[str] = []
+
+    for encoding in [
+        requested_encoding,
+        "utf-8-sig",
+        DEFAULT_ENCODING,
+        "cp874",
+    ]:
+        if (
+            encoding
+            and encoding not in encoding_candidates
+        ):
+            encoding_candidates.append(
+                encoding
+            )
+
+    last_decode_error: Optional[
+        Exception
+    ] = None
+
+    for encoding in encoding_candidates:
         try:
-            return pd.read_csv(p, encoding="cp874", **kwargs)
-        except Exception:
+            return pd.read_csv(
+                target,
+                encoding=encoding,
+                **kwargs,
+            )
+
+        except pd.errors.EmptyDataError:
             return pd.DataFrame()
 
+        except (
+            UnicodeDecodeError,
+            LookupError,
+        ) as exc:
+            last_decode_error = exc
+            continue
 
-def write_csv(path: Union[str, Path], df: pd.DataFrame, encoding: str = "utf-8-sig", index: bool = False) -> Path:
-    """
-    เขียน DataFrame เป็น CSV
-    """
+    if last_decode_error is not None:
+        raise UnicodeError(
+            f"Cannot decode CSV file: {target}"
+        ) from last_decode_error
 
+    raise RuntimeError(
+        f"Cannot read CSV file: {target}"
+    )
+
+
+def write_csv(
+    path: Union[str, Path],
+    df: pd.DataFrame,
+    encoding: str = "utf-8-sig",
+    index: bool = False,
+) -> Path:
     target = ensure_parent_dir(path)
-    df.to_csv(target, encoding=encoding, index=index)
+    temp_path = make_atomic_temp_path(
+        target
+    )
+
+    export_df = (
+        sanitize_spreadsheet_dataframe(
+            df
+            if isinstance(df, pd.DataFrame)
+            else pd.DataFrame(df)
+        )
+    )
+
+    with file_write_lock(target):
+        try:
+            export_df.to_csv(
+                temp_path,
+                encoding=encoding,
+                index=index,
+            )
+
+            os.replace(
+                temp_path,
+                target,
+            )
+
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+
     return target
 
 def read_excel_sheet(
@@ -556,40 +855,53 @@ def read_excel_sheet(
     use_cache: bool = False,
     return_meta: bool = False,
 ) -> Union[pd.DataFrame, Dict[str, Any]]:
-    """
-    อ่าน Excel sheet แบบปลอดภัย
+    target = Path(path)
 
-    Default behavior เดิม:
-    - คืน DataFrame
-    - ถ้าอ่านไม่ได้คืน DataFrame ว่าง
-
-    Source behavior ใหม่:
-    - use_cache=True ใช้ file modified time เป็น cache key
-    - return_meta=True คืน dict พร้อม df/meta/errors
-    """
-
-    p = Path(path)
+    effective_sheet_name: Union[
+        str,
+        int,
+    ] = (
+        0
+        if sheet_name is None
+        else sheet_name
+    )
 
     source_meta: Dict[str, Any] = {
         "source": "excel",
-        "source_file": str(p),
-        "sheet_name": sheet_name,
-        "file_exists": p.exists(),
+        "source_file": str(target),
+        "sheet_name": effective_sheet_name,
+        "file_exists": target.exists(),
         "file_modified_at": None,
         "file_modified_time": None,
+        "file_size_bytes": None,
         "cache_used": False,
         "record_count": 0,
     }
 
-    if p.exists():
+    if target.exists():
         try:
-            stat = p.stat()
-            source_meta["file_modified_time"] = stat.st_mtime
-            source_meta["file_modified_at"] = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
-        except Exception:
+            stat = target.stat()
+
+            source_meta[
+                "file_modified_time"
+            ] = stat.st_mtime
+
+            source_meta[
+                "file_modified_at"
+            ] = datetime.fromtimestamp(
+                stat.st_mtime
+            ).isoformat(
+                timespec="seconds"
+            )
+
+            source_meta[
+                "file_size_bytes"
+            ] = stat.st_size
+
+        except OSError:
             pass
 
-    if not p.exists():
+    if not target.exists():
         empty_df = pd.DataFrame()
 
         if return_meta:
@@ -599,24 +911,72 @@ def read_excel_sheet(
                 "errors": [
                     {
                         "code": "excel_file_not_found",
-                        "message": f"ไม่พบไฟล์ Excel: {p}",
-                        "path": str(p),
+                        "message": (
+                            "ไม่พบไฟล์ Excel: "
+                            f"{target}"
+                        ),
+                        "path": str(target),
                     }
                 ],
             }
 
         return empty_df
 
-    cache_key = make_excel_cache_key(p, sheet_name=sheet_name, file_modified_time=source_meta.get("file_modified_time"))
+    if not target.is_file():
+        raise IsADirectoryError(
+            str(target)
+        )
 
-    if use_cache and is_cache_valid(cache_key):
-        cached_payload = read_cache(cache_key, default={})
+    cache_key = make_excel_cache_key(
+        target,
+        sheet_name=effective_sheet_name,
+        file_modified_time=source_meta.get(
+            "file_modified_time"
+        ),
+    )
 
-        if isinstance(cached_payload, dict) and isinstance(cached_payload.get("records"), list):
-            cached_df = pd.DataFrame(cached_payload.get("records", []))
-            source_meta.update(cached_payload.get("meta", {}))
+    if (
+        use_cache
+        and is_cache_valid(cache_key)
+    ):
+        cached_payload = read_cache(
+            cache_key,
+            default=None,
+        )
+
+        if (
+            isinstance(cached_payload, dict)
+            and isinstance(
+                cached_payload.get("records"),
+                list,
+            )
+        ):
+            cached_df = pd.DataFrame(
+                cached_payload.get(
+                    "records",
+                    [],
+                )
+            )
+
+            cached_meta = (
+                cached_payload.get(
+                    "meta",
+                    {},
+                )
+            )
+
+            if isinstance(
+                cached_meta,
+                dict,
+            ):
+                source_meta.update(
+                    cached_meta
+                )
+
             source_meta["cache_used"] = True
-            source_meta["record_count"] = len(cached_df)
+            source_meta["record_count"] = len(
+                cached_df
+            )
 
             if return_meta:
                 return {
@@ -627,30 +987,22 @@ def read_excel_sheet(
 
             return cached_df
 
+        source_meta["cache_error"] = (
+            "invalid_excel_cache_payload"
+        )
+
     try:
-        df = pd.read_excel(p, sheet_name=sheet_name, dtype=dtype)
+        df = pd.read_excel(
+            target,
+            sheet_name=effective_sheet_name,
+            dtype=dtype,
+        )
+
         df = clean_dataframe_common(df)
-        source_meta["record_count"] = len(df)
 
-        if use_cache:
-            write_cache(
-                cache_key,
-                {
-                    "records": dataframe_to_records(df),
-                    "meta": source_meta,
-                },
-                ttl_seconds=int(CACHE_TTL_SECONDS.get("flood", 3600) if isinstance(CACHE_TTL_SECONDS, dict) else 3600),
-                source="excel_source",
-            )
-
-        if return_meta:
-            return {
-                "df": df,
-                "meta": source_meta,
-                "errors": [],
-            }
-
-        return df
+        source_meta["record_count"] = len(
+            df
+        )
 
     except Exception as exc:
         empty_df = pd.DataFrame()
@@ -663,59 +1015,169 @@ def read_excel_sheet(
                     {
                         "code": "excel_read_failed",
                         "message": str(exc),
-                        "type": exc.__class__.__name__,
-                        "path": str(p),
-                        "sheet_name": sheet_name,
+                        "type": (
+                            exc.__class__.__name__
+                        ),
+                        "path": str(target),
+                        "sheet_name": (
+                            effective_sheet_name
+                        ),
                     }
                 ],
             }
 
-        return empty_df
+        raise RuntimeError(
+            "Failed to read Excel file "
+            f"{target} "
+            f"sheet={effective_sheet_name}"
+        ) from exc
 
+    if use_cache:
+        try:
+            ttl_seconds = int(
+                CACHE_TTL_SECONDS.get(
+                    "flood",
+                    3600,
+                )
+                if isinstance(
+                    CACHE_TTL_SECONDS,
+                    dict,
+                )
+                else CACHE_TTL_SECONDS
+            )
+
+            write_cache(
+                cache_key,
+                {
+                    "records": (
+                        dataframe_to_records(df)
+                    ),
+                    "meta": source_meta,
+                },
+                ttl_seconds=ttl_seconds,
+                source="excel_source",
+            )
+
+        except Exception as exc:
+            source_meta["cache_error"] = str(
+                exc
+            )
+
+    if return_meta:
+        return {
+            "df": df,
+            "meta": source_meta,
+            "errors": [],
+        }
+
+    return df
 
 def read_excel_sheets(
     path: Union[str, Path],
-    sheet_names: Optional[Union[List[str], Dict[str, str]]] = None,
+    sheet_names: Optional[
+        Union[
+            List[str],
+            Dict[str, str],
+        ]
+    ] = None,
     dtype: Optional[Any] = None,
 ) -> Dict[str, pd.DataFrame]:
-    """
-    อ่าน Excel หลาย sheet
+    target = Path(path)
 
-    Args:
-        path:
-            path ไฟล์ Excel
-
-        sheet_names:
-            - None = อ่านทุก sheet
-            - list[str] = อ่านตามชื่อ sheet
-            - dict[key, sheet_name] = คืนตาม key
-    """
-
-    p = Path(path)
-
-    if not p.exists():
+    if not target.exists():
         return {}
 
-    result: Dict[str, pd.DataFrame] = {}
+    if not target.is_file():
+        raise IsADirectoryError(
+            str(target)
+        )
+
+    result: Dict[
+        str,
+        pd.DataFrame,
+    ] = {}
 
     try:
-        if sheet_names is None:
-            sheets = pd.read_excel(p, sheet_name=None, dtype=dtype)
-            return {str(k): v for k, v in sheets.items()}
+        with pd.ExcelFile(
+            target
+        ) as excel_file:
+            if sheet_names is None:
+                for sheet in excel_file.sheet_names:
+                    df = pd.read_excel(
+                        excel_file,
+                        sheet_name=sheet,
+                        dtype=dtype,
+                    )
 
-        if isinstance(sheet_names, dict):
-            for key, sheet in sheet_names.items():
-                result[str(key)] = read_excel_sheet(p, sheet_name=sheet, dtype=dtype)
-            return result
+                    result[str(sheet)] = (
+                        clean_dataframe_common(df)
+                    )
 
-        for sheet in sheet_names:
-            result[str(sheet)] = read_excel_sheet(p, sheet_name=sheet, dtype=dtype)
+                return result
+
+            if isinstance(
+                sheet_names,
+                dict,
+            ):
+                for key, sheet in sheet_names.items():
+                    df = pd.read_excel(
+                        excel_file,
+                        sheet_name=sheet,
+                        dtype=dtype,
+                    )
+
+                    result[str(key)] = (
+                        clean_dataframe_common(df)
+                    )
+
+                return result
+
+            for sheet in sheet_names:
+                df = pd.read_excel(
+                    excel_file,
+                    sheet_name=sheet,
+                    dtype=dtype,
+                )
+
+                result[str(sheet)] = (
+                    clean_dataframe_common(df)
+                )
 
         return result
 
-    except Exception:
-        return result
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to read Excel workbook: "
+            f"{target}"
+        ) from exc
 
+
+def get_excel_sheet_names(
+    path: Union[str, Path],
+) -> List[str]:
+    target = Path(path)
+
+    if not target.exists():
+        return []
+
+    if not target.is_file():
+        raise IsADirectoryError(
+            str(target)
+        )
+
+    try:
+        with pd.ExcelFile(
+            target
+        ) as excel_file:
+            return list(
+                excel_file.sheet_names
+            )
+
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to inspect Excel workbook: "
+            f"{target}"
+        ) from exc
 
 def get_excel_sheet_names(path: Union[str, Path]) -> List[str]:
     """
@@ -793,25 +1255,50 @@ def file_modified_at(path: Union[str, Path]) -> Optional[str]:
     except Exception:
         return None
 
-
 def make_excel_cache_key(
     path: Union[str, Path],
     sheet_name: Union[str, int, None] = 0,
     file_modified_time: Optional[float] = None,
 ) -> str:
-    """
-    สร้าง cache key สำหรับ Excel sheet โดยผูกกับ file modified time
-    """
+    target = Path(path)
+    modified_time = file_modified_time
+    file_size: Optional[int] = None
 
-    p = Path(path)
-    mtime = file_modified_time
+    if (
+        target.exists()
+        and target.is_file()
+    ):
+        try:
+            stat = target.stat()
+            file_size = stat.st_size
 
-    if mtime is None:
-        mtime = globals()["file_modified_time"](p)
+            if modified_time is None:
+                modified_time = stat.st_mtime
 
-    raw_key = f"excel|{p.resolve() if p.exists() else p}|{sheet_name}|{mtime}"
-    return make_hash_id(raw_key, prefix="excel_cache", length=24)
+        except OSError:
+            pass
 
+    resolved_path = (
+        target.resolve()
+        if target.exists()
+        else target.absolute()
+    )
+
+    raw_key = "|".join(
+        [
+            "excel",
+            str(resolved_path),
+            str(sheet_name),
+            str(modified_time),
+            str(file_size),
+        ]
+    )
+
+    return make_hash_id(
+        raw_key,
+        prefix="excel_cache",
+        length=24,
+    )
 
 def normalize_column_name(value: Any) -> str:
     """
@@ -1244,10 +1731,6 @@ def excel_source_payload(
 
 
 def clear_excel_cache() -> Dict[str, Any]:
-    """
-    ลบ cache ที่เกี่ยวกับ Excel source
-    """
-
     removed: List[str] = []
 
     patterns = [
@@ -1258,11 +1741,23 @@ def clear_excel_cache() -> Dict[str, Any]:
 
     ensure_dir(CACHE_DIR)
 
-    for pattern in patterns:
-        for path in CACHE_DIR.glob(pattern):
-            if path.exists() and path.is_file():
+    paths = {
+        path
+        for pattern in patterns
+        for path in CACHE_DIR.glob(pattern)
+        if path.exists() and path.is_file()
+    }
+
+    for path in sorted(paths):
+        with file_write_lock(path):
+            if (
+                path.exists()
+                and path.is_file()
+            ):
                 path.unlink()
-                removed.append(str(path))
+                removed.append(
+                    str(path)
+                )
 
     return {
         "cleared": True,
@@ -1271,28 +1766,103 @@ def clear_excel_cache() -> Dict[str, Any]:
         "source": "excel",
     }
 
+
 def write_excel(
     path: Union[str, Path],
     sheets: Dict[str, pd.DataFrame],
     index: bool = False,
 ) -> Path:
-    """
-    เขียน Excel หลาย sheet
-    """
-
     target = ensure_parent_dir(path)
+    temp_path = make_atomic_temp_path(
+        target
+    )
+    used_sheet_names: set[str] = set()
 
-    with pd.ExcelWriter(target, engine="openpyxl") as writer:
-        for sheet_name, df in sheets.items():
-            safe_sheet = str(sheet_name)[:31] or "Sheet1"
+    def resolve_sheet_name(
+        value: Any,
+    ) -> str:
+        base_name = re.sub(
+            r"[\[\]:*?/\\]+",
+            "_",
+            str(value or "Sheet1"),
+        ).strip().strip("'")
 
-            if isinstance(df, pd.DataFrame):
-                df.to_excel(writer, sheet_name=safe_sheet, index=index)
-            else:
-                pd.DataFrame(df).to_excel(writer, sheet_name=safe_sheet, index=index)
+        base_name = (
+            base_name[:31]
+            or "Sheet1"
+        )
+
+        candidate = base_name
+        counter = 2
+
+        while (
+            candidate.lower()
+            in used_sheet_names
+        ):
+            suffix = f"_{counter}"
+
+            candidate = (
+                base_name[
+                    :31 - len(suffix)
+                ]
+                + suffix
+            )
+
+            counter += 1
+
+        used_sheet_names.add(
+            candidate.lower()
+        )
+
+        return candidate
+
+    with file_write_lock(target):
+        try:
+            with pd.ExcelWriter(
+                temp_path,
+                engine="openpyxl",
+            ) as writer:
+                for sheet_name, data in sheets.items():
+                    safe_sheet_name = (
+                        resolve_sheet_name(
+                            sheet_name
+                        )
+                    )
+
+                    df = (
+                        data
+                        if isinstance(
+                            data,
+                            pd.DataFrame,
+                        )
+                        else pd.DataFrame(data)
+                    )
+
+                    export_df = (
+                        sanitize_spreadsheet_dataframe(
+                            df
+                        )
+                    )
+
+                    export_df.to_excel(
+                        writer,
+                        sheet_name=safe_sheet_name,
+                        index=index,
+                    )
+
+            os.replace(
+                temp_path,
+                target,
+            )
+
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 
     return target
-
 
 # ============================================================
 # 5) DATA CLEANING HELPERS
@@ -2606,69 +3176,172 @@ def apply_search_sort_pagination(
 # 12) CACHE HELPERS
 # ============================================================
 
-def get_cache_file_path(cache_key: str) -> Path:
-    """
-    คืน path cache file จาก cache_key
-    """
+def get_cache_file_path(
+    cache_key: str,
+) -> Path:
+    if hasattr(
+        config,
+        "get_cache_path",
+    ):
+        return Path(
+            config.get_cache_path(
+                cache_key
+            )
+        )
 
-    if hasattr(config, "get_cache_path"):
-        return config.get_cache_path(cache_key)
+    safe_key = safe_filename(
+        cache_key,
+        default="cache",
+    )
 
-    safe_key = safe_filename(cache_key, default="cache")
     return CACHE_DIR / f"{safe_key}.json"
 
 
-def get_cache_meta_path(cache_key: str) -> Path:
-    """
-    คืน path cache metadata
-    """
+def get_cache_meta_path(
+    cache_key: str,
+) -> Path:
+    cache_path = get_cache_file_path(
+        cache_key
+    )
 
-    cache_path = get_cache_file_path(cache_key)
-    stem = cache_path.stem
-    return cache_path.with_name(f"{stem}_{CACHE_METADATA_FILENAME}")
+    metadata_suffix = clean_text(
+        CACHE_METADATA_FILENAME,
+        default="_cache_meta.json",
+    )
+
+    if not metadata_suffix.startswith("_"):
+        metadata_suffix = (
+            f"_{metadata_suffix}"
+        )
+
+    return cache_path.with_name(
+        f"{cache_path.stem}{metadata_suffix}"
+    )
 
 
-def is_cache_valid(cache_key: str, ttl_seconds: Optional[int] = None) -> bool:
-    """
-    ตรวจว่า cache ยัง valid หรือไม่
-    """
+def get_legacy_cache_meta_path(
+    cache_key: str,
+) -> Path:
+    cache_path = get_cache_file_path(
+        cache_key
+    )
 
+    return cache_path.with_name(
+        f"{cache_path.stem}_{CACHE_METADATA_FILENAME}"
+    )
+
+
+def get_existing_cache_meta_path(
+    cache_key: str,
+) -> Path:
+    meta_path = get_cache_meta_path(
+        cache_key
+    )
+
+    if meta_path.exists():
+        return meta_path
+
+    legacy_meta_path = (
+        get_legacy_cache_meta_path(
+            cache_key
+        )
+    )
+
+    if legacy_meta_path.exists():
+        return legacy_meta_path
+
+    return meta_path
+
+
+def is_cache_valid(
+    cache_key: str,
+    ttl_seconds: Optional[int] = None,
+) -> bool:
     if not CACHE_ENABLED:
         return False
 
-    cache_path = get_cache_file_path(cache_key)
-    meta_path = get_cache_meta_path(cache_key)
+    cache_path = get_cache_file_path(
+        cache_key
+    )
 
-    if not cache_path.exists() or not meta_path.exists():
+    meta_path = (
+        get_existing_cache_meta_path(
+            cache_key
+        )
+    )
+
+    if (
+        not cache_path.exists()
+        or not cache_path.is_file()
+        or not meta_path.exists()
+        or not meta_path.is_file()
+    ):
         return False
 
-    meta = read_json(meta_path, default={})
+    try:
+        meta = read_json(
+            meta_path,
+            default={},
+        )
+    except Exception:
+        return False
 
-    created_at_raw = meta.get("created_at")
+    if not isinstance(meta, dict):
+        return False
+
+    created_at_raw = clean_text(
+        meta.get("created_at")
+    )
 
     if not created_at_raw:
         return False
 
     try:
-        created_at = datetime.fromisoformat(created_at_raw)
+        created_at = datetime.fromisoformat(
+            created_at_raw
+        )
     except Exception:
         return False
 
     if ttl_seconds is None:
-        ttl_seconds = int(meta.get("ttl_seconds", 0) or 0)
+        try:
+            ttl_seconds = int(
+                meta.get(
+                    "ttl_seconds",
+                    0,
+                )
+                or 0
+            )
+        except Exception:
+            return False
 
     if ttl_seconds <= 0:
         return False
 
-    return datetime.now() - created_at <= timedelta(seconds=ttl_seconds)
+    age_seconds = (
+        datetime.now() - created_at
+    ).total_seconds()
+
+    return (
+        age_seconds >= 0
+        and age_seconds <= ttl_seconds
+    )
 
 
-def read_cache(cache_key: str, default: Optional[Any] = None) -> Any:
-    """
-    อ่าน cache
-    """
+def read_cache(
+    cache_key: str,
+    default: Optional[Any] = None,
+) -> Any:
+    try:
+        return read_json(
+            get_cache_file_path(
+                cache_key
+            ),
+            default=default,
+        )
 
-    return read_json(get_cache_file_path(cache_key), default=default)
+    except Exception:
+        return deepcopy(default)
 
 
 def write_cache(
@@ -2677,42 +3350,113 @@ def write_cache(
     ttl_seconds: int = 3600,
     source: str = "",
 ) -> Dict[str, Any]:
-    """
-    เขียน cache พร้อม metadata
-    """
-
     ensure_dir(CACHE_DIR)
 
-    cache_path = get_cache_file_path(cache_key)
-    meta_path = get_cache_meta_path(cache_key)
+    cache_path = get_cache_file_path(
+        cache_key
+    )
 
-    temp_cache_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
-    temp_meta_path = meta_path.with_suffix(meta_path.suffix + ".tmp")
+    meta_path = get_cache_meta_path(
+        cache_key
+    )
 
-    write_json(temp_cache_path, data)
+    legacy_meta_path = (
+        get_legacy_cache_meta_path(
+            cache_key
+        )
+    )
 
-    temp_cache_path.replace(cache_path)
+    registry = getattr(
+        config,
+        "CACHE_REGISTRY",
+        {},
+    )
 
-    registry = getattr(config, "CACHE_REGISTRY", {})
-    registry_item = registry.get(cache_key, {}) if isinstance(registry, dict) else {}
+    registry_item = (
+        registry.get(
+            cache_key,
+            {},
+        )
+        if isinstance(
+            registry,
+            dict,
+        )
+        else {}
+    )
 
     meta = {
         "cache_key": cache_key,
         "created_at": now_iso(),
-        "ttl_seconds": ttl_seconds,
+        "ttl_seconds": max(
+            0,
+            int(ttl_seconds or 0),
+        ),
         "source": source,
         "path": str(cache_path),
-        "owner_service": registry_item.get("owner_service"),
-        "payload_type": registry_item.get("payload_type"),
-        "depends_on": registry_item.get("depends_on", []),
-        "consumed_by": registry_item.get("consumed_by", []),
-        "critical": registry_item.get("critical", False),
-        "allow_stale": registry_item.get("allow_stale", True),
-        "aliases": registry_item.get("aliases", []),
+        "owner_service": registry_item.get(
+            "owner_service"
+        ),
+        "payload_type": registry_item.get(
+            "payload_type"
+        ),
+        "depends_on": registry_item.get(
+            "depends_on",
+            [],
+        ),
+        "consumed_by": registry_item.get(
+            "consumed_by",
+            [],
+        ),
+        "critical": registry_item.get(
+            "critical",
+            False,
+        ),
+        "allow_stale": registry_item.get(
+            "allow_stale",
+            True,
+        ),
+        "aliases": registry_item.get(
+            "aliases",
+            [],
+        ),
     }
 
-    write_json(temp_meta_path, meta)
-    temp_meta_path.replace(meta_path)
+    serialized_data = json.dumps(
+        to_jsonable(data),
+        ensure_ascii=False,
+        indent=2,
+        allow_nan=False,
+    )
+
+    serialized_meta = json.dumps(
+        to_jsonable(meta),
+        ensure_ascii=False,
+        indent=2,
+        allow_nan=False,
+    )
+
+    with file_write_lock(
+        cache_path
+    ):
+        atomic_replace_text(
+            cache_path,
+            serialized_data,
+            encoding=DEFAULT_ENCODING,
+        )
+
+        atomic_replace_text(
+            meta_path,
+            serialized_meta,
+            encoding=DEFAULT_ENCODING,
+        )
+
+        if (
+            legacy_meta_path != meta_path
+            and legacy_meta_path.exists()
+        ):
+            legacy_meta_path.unlink(
+                missing_ok=True
+            )
 
     return {
         "cache_key": cache_key,
@@ -2729,21 +3473,59 @@ def get_or_build_cache(
     force_refresh: bool = False,
     source: str = "",
 ) -> Dict[str, Any]:
-    """
-    อ่าน cache ถ้า valid
-    ถ้าไม่ valid ให้ build ใหม่
-    """
-
-    if not force_refresh and is_cache_valid(cache_key, ttl_seconds=ttl_seconds):
-        data = read_cache(cache_key, default={})
+    if (
+        not force_refresh
+        and is_cache_valid(
+            cache_key,
+            ttl_seconds=ttl_seconds,
+        )
+    ):
         return {
-            "data": data,
+            "data": read_cache(
+                cache_key,
+                default={},
+            ),
             "cache_used": True,
             "cache_key": cache_key,
         }
 
-    data = builder()
-    write_cache(cache_key, data, ttl_seconds=ttl_seconds, source=source)
+    cache_path = get_cache_file_path(
+        cache_key
+    )
+
+    build_lock_path = cache_path.with_name(
+        f"{cache_path.name}.build"
+    )
+
+    with file_write_lock(
+        build_lock_path,
+        timeout_seconds=30.0,
+        stale_seconds=300.0,
+    ):
+        if (
+            not force_refresh
+            and is_cache_valid(
+                cache_key,
+                ttl_seconds=ttl_seconds,
+            )
+        ):
+            return {
+                "data": read_cache(
+                    cache_key,
+                    default={},
+                ),
+                "cache_used": True,
+                "cache_key": cache_key,
+            }
+
+        data = builder()
+
+        write_cache(
+            cache_key,
+            data,
+            ttl_seconds=ttl_seconds,
+            source=source,
+        )
 
     return {
         "data": data,
@@ -2752,33 +3534,54 @@ def get_or_build_cache(
     }
 
 
-def clear_cache(cache_key: Optional[str] = None) -> Dict[str, Any]:
-    """
-    ลบ cache
-
-    ถ้า cache_key เป็น None จะลบ cache ทั้งหมดใน CACHE_DIR
-    """
-
+def clear_cache(
+    cache_key: Optional[str] = None,
+) -> Dict[str, Any]:
     removed: List[str] = []
 
     if cache_key:
-        paths = [
-            get_cache_file_path(cache_key),
-            get_cache_meta_path(cache_key),
-        ]
-    else:
-        paths = list(CACHE_DIR.glob("*.json"))
+        paths = {
+            get_cache_file_path(
+                cache_key
+            ),
+            get_cache_meta_path(
+                cache_key
+            ),
+            get_legacy_cache_meta_path(
+                cache_key
+            ),
+        }
 
-    for path in paths:
-        if path.exists() and path.is_file():
-            path.unlink()
-            removed.append(str(path))
+    else:
+        ensure_dir(CACHE_DIR)
+
+        paths = {
+            path
+            for path in CACHE_DIR.glob(
+                "*.json"
+            )
+            if path.is_file()
+        }
+
+    for path in sorted(
+        paths,
+        key=lambda item: str(item),
+    ):
+        with file_write_lock(path):
+            if (
+                path.exists()
+                and path.is_file()
+            ):
+                path.unlink()
+
+                removed.append(
+                    str(path)
+                )
 
     return {
         "removed": removed,
         "count": len(removed),
     }
-
 
 # ============================================================
 # 13) EXPORT / ZIP HELPERS
@@ -2789,27 +3592,137 @@ def create_zip_from_folder(
     zip_path: Union[str, Path],
     include_root_folder: bool = False,
 ) -> Path:
-    """
-    สร้าง ZIP จาก folder
-    """
+    folder_path = Path(
+        folder
+    ).resolve()
 
-    folder_path = Path(folder)
-    target_zip = ensure_parent_dir(zip_path)
+    if (
+        not folder_path.exists()
+        or not folder_path.is_dir()
+    ):
+        raise NotADirectoryError(
+            str(folder_path)
+        )
 
-    with zipfile.ZipFile(target_zip, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for file_path in folder_path.rglob("*"):
-            if not file_path.is_file():
-                continue
+    target_zip = ensure_parent_dir(
+        zip_path
+    ).resolve()
 
-            if include_root_folder:
-                arcname = file_path.relative_to(folder_path.parent)
-            else:
-                arcname = file_path.relative_to(folder_path)
+    temp_zip = make_atomic_temp_path(
+        target_zip
+    ).resolve()
 
-            zipf.write(file_path, arcname)
+    with file_write_lock(
+        target_zip,
+        timeout_seconds=30.0,
+        stale_seconds=300.0,
+    ):
+        try:
+            with zipfile.ZipFile(
+                temp_zip,
+                "w",
+                zipfile.ZIP_DEFLATED,
+                allowZip64=True,
+            ) as zip_file:
+                for file_path in sorted(
+                    folder_path.rglob("*"),
+                    key=lambda item: str(item),
+                ):
+                    if (
+                        file_path.is_symlink()
+                        or not file_path.is_file()
+                    ):
+                        continue
+
+                    resolved_file = (
+                        file_path.resolve()
+                    )
+
+                    try:
+                        relative_path = (
+                            resolved_file.relative_to(
+                                folder_path
+                            )
+                        )
+
+                    except ValueError:
+                        continue
+
+                    if resolved_file in {
+                        target_zip,
+                        temp_zip,
+                    }:
+                        continue
+
+                    archive_path = (
+                        Path(folder_path.name)
+                        / relative_path
+                        if include_root_folder
+                        else relative_path
+                    )
+
+                    zip_file.write(
+                        resolved_file,
+                        archive_path.as_posix(),
+                    )
+
+            os.replace(
+                temp_zip,
+                target_zip,
+            )
+
+        finally:
+            if temp_zip.exists():
+                try:
+                    temp_zip.unlink()
+                except OSError:
+                    pass
 
     return target_zip
 
+
+def write_records_export(
+    path: Union[str, Path],
+    records: List[Dict[str, Any]],
+    file_format: str = "json",
+) -> Path:
+    normalized_format = clean_text_lower(
+        file_format
+    )
+
+    target = Path(path)
+
+    if normalized_format == "json":
+        return write_json(
+            target,
+            records,
+        )
+
+    df = records_to_dataframe(
+        records
+    )
+
+    if normalized_format == "csv":
+        return write_csv(
+            target,
+            df,
+        )
+
+    if normalized_format in {
+        "xlsx",
+        "excel",
+    }:
+        return write_excel(
+            target,
+            {
+                "data": df,
+            },
+        )
+
+    raise ValueError(
+        "Unsupported export format: "
+        f"{normalized_format}"
+    )
 
 def write_records_export(
     path: Union[str, Path],

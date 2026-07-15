@@ -272,12 +272,27 @@ def get_flood_ttl() -> int:
 
     return int(CACHE_TTL_SECONDS.get("flood", 3600))
 
+def number_or_default(
+    value: Any,
+    default: float = 0.0,
+) -> float:
+    number = to_number(
+        value,
+        default=None,
+    )
+
+    return (
+        float(default)
+        if number is None
+        else float(number)
+    )
 
 def filter_records_api(
     records: List[Dict[str, Any]],
     context: Optional[Dict[str, Any]] = None,
     searchable_fields: Optional[List[str]] = None,
     target: str = "flood",
+    paginate: bool = True,
 ) -> Dict[str, Any]:
     """
     apply filter/search/sort/pagination
@@ -286,10 +301,16 @@ def filter_records_api(
     - province
     - risk_level / risk / risk_status
     - has_location / map_ready
+    - station
+    - filter เฉพาะ target ผ่าน filter_engine
     """
 
     ctx = normalize_context(context)
-    filters = ctx.get("filters", {}) if isinstance(ctx.get("filters"), dict) else {}
+    filters = (
+        ctx.get("filters", {})
+        if isinstance(ctx.get("filters"), dict)
+        else {}
+    )
 
     result = list(records or [])
 
@@ -328,8 +349,23 @@ def filter_records_api(
         or ctx.get("station")
     )
 
-    if province_value not in (None, "", [], {}):
-        province_norm = normalize_province_name(province_value)
+    province_text = clean_text_lower(
+        province_value
+    )
+
+    if (
+        province_value not in (None, "", [], {})
+        and province_text
+        not in {
+            "all",
+            "all province",
+            "all provinces",
+        }
+    ):
+        province_norm = normalize_province_name(
+            province_value
+        )
+
         result = [
             record
             for record in result
@@ -338,11 +374,27 @@ def filter_records_api(
                 or record.get("province_model")
                 or record.get("province_name_th")
                 or record.get("company_province")
-            ) == province_norm
+            )
+            == province_norm
         ]
 
-    if risk_value not in (None, "", [], {}):
-        risk_norm = normalize_risk_status(risk_value)
+    risk_text = clean_text_lower(
+        risk_value
+    )
+
+    if (
+        risk_value not in (None, "", [], {})
+        and risk_text
+        not in {
+            "all",
+            "all risk",
+            "all risks",
+        }
+    ):
+        risk_norm = normalize_risk_status(
+            risk_value
+        )
+
         result = [
             record
             for record in result
@@ -353,74 +405,228 @@ def filter_records_api(
                 or record.get("warning_level_predict")
                 or record.get("final_flood_risk_level")
                 or record.get("flood_risk_level")
-            ) == risk_norm
+            )
+            == risk_norm
         ]
 
-    if has_location_value not in (None, "", [], {}):
-        expected = to_bool(has_location_value, default=None)
+    if has_location_value not in (
+        None,
+        "",
+        [],
+        {},
+    ):
+        expected = to_bool(
+            has_location_value,
+            default=None,
+        )
 
         if expected is not None:
-            result = [
-                record
-                for record in result
-                if bool(
-                    record.get("map_ready")
-                    if "map_ready" in record
-                    else record.get("has_location")
-                    if "has_location" in record
-                    else validate_coordinate(
-                        record.get("lat") or record.get("latitude") or record.get("company_lat"),
-                        record.get("lon") or record.get("longitude") or record.get("company_lon"),
-                    ).get("valid")
-                ) is expected
-            ]
+            filtered_by_location: List[
+                Dict[str, Any]
+            ] = []
 
-    if station_value not in (None, "", [], {}):
-        station_query = clean_text_lower(station_value)
+            for record in result:
+                location_state: Optional[
+                    bool
+                ] = None
+
+                if "map_ready" in record:
+                    location_state = to_bool(
+                        record.get("map_ready"),
+                        default=None,
+                    )
+
+                if (
+                    location_state is None
+                    and "has_location" in record
+                ):
+                    location_state = to_bool(
+                        record.get("has_location"),
+                        default=None,
+                    )
+
+                if location_state is None:
+                    latitude = (
+                        record.get("lat")
+                        if record.get("lat") is not None
+                        else record.get("latitude")
+                        if record.get("latitude") is not None
+                        else record.get("company_lat")
+                    )
+
+                    longitude = (
+                        record.get("lon")
+                        if record.get("lon") is not None
+                        else record.get("longitude")
+                        if record.get("longitude") is not None
+                        else record.get("company_lon")
+                    )
+
+                    location_state = bool(
+                        validate_coordinate(
+                            latitude,
+                            longitude,
+                        ).get("valid")
+                    )
+
+                if location_state is expected:
+                    filtered_by_location.append(
+                        record
+                    )
+
+            result = filtered_by_location
+
+    station_text = clean_text_lower(
+        station_value
+    )
+
+    if (
+        station_value not in (None, "", [], {})
+        and station_text
+        not in {
+            "all",
+            "all station",
+            "all stations",
+        }
+    ):
         result = [
             record
             for record in result
-            if station_query in " ".join(
+            if station_text
+            in " ".join(
                 [
-                    clean_text(record.get("station_id")),
-                    clean_text(record.get("station_code")),
-                    clean_text(record.get("station_name")),
-                    clean_text(record.get("station_name_th")),
-                    clean_text(record.get("matched_station_id")),
-                    clean_text(record.get("matched_station_code")),
-                    clean_text(record.get("matched_station_name")),
-                    clean_text(record.get("source_id")),
-                    clean_text(record.get("source_name")),
-                    clean_text(record.get("dam_id")),
-                    clean_text(record.get("dam_name")),
+                    clean_text(
+                        record.get("station_id")
+                    ),
+                    clean_text(
+                        record.get("station_code")
+                    ),
+                    clean_text(
+                        record.get("station_name")
+                    ),
+                    clean_text(
+                        record.get("station_name_th")
+                    ),
+                    clean_text(
+                        record.get(
+                            "matched_station_id"
+                        )
+                    ),
+                    clean_text(
+                        record.get(
+                            "matched_station_code"
+                        )
+                    ),
+                    clean_text(
+                        record.get(
+                            "matched_station_name"
+                        )
+                    ),
+                    clean_text(
+                        record.get("source_id")
+                    ),
+                    clean_text(
+                        record.get("source_name")
+                    ),
+                    clean_text(
+                        record.get("dam_id")
+                    ),
+                    clean_text(
+                        record.get("dam_name")
+                    ),
                 ]
             ).lower()
         ]
 
+    manually_handled_filter_keys = {
+        "province",
+        "province_model",
+        "province_name_th",
+        "risk",
+        "risk_level",
+        "risk_status",
+        "warning_level",
+        "warning_level_predict",
+        "has_location",
+        "map_ready",
+        "station",
+        "station_id",
+        "station_code",
+        "station_name",
+        "data_date",
+    }
+
+    remaining_filters = {
+        key: value
+        for key, value in filters.items()
+        if key
+        not in manually_handled_filter_keys
+    }
+
     if filter_records_for_service is not None:
         try:
             ctx_for_filter = dict(ctx)
-            ctx_for_filter["filters"] = {}
-            ctx_for_filter["page"] = ctx.get("page", 1)
-            ctx_for_filter["page_size"] = ctx.get("page_size", 50)
-
-            filtered = filter_records_for_service(
-                records=result,
-                context=ctx_for_filter,
-                target=target,
-                paginate=True,
+            ctx_for_filter["filters"] = (
+                remaining_filters
             )
 
-            if isinstance(filtered, dict) and "records" in filtered:
+            filtered = (
+                filter_records_for_service(
+                    records=result,
+                    context=ctx_for_filter,
+                    target=target,
+                    paginate=paginate,
+                )
+            )
+
+            if (
+                isinstance(filtered, dict)
+                and isinstance(
+                    filtered.get("records"),
+                    list,
+                )
+            ):
                 return filtered
+
         except Exception:
             pass
 
-    return apply_search_sort_pagination(
-        records=result,
-        context=ctx,
-        searchable_fields=searchable_fields,
+    if paginate:
+        return apply_search_sort_pagination(
+            records=result,
+            context=ctx,
+            searchable_fields=searchable_fields,
+        )
+
+    searched_records = search_records(
+        result,
+        ctx.get("search", ""),
+        fields=searchable_fields,
     )
+
+    sorted_records = sort_records(
+        searched_records,
+        sort_by=ctx.get("sort_by", ""),
+        sort_dir=ctx.get(
+            "sort_dir",
+            "asc",
+        ),
+    )
+
+    return {
+        "records": sorted_records,
+        "items": sorted_records,
+        "total": len(sorted_records),
+        "page": 1,
+        "page_size": len(sorted_records),
+        "total_pages": (
+            1
+            if sorted_records
+            else 0
+        ),
+        "has_next": False,
+        "has_prev": False,
+    }
 
 # ============================================================
 # 3) COLUMN DETECTION HELPERS
@@ -598,53 +804,6 @@ def standardize_datetime(row: Any) -> str:
 # ============================================================
 # 4) FLOOD FILE LOADERS
 # ============================================================
-
-def load_flood_latest_sheets(force_refresh: bool = False) -> Dict[str, pd.DataFrame]:
-    """
-    อ่าน latest_database.xlsx ตาม FLOOD_LATEST_SHEETS
-
-    Return:
-    {
-        "rainfall_latest": DataFrame,
-        "waterlevel_latest": DataFrame,
-        ...
-    }
-    """
-
-    if not FLOOD_LATEST_DATABASE_PATH.exists():
-        return {}
-
-    sheets = read_excel_sheets(
-        FLOOD_LATEST_DATABASE_PATH,
-        sheet_names=FLOOD_LATEST_SHEETS,
-        dtype=str,
-    )
-
-    return {
-        key: clean_dataframe_common(df)
-        for key, df in sheets.items()
-    }
-
-
-def load_flood_master_sheets(force_refresh: bool = False) -> Dict[str, pd.DataFrame]:
-    """
-    อ่าน master_database.xlsx
-    """
-
-    if not FLOOD_MASTER_DATABASE_PATH.exists():
-        return {}
-
-    sheets = read_excel_sheets(
-        FLOOD_MASTER_DATABASE_PATH,
-        sheet_names=None,
-        dtype=str,
-    )
-
-    return {
-        key: clean_dataframe_common(df)
-        for key, df in sheets.items()
-    }
-
 
 def get_master_sheet_by_name_or_key(master_sheets: Dict[str, pd.DataFrame], target_name: str) -> pd.DataFrame:
     """
@@ -1105,161 +1264,14 @@ def standardize_all_long_latest(df: pd.DataFrame) -> List[Dict[str, Any]]:
 
     return records
 
-
-# ============================================================
-# 6) FLOOD LATEST BUILDERS
-# ============================================================
-
-def build_rainfall_latest(force_refresh: bool = False) -> Dict[str, Any]:
-    """
-    สร้าง rainfall latest records
-    """
-
-    def builder() -> Dict[str, Any]:
-        sheets = load_flood_latest_sheets(force_refresh=force_refresh)
-        df = sheets.get("rainfall_latest", pd.DataFrame())
-        records = standardize_rainfall_latest(df)
-
-        return {
-            "records": records,
-            "total": len(records),
-            "source_path": str(FLOOD_LATEST_DATABASE_PATH),
-            "source_sheet": FLOOD_LATEST_SHEETS.get("rainfall_latest"),
-            "created_at": now_iso(),
-        }
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["rainfall_latest"],
-        builder=builder,
-        ttl_seconds=get_flood_ttl(),
-        force_refresh=force_refresh,
-        source="flood_spatial_service.build_rainfall_latest",
-    )
-
-    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
-
-
-def build_waterlevel_latest(force_refresh: bool = False) -> Dict[str, Any]:
-    """
-    สร้าง waterlevel latest records
-    """
-
-    def builder() -> Dict[str, Any]:
-        sheets = load_flood_latest_sheets(force_refresh=force_refresh)
-        df = sheets.get("waterlevel_latest", pd.DataFrame())
-        records = standardize_waterlevel_latest(df)
-
-        return {
-            "records": records,
-            "total": len(records),
-            "source_path": str(FLOOD_LATEST_DATABASE_PATH),
-            "source_sheet": FLOOD_LATEST_SHEETS.get("waterlevel_latest"),
-            "created_at": now_iso(),
-        }
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["waterlevel_latest"],
-        builder=builder,
-        ttl_seconds=get_flood_ttl(),
-        force_refresh=force_refresh,
-        source="flood_spatial_service.build_waterlevel_latest",
-    )
-
-    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
-
-
-def build_large_dam_latest(force_refresh: bool = False) -> Dict[str, Any]:
-    """
-    สร้าง large dam latest records
-    """
-
-    def builder() -> Dict[str, Any]:
-        sheets = load_flood_latest_sheets(force_refresh=force_refresh)
-        df = sheets.get("large_dam_latest", pd.DataFrame())
-        records = standardize_dam_latest(df, dam_type="large_dam")
-
-        return {
-            "records": records,
-            "total": len(records),
-            "source_path": str(FLOOD_LATEST_DATABASE_PATH),
-            "source_sheet": FLOOD_LATEST_SHEETS.get("large_dam_latest"),
-            "created_at": now_iso(),
-        }
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["large_dam_latest"],
-        builder=builder,
-        ttl_seconds=get_flood_ttl(),
-        force_refresh=force_refresh,
-        source="flood_spatial_service.build_large_dam_latest",
-    )
-
-    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
-
-
-def build_medium_dam_latest(force_refresh: bool = False) -> Dict[str, Any]:
-    """
-    สร้าง medium dam latest records
-    """
-
-    def builder() -> Dict[str, Any]:
-        sheets = load_flood_latest_sheets(force_refresh=force_refresh)
-        df = sheets.get("medium_dam_latest", pd.DataFrame())
-        records = standardize_dam_latest(df, dam_type="medium_dam")
-
-        return {
-            "records": records,
-            "total": len(records),
-            "source_path": str(FLOOD_LATEST_DATABASE_PATH),
-            "source_sheet": FLOOD_LATEST_SHEETS.get("medium_dam_latest"),
-            "created_at": now_iso(),
-        }
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["medium_dam_latest"],
-        builder=builder,
-        ttl_seconds=get_flood_ttl(),
-        force_refresh=force_refresh,
-        source="flood_spatial_service.build_medium_dam_latest",
-    )
-
-    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
-
-
-def build_all_long_latest(force_refresh: bool = False) -> Dict[str, Any]:
-    """
-    สร้าง all_long latest records
-    """
-
-    def builder() -> Dict[str, Any]:
-        sheets = load_flood_latest_sheets(force_refresh=force_refresh)
-        df = sheets.get("all_long_latest", pd.DataFrame())
-        records = standardize_all_long_latest(df)
-
-        return {
-            "records": records,
-            "total": len(records),
-            "source_path": str(FLOOD_LATEST_DATABASE_PATH),
-            "source_sheet": FLOOD_LATEST_SHEETS.get("all_long_latest"),
-            "created_at": now_iso(),
-        }
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["all_long_latest"],
-        builder=builder,
-        ttl_seconds=get_flood_ttl(),
-        force_refresh=force_refresh,
-        source="flood_spatial_service.build_all_long_latest",
-    )
-
-    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
-
-
 # ============================================================
 # 7) MASTER / BOUNDARY BUILDERS
 # ============================================================
 
-def standardize_station_master(df: pd.DataFrame, station_type: str) -> List[Dict[str, Any]]:
+def standardize_station_master(
+    df: pd.DataFrame,
+    station_type: str,
+) -> List[Dict[str, Any]]:
     """
     แปลง station master เป็น standard records
     """
@@ -1270,22 +1282,66 @@ def standardize_station_master(df: pd.DataFrame, station_type: str) -> List[Dict
     records: List[Dict[str, Any]] = []
 
     for idx, row in df.iterrows():
-        lat, lon = standardize_lat_lon(row)
+        lat, lon = standardize_lat_lon(
+            row
+        )
 
         station_id = clean_text(
             get_value_by_candidates(
                 row,
-                ["station_id", "tele_station_id", "id", "code"],
-                default=f"{station_type}_master_row_{idx}",
+                [
+                    "station_id",
+                    "tele_station_id",
+                    "rainfall_station_id",
+                    "waterlevel_station_id",
+                    "id",
+                ],
+                default="",
             )
         )
+
+        station_code = clean_text(
+            get_value_by_candidates(
+                row,
+                [
+                    "station_code",
+                    "tele_station_code",
+                    "rainfall_station_code",
+                    "waterlevel_station_code",
+                    "code",
+                ],
+                default="",
+            )
+        )
+
+        if not station_id:
+            station_id = (
+                station_code
+                or f"{station_type}_master_row_{idx}"
+            )
+
+        if not station_code:
+            station_code = station_id
 
         station_name = clean_text(
             get_value_by_candidates(
                 row,
-                ["station_name", "tele_station_name", "name", "สถานี"],
+                [
+                    "station_name",
+                    "station_name_th",
+                    "tele_station_name",
+                    "rainfall_station_name",
+                    "waterlevel_station_name",
+                    "name",
+                    "สถานี",
+                ],
                 default=station_id,
             )
+        )
+
+        coordinate = validate_coordinate(
+            lat,
+            lon,
         )
 
         records.append(
@@ -1293,21 +1349,45 @@ def standardize_station_master(df: pd.DataFrame, station_type: str) -> List[Dict
                 "station_type": station_type,
                 "source_type": station_type,
                 "source_id": station_id,
-                "source_key": f"{station_type}:{station_id}",
+                "source_key": (
+                    f"{station_type}:"
+                    f"{station_id}"
+                ),
                 "source_name": station_name,
                 "station_id": station_id,
+                "station_code": station_code,
                 "station_name": station_name,
-                "province": standardize_province(row),
-                "basin": standardize_basin(row),
-                "lat": lat,
-                "lon": lon,
-                "coordinate_valid": validate_coordinate(lat, lon)["valid"],
+                "station_name_th": (
+                    station_name
+                ),
+                "province": (
+                    standardize_province(row)
+                ),
+                "basin": standardize_basin(
+                    row
+                ),
+                "lat": coordinate.get("lat"),
+                "lon": coordinate.get("lon"),
+                "latitude": coordinate.get(
+                    "lat"
+                ),
+                "longitude": coordinate.get(
+                    "lon"
+                ),
+                "coordinate_valid": bool(
+                    coordinate.get("valid")
+                ),
+                "has_location": bool(
+                    coordinate.get("valid")
+                ),
+                "map_ready": bool(
+                    coordinate.get("valid")
+                ),
                 "source_row": int(idx) + 2,
             }
         )
 
     return records
-
 
 def standardize_dam_master(df: pd.DataFrame) -> List[Dict[str, Any]]:
     """
@@ -1544,19 +1624,39 @@ def build_basin_boundaries(force_refresh: bool = False) -> Dict[str, Any]:
 # 8) FLOOD COMPUTED RISK
 # ============================================================
 
-def build_flood_computed_risk(force_refresh: bool = False) -> Dict[str, Any]:
+def build_flood_computed_risk(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
-    รวม rainfall/waterlevel/dam latest และคำนวณ flood_computed_risk
+    รวม rainfall/waterlevel/dam latest
+    และคำนวณ flood_computed_risk
     """
 
     def builder() -> Dict[str, Any]:
-        rainfall = build_rainfall_latest(force_refresh=force_refresh).get("records", [])
-        waterlevel = build_waterlevel_latest(force_refresh=force_refresh).get("records", [])
-        large_dam = build_large_dam_latest(force_refresh=force_refresh).get("records", [])
-        medium_dam = build_medium_dam_latest(force_refresh=force_refresh).get("records", [])
-        all_long = build_all_long_latest(force_refresh=force_refresh).get("records", [])
+        rainfall = build_rainfall_latest(
+            force_refresh=force_refresh
+        ).get("records", [])
 
-        records = []
+        waterlevel = build_waterlevel_latest(
+            force_refresh=force_refresh
+        ).get("records", [])
+
+        large_dam = build_large_dam_latest(
+            force_refresh=force_refresh
+        ).get("records", [])
+
+        medium_dam = build_medium_dam_latest(
+            force_refresh=force_refresh
+        ).get("records", [])
+
+        all_long = build_all_long_latest(
+            force_refresh=force_refresh
+        ).get("records", [])
+
+        records: List[
+            Dict[str, Any]
+        ] = []
+
         records.extend(rainfall)
         records.extend(waterlevel)
         records.extend(large_dam)
@@ -1566,91 +1666,255 @@ def build_flood_computed_risk(force_refresh: bool = False) -> Dict[str, Any]:
             records.extend(all_long)
 
         for record in records:
-            record["risk_level"] = normalize_risk_level(record.get("risk_level"))
-            record["risk_score"] = RISK_SCORE.get(record["risk_level"], -1)
-            record["risk_color"] = RISK_COLORS.get(record["risk_level"], RISK_COLORS.get("Unknown", "#64748b"))
+            risk_level = (
+                normalize_risk_level(
+                    record.get("risk_level")
+                )
+            )
+
+            record["risk_level"] = (
+                risk_level
+            )
+            record["risk_score"] = (
+                RISK_SCORE.get(
+                    risk_level,
+                    -1,
+                )
+            )
+            record["risk_color"] = (
+                RISK_COLORS.get(
+                    risk_level,
+                    RISK_COLORS.get(
+                        "Unknown",
+                        "#64748b",
+                    ),
+                )
+            )
 
         records = sorted(
             records,
             key=lambda item: (
-                -(to_number(item.get("risk_score"), -1) or -1),
-                clean_text(item.get("province")),
-                clean_text(item.get("source_name")),
+                -number_or_default(
+                    item.get("risk_score"),
+                    -1,
+                ),
+                clean_text(
+                    item.get("province")
+                ),
+                clean_text(
+                    item.get("source_name")
+                ),
             ),
         )
 
-        risk_counts = Counter(record.get("risk_level", "Unknown") for record in records)
-        source_counts = Counter(record.get("source_type", "unknown") for record in records)
+        risk_counts = Counter(
+            record.get(
+                "risk_level",
+                "Unknown",
+            )
+            for record in records
+        )
+
+        source_counts = Counter(
+            record.get(
+                "source_type",
+                "unknown",
+            )
+            for record in records
+        )
 
         return {
             "records": records,
             "total": len(records),
-            "risk_counts": dict(risk_counts),
-            "source_counts": dict(source_counts),
+            "risk_counts": dict(
+                risk_counts
+            ),
+            "source_counts": dict(
+                source_counts
+            ),
             "created_at": now_iso(),
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["flood_computed_risk"],
+        cache_key=CACHE_KEYS[
+            "flood_computed_risk"
+        ],
         builder=builder,
         ttl_seconds=get_flood_ttl(),
         force_refresh=force_refresh,
-        source="flood_spatial_service.build_flood_computed_risk",
+        source=(
+            "flood_spatial_service."
+            "build_flood_computed_risk"
+        ),
     )
 
-    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
+    return {
+        **cache_result["data"],
+        "cache_used": (
+            cache_result["cache_used"]
+        ),
+    }
 
-
-def build_province_risk_summary(force_refresh: bool = False) -> Dict[str, Any]:
+def build_province_risk_summary(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
-    สร้าง province_risk_summary จาก flood_computed_risk
+    สร้าง province_risk_summary
+    จาก flood_computed_risk
     """
 
     def builder() -> Dict[str, Any]:
-        risk_records = build_flood_computed_risk(force_refresh=force_refresh).get("records", [])
-        groups = group_records_by(risk_records, "province")
+        risk_records = (
+            build_flood_computed_risk(
+                force_refresh=force_refresh
+            ).get("records", [])
+        )
 
-        records: List[Dict[str, Any]] = []
+        groups = group_records_by(
+            risk_records,
+            "province",
+        )
+
+        records: List[
+            Dict[str, Any]
+        ] = []
 
         for province, group in groups.items():
             if province == "__EMPTY__":
                 province = "Unknown"
 
-            risk_level = combine_risk_levels([record.get("risk_level") for record in group])
-            risk_counts = Counter(record.get("risk_level", "Unknown") for record in group)
-            source_counts = Counter(record.get("source_type", "unknown") for record in group)
+            risk_level = combine_risk_levels(
+                [
+                    record.get("risk_level")
+                    for record in group
+                ]
+            )
+
+            risk_counts = Counter(
+                record.get(
+                    "risk_level",
+                    "Unknown",
+                )
+                for record in group
+            )
+
+            source_counts = Counter(
+                record.get(
+                    "source_type",
+                    "unknown",
+                )
+                for record in group
+            )
 
             records.append(
                 {
                     "province": province,
                     "risk_level": risk_level,
-                    "risk_score": RISK_SCORE.get(risk_level, -1),
-                    "risk_color": RISK_COLORS.get(risk_level, RISK_COLORS.get("Unknown", "#64748b")),
-                    "risk_counts": dict(risk_counts),
-                    "source_counts": dict(source_counts),
-                    "station_count": len(group),
-                    "rainfall_count": source_counts.get("rainfall", 0),
-                    "waterlevel_count": source_counts.get("waterlevel", 0),
-                    "large_dam_count": source_counts.get("large_dam", 0),
-                    "medium_dam_count": source_counts.get("medium_dam", 0),
-                    "critical_count": risk_counts.get("Critical", 0),
-                    "warning_count": risk_counts.get("Warning", 0),
-                    "watch_count": risk_counts.get("Watch", 0),
-                    "normal_count": risk_counts.get("Normal", 0),
-                    "unknown_count": risk_counts.get("Unknown", 0),
-                    "top_risk_sources": sorted(
-                        group,
-                        key=lambda item: to_number(item.get("risk_score"), -1) or -1,
-                        reverse=True,
-                    )[:10],
+                    "risk_score": (
+                        RISK_SCORE.get(
+                            risk_level,
+                            -1,
+                        )
+                    ),
+                    "risk_color": (
+                        RISK_COLORS.get(
+                            risk_level,
+                            RISK_COLORS.get(
+                                "Unknown",
+                                "#64748b",
+                            ),
+                        )
+                    ),
+                    "risk_counts": dict(
+                        risk_counts
+                    ),
+                    "source_counts": dict(
+                        source_counts
+                    ),
+                    "station_count": len(
+                        group
+                    ),
+                    "rainfall_count": (
+                        source_counts.get(
+                            "rainfall",
+                            0,
+                        )
+                    ),
+                    "waterlevel_count": (
+                        source_counts.get(
+                            "waterlevel",
+                            0,
+                        )
+                    ),
+                    "large_dam_count": (
+                        source_counts.get(
+                            "large_dam",
+                            0,
+                        )
+                    ),
+                    "medium_dam_count": (
+                        source_counts.get(
+                            "medium_dam",
+                            0,
+                        )
+                    ),
+                    "critical_count": (
+                        risk_counts.get(
+                            "Critical",
+                            0,
+                        )
+                    ),
+                    "warning_count": (
+                        risk_counts.get(
+                            "Warning",
+                            0,
+                        )
+                    ),
+                    "watch_count": (
+                        risk_counts.get(
+                            "Watch",
+                            0,
+                        )
+                    ),
+                    "normal_count": (
+                        risk_counts.get(
+                            "Normal",
+                            0,
+                        )
+                    ),
+                    "unknown_count": (
+                        risk_counts.get(
+                            "Unknown",
+                            0,
+                        )
+                    ),
+                    "top_risk_sources": (
+                        sorted(
+                            group,
+                            key=lambda item: (
+                                number_or_default(
+                                    item.get(
+                                        "risk_score"
+                                    ),
+                                    -1,
+                                )
+                            ),
+                            reverse=True,
+                        )[:10]
+                    ),
                 }
             )
 
         records = sorted(
             records,
             key=lambda item: (
-                -(to_number(item.get("risk_score"), -1) or -1),
-                clean_text(item.get("province")),
+                -number_or_default(
+                    item.get("risk_score"),
+                    -1,
+                ),
+                clean_text(
+                    item.get("province")
+                ),
             ),
         )
 
@@ -1661,15 +1925,24 @@ def build_province_risk_summary(force_refresh: bool = False) -> Dict[str, Any]:
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["province_risk_summary"],
+        cache_key=CACHE_KEYS[
+            "province_risk_summary"
+        ],
         builder=builder,
         ttl_seconds=get_flood_ttl(),
         force_refresh=force_refresh,
-        source="flood_spatial_service.build_province_risk_summary",
+        source=(
+            "flood_spatial_service."
+            "build_province_risk_summary"
+        ),
     )
 
-    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
-
+    return {
+        **cache_result["data"],
+        "cache_used": (
+            cache_result["cache_used"]
+        ),
+    }
 
 # ============================================================
 # 9) COMPANY / SPATIAL JOIN
@@ -1861,60 +2134,118 @@ def build_single_company_flood_context_record(
         "updated_at": now_iso(),
     }
 
-
-def build_spatial_join_result(force_refresh: bool = False) -> Dict[str, Any]:
+def build_spatial_join_result(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
     สร้าง spatial_join_result
 
     เชื่อม:
-    company_unified_master + flood_computed_risk + province_risk_summary
+    company_unified_master
+    + flood_computed_risk
+    + province_risk_summary
     """
 
     def builder() -> Dict[str, Any]:
-        companies = load_company_unified_records()
-        flood_records = build_flood_computed_risk(force_refresh=force_refresh).get("records", [])
-        flood_sources = split_flood_sources(flood_records)
-        province_risk_index = get_province_risk_index(force_refresh=force_refresh)
+        companies = (
+            load_company_unified_records()
+        )
 
-        records: List[Dict[str, Any]] = []
+        flood_records = (
+            build_flood_computed_risk(
+                force_refresh=force_refresh
+            ).get("records", [])
+        )
+
+        flood_sources = (
+            split_flood_sources(
+                flood_records
+            )
+        )
+
+        province_risk_index = (
+            get_province_risk_index(
+                force_refresh=force_refresh
+            )
+        )
+
+        records: List[
+            Dict[str, Any]
+        ] = []
 
         for company in companies:
-            record = build_single_company_flood_context_record(
-                company=company,
-                flood_sources=flood_sources,
-                province_risk_index=province_risk_index,
+            records.append(
+                build_single_company_flood_context_record(
+                    company=company,
+                    flood_sources=flood_sources,
+                    province_risk_index=(
+                        province_risk_index
+                    ),
+                )
             )
-            records.append(record)
 
         records = sorted(
             records,
             key=lambda item: (
-                -(to_number(item.get("flood_risk_score"), -1) or -1),
-                clean_text(item.get("company_name")),
+                -number_or_default(
+                    item.get(
+                        "flood_risk_score"
+                    ),
+                    -1,
+                ),
+                clean_text(
+                    item.get("company_name")
+                ),
             ),
         )
 
-        risk_counts = Counter(record.get("final_flood_risk_level", "Unknown") for record in records)
-        join_counts = Counter(record.get("join_level", "none") for record in records)
+        risk_counts = Counter(
+            record.get(
+                "final_flood_risk_level",
+                "Unknown",
+            )
+            for record in records
+        )
+
+        join_counts = Counter(
+            record.get(
+                "join_level",
+                "none",
+            )
+            for record in records
+        )
 
         return {
             "records": records,
             "total": len(records),
-            "risk_counts": dict(risk_counts),
-            "join_counts": dict(join_counts),
+            "risk_counts": dict(
+                risk_counts
+            ),
+            "join_counts": dict(
+                join_counts
+            ),
             "created_at": now_iso(),
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["spatial_join_result"],
+        cache_key=CACHE_KEYS[
+            "spatial_join_result"
+        ],
         builder=builder,
         ttl_seconds=get_flood_ttl(),
         force_refresh=force_refresh,
-        source="flood_spatial_service.build_spatial_join_result",
+        source=(
+            "flood_spatial_service."
+            "build_spatial_join_result"
+        ),
     )
 
-    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
-
+    return {
+        **cache_result["data"],
+        "cache_used": (
+            cache_result["cache_used"]
+        ),
+    }
 
 def build_company_flood_context(force_refresh: bool = False) -> Dict[str, Any]:
     """
@@ -1947,23 +2278,29 @@ def build_company_flood_context(force_refresh: bool = False) -> Dict[str, Any]:
 # 10) POLICY FLOOD EXPOSURE
 # ============================================================
 
-def build_policy_flood_exposure(force_refresh: bool = False) -> Dict[str, Any]:
+def build_policy_flood_exposure(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
-    สร้าง policy_flood_exposure จาก spatial_join_result
-
-    ใช้ดู exposure ตาม risk level:
-    - total_suminsure
-    - total_premium
-    - total_loss
-    - company_count
+    สร้าง policy_flood_exposure
+    จาก spatial_join_result
     """
 
     def builder() -> Dict[str, Any]:
-        spatial_records = build_spatial_join_result(force_refresh=force_refresh).get("records", [])
+        spatial_records = (
+            build_spatial_join_result(
+                force_refresh=force_refresh
+            ).get("records", [])
+        )
 
-        groups = group_records_by(spatial_records, "final_flood_risk_level")
+        groups = group_records_by(
+            spatial_records,
+            "final_flood_risk_level",
+        )
 
-        records: List[Dict[str, Any]] = []
+        records: List[
+            Dict[str, Any]
+        ] = []
 
         for risk_level, group in groups.items():
             if risk_level == "__EMPTY__":
@@ -1971,29 +2308,116 @@ def build_policy_flood_exposure(force_refresh: bool = False) -> Dict[str, Any]:
 
             records.append(
                 {
-                    "flood_risk_level": risk_level,
-                    "risk_score": RISK_SCORE.get(risk_level, -1),
-                    "risk_color": RISK_COLORS.get(risk_level, RISK_COLORS.get("Unknown", "#64748b")),
-                    "company_count": len(group),
-                    "total_premium": sum(to_number(item.get("total_premium"), 0) or 0 for item in group),
-                    "total_loss": sum(to_number(item.get("total_loss"), 0) or 0 for item in group),
-                    "total_suminsure": sum(to_number(item.get("total_suminsure"), 0) or 0 for item in group),
-                    "company_records": group[:100],
+                    "flood_risk_level": (
+                        risk_level
+                    ),
+                    "risk_score": (
+                        RISK_SCORE.get(
+                            risk_level,
+                            -1,
+                        )
+                    ),
+                    "risk_color": (
+                        RISK_COLORS.get(
+                            risk_level,
+                            RISK_COLORS.get(
+                                "Unknown",
+                                "#64748b",
+                            ),
+                        )
+                    ),
+                    "company_count": len(
+                        group
+                    ),
+                    "total_premium": sum(
+                        to_number(
+                            item.get(
+                                "total_premium"
+                            ),
+                            0,
+                        )
+                        or 0
+                        for item in group
+                    ),
+                    "total_loss": sum(
+                        to_number(
+                            item.get(
+                                "total_loss"
+                            ),
+                            0,
+                        )
+                        or 0
+                        for item in group
+                    ),
+                    "total_suminsure": sum(
+                        to_number(
+                            item.get(
+                                "total_suminsure"
+                            ),
+                            0,
+                        )
+                        or 0
+                        for item in group
+                    ),
+                    "company_records": (
+                        group[:100]
+                    ),
                 }
             )
 
         records = sorted(
             records,
-            key=lambda item: to_number(item.get("risk_score"), -1) or -1,
+            key=lambda item: (
+                number_or_default(
+                    item.get("risk_score"),
+                    -1,
+                )
+            ),
             reverse=True,
         )
 
         summary = {
-            "company_count": len(spatial_records),
-            "total_premium": sum(to_number(item.get("total_premium"), 0) or 0 for item in spatial_records),
-            "total_loss": sum(to_number(item.get("total_loss"), 0) or 0 for item in spatial_records),
-            "total_suminsure": sum(to_number(item.get("total_suminsure"), 0) or 0 for item in spatial_records),
-            "risk_counts": dict(Counter(item.get("final_flood_risk_level", "Unknown") for item in spatial_records)),
+            "company_count": len(
+                spatial_records
+            ),
+            "total_premium": sum(
+                to_number(
+                    item.get(
+                        "total_premium"
+                    ),
+                    0,
+                )
+                or 0
+                for item in spatial_records
+            ),
+            "total_loss": sum(
+                to_number(
+                    item.get("total_loss"),
+                    0,
+                )
+                or 0
+                for item in spatial_records
+            ),
+            "total_suminsure": sum(
+                to_number(
+                    item.get(
+                        "total_suminsure"
+                    ),
+                    0,
+                )
+                or 0
+                for item in spatial_records
+            ),
+            "risk_counts": dict(
+                Counter(
+                    item.get(
+                        "final_flood_risk_level",
+                        "Unknown",
+                    )
+                    for item
+                    in spatial_records
+                )
+            ),
         }
 
         return {
@@ -2004,17 +2428,28 @@ def build_policy_flood_exposure(force_refresh: bool = False) -> Dict[str, Any]:
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["policy_flood_exposure"],
+        cache_key=CACHE_KEYS[
+            "policy_flood_exposure"
+        ],
         builder=builder,
         ttl_seconds=get_flood_ttl(),
         force_refresh=force_refresh,
-        source="flood_spatial_service.build_policy_flood_exposure",
+        source=(
+            "flood_spatial_service."
+            "build_policy_flood_exposure"
+        ),
     )
 
-    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
+    return {
+        **cache_result["data"],
+        "cache_used": (
+            cache_result["cache_used"]
+        ),
+    }
 
-
-def build_province_risk_exposure(force_refresh: bool = False) -> Dict[str, Any]:
+def build_province_risk_exposure(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
     สร้าง province_risk_exposure
 
@@ -2022,33 +2457,120 @@ def build_province_risk_exposure(force_refresh: bool = False) -> Dict[str, Any]:
     """
 
     def builder() -> Dict[str, Any]:
-        spatial_records = build_spatial_join_result(force_refresh=force_refresh).get("records", [])
-        groups = group_records_by(spatial_records, "company_province")
+        spatial_records = (
+            build_spatial_join_result(
+                force_refresh=force_refresh
+            ).get("records", [])
+        )
 
-        records: List[Dict[str, Any]] = []
+        groups = group_records_by(
+            spatial_records,
+            "company_province",
+        )
+
+        records: List[
+            Dict[str, Any]
+        ] = []
 
         for province, group in groups.items():
             if province == "__EMPTY__":
                 province = "Unknown"
 
-            final_risk = combine_risk_levels([item.get("final_flood_risk_level") for item in group])
-            risk_counts = Counter(item.get("final_flood_risk_level", "Unknown") for item in group)
+            final_risk = combine_risk_levels(
+                [
+                    item.get(
+                        "final_flood_risk_level"
+                    )
+                    for item in group
+                ]
+            )
+
+            risk_counts = Counter(
+                item.get(
+                    "final_flood_risk_level",
+                    "Unknown",
+                )
+                for item in group
+            )
 
             records.append(
                 {
                     "province": province,
-                    "flood_risk_level": final_risk,
-                    "risk_score": RISK_SCORE.get(final_risk, -1),
-                    "risk_color": RISK_COLORS.get(final_risk, RISK_COLORS.get("Unknown", "#64748b")),
-                    "risk_counts": dict(risk_counts),
-                    "company_count": len(group),
-                    "company_with_flood_context_count": sum(1 for item in group if to_bool(item.get("has_flood_context"), default=False)),
-                    "total_premium": sum(to_number(item.get("total_premium"), 0) or 0 for item in group),
-                    "total_loss": sum(to_number(item.get("total_loss"), 0) or 0 for item in group),
-                    "total_suminsure": sum(to_number(item.get("total_suminsure"), 0) or 0 for item in group),
+                    "flood_risk_level": (
+                        final_risk
+                    ),
+                    "risk_score": (
+                        RISK_SCORE.get(
+                            final_risk,
+                            -1,
+                        )
+                    ),
+                    "risk_color": (
+                        RISK_COLORS.get(
+                            final_risk,
+                            RISK_COLORS.get(
+                                "Unknown",
+                                "#64748b",
+                            ),
+                        )
+                    ),
+                    "risk_counts": dict(
+                        risk_counts
+                    ),
+                    "company_count": len(
+                        group
+                    ),
+                    "company_with_flood_context_count": sum(
+                        1
+                        for item in group
+                        if to_bool(
+                            item.get(
+                                "has_flood_context"
+                            ),
+                            default=False,
+                        )
+                    ),
+                    "total_premium": sum(
+                        to_number(
+                            item.get(
+                                "total_premium"
+                            ),
+                            0,
+                        )
+                        or 0
+                        for item in group
+                    ),
+                    "total_loss": sum(
+                        to_number(
+                            item.get(
+                                "total_loss"
+                            ),
+                            0,
+                        )
+                        or 0
+                        for item in group
+                    ),
+                    "total_suminsure": sum(
+                        to_number(
+                            item.get(
+                                "total_suminsure"
+                            ),
+                            0,
+                        )
+                        or 0
+                        for item in group
+                    ),
                     "top_companies": sorted(
                         group,
-                        key=lambda item: to_number(item.get("total_suminsure"), 0) or 0,
+                        key=lambda item: (
+                            to_number(
+                                item.get(
+                                    "total_suminsure"
+                                ),
+                                0,
+                            )
+                            or 0
+                        ),
                         reverse=True,
                     )[:20],
                 }
@@ -2057,8 +2579,19 @@ def build_province_risk_exposure(force_refresh: bool = False) -> Dict[str, Any]:
         records = sorted(
             records,
             key=lambda item: (
-                -(to_number(item.get("risk_score"), -1) or -1),
-                -(to_number(item.get("total_suminsure"), 0) or 0),
+                -number_or_default(
+                    item.get("risk_score"),
+                    -1,
+                ),
+                -(
+                    to_number(
+                        item.get(
+                            "total_suminsure"
+                        ),
+                        0,
+                    )
+                    or 0
+                ),
             ),
         )
 
@@ -2069,15 +2602,24 @@ def build_province_risk_exposure(force_refresh: bool = False) -> Dict[str, Any]:
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["province_risk_exposure"],
+        cache_key=CACHE_KEYS[
+            "province_risk_exposure"
+        ],
         builder=builder,
         ttl_seconds=get_flood_ttl(),
         force_refresh=force_refresh,
-        source="flood_spatial_service.build_province_risk_exposure",
+        source=(
+            "flood_spatial_service."
+            "build_province_risk_exposure"
+        ),
     )
 
-    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
-
+    return {
+        **cache_result["data"],
+        "cache_used": (
+            cache_result["cache_used"]
+        ),
+    }
 
 # ============================================================
 # 11) API FUNCTIONS - FLOOD
@@ -2350,141 +2892,171 @@ def make_flood_point_features(records: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     return make_feature_collection(features)
 
-
-def get_flood_map_feature_collection(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_flood_map_feature_collection(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
-    ใช้โดย map_graph_service.py เพื่อสร้าง flood layer
-    """
-
-    ctx = normalize_context(context)
-    records = build_flood_computed_risk(force_refresh=ctx.get("force_refresh", False)).get("records", [])
-
-    result = filter_records_api(records, ctx, FLOOD_SEARCHABLE_FIELDS, target="flood")
-    return make_flood_point_features(result.get("records", []))
-
-
-def get_company_flood_map_feature_collection(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    ใช้โดย map_graph_service.py เพื่อสร้าง company flood exposure layer
+    ใช้โดย map_graph_service.py
+    เพื่อสร้าง flood layer
     """
 
     ctx = normalize_context(context)
-    records = build_company_flood_context(force_refresh=ctx.get("force_refresh", False)).get("records", [])
 
-    result = filter_records_api(records, ctx, SPATIAL_SEARCHABLE_FIELDS, target="spatial")
+    records = build_flood_computed_risk(
+        force_refresh=ctx.get(
+            "force_refresh",
+            False,
+        )
+    ).get("records", [])
 
-    features: List[Dict[str, Any]] = []
+    result = filter_records_api(
+        records,
+        ctx,
+        FLOOD_SEARCHABLE_FIELDS,
+        target="flood",
+        paginate=False,
+    )
 
-    for record in result.get("records", []):
-        risk_level = normalize_risk_level(record.get("final_flood_risk_level"))
+    return make_flood_point_features(
+        result.get("records", [])
+    )
+
+
+def get_company_flood_map_feature_collection(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    ใช้โดย map_graph_service.py
+    เพื่อสร้าง company flood exposure layer
+    """
+
+    ctx = normalize_context(context)
+
+    records = build_company_flood_context(
+        force_refresh=ctx.get(
+            "force_refresh",
+            False,
+        )
+    ).get("records", [])
+
+    result = filter_records_api(
+        records,
+        ctx,
+        SPATIAL_SEARCHABLE_FIELDS,
+        target="spatial",
+        paginate=False,
+    )
+
+    features: List[
+        Dict[str, Any]
+    ] = []
+
+    for record in result.get(
+        "records",
+        [],
+    ):
+        risk_level = normalize_risk_level(
+            record.get(
+                "final_flood_risk_level"
+            )
+        )
 
         feature = make_point_feature(
             lon=record.get("company_lon"),
             lat=record.get("company_lat"),
             properties={
-                "feature_id": record.get("tax_id_norm"),
-                "feature_type": "company_flood_context",
-                "tax_id_norm": record.get("tax_id_norm"),
-                "company_name": record.get("company_name"),
-                "province": record.get("company_province"),
-                "flood_risk_level": risk_level,
+                "feature_id": (
+                    record.get("tax_id_norm")
+                ),
+                "feature_type": (
+                    "company_flood_context"
+                ),
+                "tax_id_norm": (
+                    record.get("tax_id_norm")
+                ),
+                "company_name": (
+                    record.get("company_name")
+                ),
+                "province": (
+                    record.get(
+                        "company_province"
+                    )
+                ),
+                "flood_risk_level": (
+                    risk_level
+                ),
                 "risk_level": risk_level,
-                "risk_color": RISK_COLORS.get(risk_level, RISK_COLORS.get("Unknown", "#64748b")),
-                "join_level": record.get("join_level"),
-                "flood_risk_reason": record.get("flood_risk_reason"),
-                "total_premium": record.get("total_premium"),
-                "total_suminsure": record.get("total_suminsure"),
-                "marker_color": RISK_COLORS.get(risk_level, RISK_COLORS.get("Unknown", "#64748b")),
-                "marker_size": 10 + max(0, to_number(record.get("flood_risk_score"), 0) or 0) * 3,
+                "risk_score": (
+                    record.get(
+                        "flood_risk_score"
+                    )
+                ),
+                "risk_color": (
+                    record.get(
+                        "flood_risk_color"
+                    )
+                ),
+                "risk_reason": (
+                    record.get(
+                        "flood_risk_reason"
+                    )
+                ),
+                "join_level": (
+                    record.get("join_level")
+                ),
+                "location_quality": (
+                    record.get(
+                        "location_quality"
+                    )
+                ),
+                "total_premium": (
+                    record.get(
+                        "total_premium"
+                    )
+                ),
+                "total_loss": (
+                    record.get("total_loss")
+                ),
+                "total_suminsure": (
+                    record.get(
+                        "total_suminsure"
+                    )
+                ),
+                "loss_ratio": (
+                    record.get("loss_ratio")
+                ),
+                "marker_color": (
+                    record.get(
+                        "flood_risk_color"
+                    )
+                ),
+                "marker_size": (
+                    10
+                    + max(
+                        0,
+                        to_number(
+                            record.get(
+                                "flood_risk_score"
+                            ),
+                            0,
+                        )
+                        or 0,
+                    )
+                    * 3
+                ),
             },
         )
 
         if feature:
             features.append(feature)
 
-    return make_feature_collection(features)
-
+    return make_feature_collection(
+        features
+    )
 
 # ============================================================
 # 14) CACHE REBUILD / DASHBOARD SUPPORT
 # ============================================================
-
-def rebuild_flood_spatial_cache(force_refresh: bool = True) -> Dict[str, Any]:
-    """
-    rebuild cache ทั้งหมดของ flood_spatial_service.py
-    """
-
-    results = {
-        "rainfall_latest": build_rainfall_latest(force_refresh=force_refresh),
-        "waterlevel_latest": build_waterlevel_latest(force_refresh=force_refresh),
-        "large_dam_latest": build_large_dam_latest(force_refresh=force_refresh),
-        "medium_dam_latest": build_medium_dam_latest(force_refresh=force_refresh),
-        "all_long_latest": build_all_long_latest(force_refresh=force_refresh),
-        "flood_station_master": build_flood_station_master(force_refresh=force_refresh),
-        "province_boundaries": build_province_boundaries(force_refresh=force_refresh),
-        "basin_boundaries": build_basin_boundaries(force_refresh=force_refresh),
-        "flood_computed_risk": build_flood_computed_risk(force_refresh=force_refresh),
-        "province_risk_summary": build_province_risk_summary(force_refresh=force_refresh),
-        "spatial_join_result": build_spatial_join_result(force_refresh=force_refresh),
-        "company_flood_context": build_company_flood_context(force_refresh=force_refresh),
-        "policy_flood_exposure": build_policy_flood_exposure(force_refresh=force_refresh),
-        "province_risk_exposure": build_province_risk_exposure(force_refresh=force_refresh),
-    }
-
-    return {
-        "rebuilt": True,
-        "results": {
-            key: {
-                "total": value.get("total"),
-                "cache_used": value.get("cache_used"),
-                "created_at": value.get("created_at"),
-            }
-            for key, value in results.items()
-        },
-        "generated_at": now_iso(),
-    }
-
-
-def get_flood_dashboard_payload(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    สร้าง payload สำหรับ dashboard_package_service.py
-    """
-
-    ctx = normalize_context(context)
-
-    summary = get_flood_summary(ctx)
-
-    computed = get_flood_computed_risk(
-        {
-            **ctx,
-            "page": 1,
-            "page_size": 20,
-            "sort_by": "risk_score",
-            "sort_dir": "desc",
-        }
-    )
-
-    province_exposure = get_province_risk_exposure(
-        {
-            **ctx,
-            "page": 1,
-            "page_size": 20,
-            "sort_by": "risk_score",
-            "sort_dir": "desc",
-        }
-    )
-
-    policy_exposure = get_policy_flood_exposure(ctx)
-
-    return {
-        "summary": summary,
-        "top_risk_sources": computed.get("records", []),
-        "province_risk_exposure": province_exposure.get("records", []),
-        "policy_flood_exposure": policy_exposure.get("summary", {}),
-        "risk_counts": summary.get("risk_counts", {}),
-        "source_counts": summary.get("source_counts", {}),
-        "generated_at": now_iso(),
-    }
 
 # ============================================================
 # 15) FLOOD RUNTIME OVERRIDES - LATEST / HISTORY / MASTER / PREDICTION
@@ -3039,12 +3611,102 @@ def get_all_long_latest(context: Optional[Dict[str, Any]] = None) -> Dict[str, A
 
     return filter_records_api(records, ctx, FLOOD_SEARCHABLE_FIELDS, target="flood")
 
-def get_rainfall_station_master(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_rainfall_station_master(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     ctx = normalize_context(context)
-    df = read_master_sheet("rainfall_station_master", use_cache=not ctx.get("force_refresh", False), return_meta=False)
-    records = standardize_station_master(clean_dataframe_common(df), station_type="rainfall")
 
-    return filter_records_api(records, ctx, FLOOD_SEARCHABLE_FIELDS, target="flood")
+    df = read_master_sheet(
+        "rainfall_station_master",
+        use_cache=not ctx.get(
+            "force_refresh",
+            False,
+        ),
+        return_meta=False,
+    )
+
+    records = standardize_station_master(
+        clean_dataframe_common(df),
+        station_type="rainfall",
+    )
+
+    return filter_records_api(
+        records,
+        ctx,
+        FLOOD_SEARCHABLE_FIELDS,
+        target="flood_rainfall_latest",
+        paginate=bool(
+            to_bool(
+                ctx.get("paginate"),
+                default=True,
+            )
+        ),
+    )
+
+
+def get_waterlevel_station_master(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+
+    df = read_master_sheet(
+        "waterlevel_station_master",
+        use_cache=not ctx.get(
+            "force_refresh",
+            False,
+        ),
+        return_meta=False,
+    )
+
+    records = standardize_station_master(
+        clean_dataframe_common(df),
+        station_type="waterlevel",
+    )
+
+    return filter_records_api(
+        records,
+        ctx,
+        FLOOD_SEARCHABLE_FIELDS,
+        target="flood_waterlevel_latest",
+        paginate=bool(
+            to_bool(
+                ctx.get("paginate"),
+                default=True,
+            )
+        ),
+    )
+
+
+def get_dam_reservoir_master(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+
+    df = read_master_sheet(
+        "dam_reservoir_master",
+        use_cache=not ctx.get(
+            "force_refresh",
+            False,
+        ),
+        return_meta=False,
+    )
+
+    records = standardize_dam_master(
+        clean_dataframe_common(df)
+    )
+
+    return filter_records_api(
+        records,
+        ctx,
+        FLOOD_SEARCHABLE_FIELDS,
+        target="flood_dam_latest",
+        paginate=bool(
+            to_bool(
+                ctx.get("paginate"),
+                default=True,
+            )
+        ),
+    )
 
 
 def get_waterlevel_station_master(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -3144,100 +3806,382 @@ def get_history_all_long(year: Any, month: Any, context: Optional[Dict[str, Any]
     return get_history("all_long", year=year, month=month, context=context)
 
 def list_prediction_files() -> List[Path]:
-    prediction_dir = Path(getattr(config, "PREDICTION_DATA_DIR", getattr(config, "FLOOD_PREDICTION_DIR", "")))
-    prediction_glob = getattr(config, "PREDICTION_FILE_GLOB", "predict_*.xlsx")
+    prediction_dir = Path(
+        getattr(
+            config,
+            "PREDICTION_DATA_DIR",
+            getattr(
+                config,
+                "FLOOD_PREDICTION_DIR",
+                "",
+            ),
+        )
+    )
 
-    if not prediction_dir.exists():
+    prediction_glob = getattr(
+        config,
+        "PREDICTION_FILE_GLOB",
+        "predict_*.xlsx",
+    )
+
+    if (
+        not prediction_dir.exists()
+        or not prediction_dir.is_dir()
+    ):
         return []
 
+    files = [
+        path
+        for path in prediction_dir.glob(
+            prediction_glob
+        )
+        if path.is_file()
+    ]
+
+    def sort_key(
+        path: Path,
+    ) -> Tuple[datetime, float]:
+        file_date = to_datetime(
+            get_prediction_file_date(
+                path
+            ),
+            default=None,
+        )
+
+        try:
+            modified_time = (
+                path.stat().st_mtime
+            )
+        except OSError:
+            modified_time = 0.0
+
+        return (
+            file_date or datetime.min,
+            modified_time,
+        )
+
     return sorted(
-        [
-            path
-            for path in prediction_dir.glob(prediction_glob)
-            if path.is_file()
-        ],
-        key=lambda path: path.stat().st_mtime,
+        files,
+        key=sort_key,
         reverse=True,
     )
 
 
-def find_prediction_file(data_date: Optional[Any] = None) -> Optional[Path]:
+def find_prediction_file(
+    data_date: Optional[Any] = None,
+) -> Optional[Path]:
     files = list_prediction_files()
 
     if not files:
         return None
 
-    wanted = clean_text(data_date)
+    requested_text = clean_text(
+        data_date
+    )
 
-    if not wanted:
+    if not requested_text:
         return files[0]
 
-    wanted_digits = "".join(ch for ch in wanted if ch.isdigit())
+    requested_digits = "".join(
+        character
+        for character in requested_text
+        if character.isdigit()
+    )
+
+    if len(requested_digits) != 8:
+        return None
+
+    requested_date = (
+        f"{requested_digits[0:4]}-"
+        f"{requested_digits[4:6]}-"
+        f"{requested_digits[6:8]}"
+    )
+
+    if (
+        to_datetime(
+            requested_date,
+            default=None,
+        )
+        is None
+    ):
+        return None
 
     for path in files:
-        path_digits = "".join(ch for ch in path.stem if ch.isdigit())
-
-        if wanted in path.name or wanted_digits and wanted_digits in path_digits:
+        if (
+            get_prediction_file_date(
+                path
+            )
+            == requested_date
+        ):
             return path
 
-    return files[0]
+    return None
 
 
-def get_prediction_file_date(path: Optional[Path]) -> str:
+def get_prediction_file_date(
+    path: Optional[Path],
+) -> str:
     if path is None:
         return ""
 
-    if hasattr(config, "get_prediction_file_date"):
-        try:
-            return clean_text(config.get_prediction_file_date(path))
-        except Exception:
-            pass
+    stem = clean_text(
+        path.stem
+    )
 
-    digits = "".join(ch if ch.isdigit() else " " for ch in path.stem).split()
+    prefix = clean_text(
+        getattr(
+            config,
+            "PREDICTION_FILE_PREFIX",
+            "predict",
+        )
+    )
 
-    for item in digits:
-        if len(item) == 8:
-            return f"{item[0:4]}-{item[4:6]}-{item[6:8]}"
+    date_text = stem
 
-    return ""
+    if (
+        prefix
+        and stem.lower().startswith(
+            f"{prefix.lower()}_"
+        )
+    ):
+        date_text = stem[
+            len(prefix) + 1:
+        ]
+
+    normalized = (
+        date_text
+        .replace("-", "_")
+        .replace("/", "_")
+        .replace(".", "_")
+    )
+
+    parts = [
+        part
+        for part in normalized.split("_")
+        if part
+    ]
+
+    year = ""
+    month = ""
+    day = ""
+
+    for index in range(
+        max(
+            0,
+            len(parts) - 2,
+        )
+    ):
+        candidate_year = parts[index]
+        candidate_month = (
+            parts[index + 1]
+        )
+        candidate_day = (
+            parts[index + 2]
+        )
+
+        if (
+            len(candidate_year) == 4
+            and len(candidate_month) == 2
+            and len(candidate_day) == 2
+            and candidate_year.isdigit()
+            and candidate_month.isdigit()
+            and candidate_day.isdigit()
+        ):
+            year = candidate_year
+            month = candidate_month
+            day = candidate_day
+            break
+
+    if not year:
+        digits = "".join(
+            character
+            for character in date_text
+            if character.isdigit()
+        )
+
+        if len(digits) == 8:
+            year = digits[0:4]
+            month = digits[4:6]
+            day = digits[6:8]
+
+    if not year:
+        return ""
+
+    result = (
+        f"{year}-{month}-{day}"
+    )
+
+    return (
+        result
+        if to_datetime(
+            result,
+            default=None,
+        )
+        is not None
+        else ""
+    )
 
 
 def read_prediction_dataframe(
     data_date: Optional[Any] = None,
     force_refresh: bool = False,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    prediction_file = find_prediction_file(data_date=data_date)
+    requested_data_date = clean_text(
+        data_date
+    )
+
+    prediction_file = (
+        find_prediction_file(
+            data_date=(
+                requested_data_date
+                or None
+            )
+        )
+    )
 
     if prediction_file is None:
+        error_code = (
+            "prediction_date_not_found"
+            if requested_data_date
+            else "prediction_file_not_found"
+        )
+
+        error_message = (
+            "Prediction file not found "
+            f"for data_date="
+            f"{requested_data_date}"
+            if requested_data_date
+            else "Prediction file not found"
+        )
+
         return pd.DataFrame(), {
             "source": "excel",
             "source_file": None,
             "file_name": None,
-            "data_date": clean_text(data_date),
+            "requested_data_date": (
+                requested_data_date
+            ),
+            "data_date": (
+                requested_data_date
+            ),
+            "exact_date_match": False,
             "file_exists": False,
             "record_count": 0,
+            "errors": [
+                {
+                    "code": error_code,
+                    "message": (
+                        error_message
+                    ),
+                }
+            ],
         }
 
-    df = clean_dataframe_common(
-        read_prediction_file(
-            file_path=prediction_file,
-            use_cache=not force_refresh,
-            return_meta=False,
+    read_result = read_prediction_file(
+        file_path=prediction_file,
+        use_cache=not force_refresh,
+        return_meta=True,
+    )
+
+    if isinstance(read_result, dict):
+        df = clean_dataframe_common(
+            read_result.get(
+                "df",
+                pd.DataFrame(),
+            )
+        )
+
+        source_meta = (
+            read_result.get(
+                "meta",
+                {},
+            )
+            if isinstance(
+                read_result.get("meta"),
+                dict,
+            )
+            else {}
+        )
+
+        errors = (
+            read_result.get(
+                "errors",
+                [],
+            )
+            if isinstance(
+                read_result.get(
+                    "errors"
+                ),
+                list,
+            )
+            else []
+        )
+
+    else:
+        df = clean_dataframe_common(
+            read_result
+        )
+        source_meta = {}
+        errors = []
+
+    file_data_date = (
+        get_prediction_file_date(
+            prediction_file
         )
     )
 
+    try:
+        modified_at = (
+            datetime.fromtimestamp(
+                prediction_file
+                .stat()
+                .st_mtime
+            ).isoformat(
+                timespec="seconds"
+            )
+        )
+    except OSError:
+        modified_at = None
+
+    requested_digits = "".join(
+        character
+        for character
+        in requested_data_date
+        if character.isdigit()
+    )
+
     meta = {
+        **source_meta,
         "source": "excel",
-        "source_file": str(prediction_file),
-        "file_name": prediction_file.name,
-        "data_date": get_prediction_file_date(prediction_file) or clean_text(data_date),
-        "file_exists": prediction_file.exists(),
+        "source_file": str(
+            prediction_file
+        ),
+        "file_name": (
+            prediction_file.name
+        ),
+        "requested_data_date": (
+            requested_data_date
+        ),
+        "data_date": file_data_date,
+        "exact_date_match": (
+            not requested_data_date
+            or requested_data_date
+            == file_data_date
+            or requested_digits
+            == file_data_date.replace(
+                "-",
+                "",
+            )
+        ),
+        "file_exists": (
+            prediction_file.exists()
+        ),
         "record_count": len(df),
-        "file_modified_at": datetime.fromtimestamp(prediction_file.stat().st_mtime).isoformat(timespec="seconds"),
+        "file_modified_at": modified_at,
+        "errors": errors,
     }
 
     return df, meta
-
 
 def normalize_prediction_dataframe(df: pd.DataFrame, meta: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     if df is None or df.empty:
@@ -3373,26 +4317,79 @@ def make_prediction_record_key(row: Any) -> str:
     return raw_key
 
 
-def build_station_location_index(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
-    cache_key = CACHE_KEYS["flood_master_station_index"]
+def build_station_location_index(
+    force_refresh: bool = False,
+) -> Dict[str, Dict[str, Any]]:
+    cache_key = CACHE_KEYS[
+        "flood_master_station_index"
+    ]
 
     def builder() -> Dict[str, Any]:
-        rainfall = get_rainfall_station_master({"force_refresh": force_refresh, "page_size": 100000}).get("records", [])
-        waterlevel = get_waterlevel_station_master({"force_refresh": force_refresh, "page_size": 100000}).get("records", [])
+        rainfall = (
+            get_rainfall_station_master(
+                {
+                    "force_refresh": (
+                        force_refresh
+                    ),
+                    "paginate": False,
+                }
+            ).get("records", [])
+        )
 
-        index: Dict[str, Dict[str, Any]] = {}
+        waterlevel = (
+            get_waterlevel_station_master(
+                {
+                    "force_refresh": (
+                        force_refresh
+                    ),
+                    "paginate": False,
+                }
+            ).get("records", [])
+        )
+
+        index: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
 
         for source_name, records in [
-            ("waterlevel_station_master", waterlevel),
-            ("rainfall_station_master", rainfall),
+            (
+                "waterlevel_station_master",
+                waterlevel,
+            ),
+            (
+                "rainfall_station_master",
+                rainfall,
+            ),
         ]:
             for record in records:
-                keys = prediction_location_match_keys(record)
+                coordinate = (
+                    validate_coordinate(
+                        record.get("lat"),
+                        record.get("lon"),
+                    )
+                )
+
+                if not coordinate.get(
+                    "valid"
+                ):
+                    continue
+
+                keys = (
+                    prediction_location_match_keys(
+                        record
+                    )
+                )
 
                 for key in keys:
-                    if key and key not in index:
+                    if (
+                        key
+                        and key not in index
+                    ):
                         item = dict(record)
-                        item["matched_source"] = source_name
+                        item["matched_source"] = (
+                            source_name
+                        )
                         index[key] = item
 
         return {
@@ -3406,42 +4403,112 @@ def build_station_location_index(force_refresh: bool = False) -> Dict[str, Dict[
         builder=builder,
         ttl_seconds=get_flood_ttl(),
         force_refresh=force_refresh,
-        source="flood_spatial_service.build_station_location_index",
+        source=(
+            "flood_spatial_service."
+            "build_station_location_index"
+        ),
     )
 
-    return cache_result["data"].get("index", {})
+    return (
+        cache_result["data"]
+        .get(
+            "index",
+            {},
+        )
+    )
 
 
-def prediction_location_match_keys(row: Any) -> List[str]:
-    values = [
-        get_value_by_candidates(row, ["station_id", "matched_station_id", "source_id"], default=""),
-        get_value_by_candidates(row, ["station_code", "matched_station_code", "code"], default=""),
-        get_value_by_candidates(row, ["station_name", "station_name_th", "matched_station_name", "source_name"], default=""),
-    ]
-
+def prediction_location_match_keys(
+    row: Any,
+) -> List[str]:
     province = normalize_province_name(
         get_value_by_candidates(
             row,
-            ["province", "province_model", "province_name_th"],
+            [
+                "province",
+                "province_model",
+                "province_name_th",
+            ],
             default="",
         )
     )
 
+    grouped_values = [
+        (
+            "id",
+            [
+                get_value_by_candidates(
+                    row,
+                    [
+                        "station_id",
+                        "matched_station_id",
+                        "source_id",
+                    ],
+                    default="",
+                )
+            ],
+        ),
+        (
+            "code",
+            [
+                get_value_by_candidates(
+                    row,
+                    [
+                        "station_code",
+                        "matched_station_code",
+                        "code",
+                    ],
+                    default="",
+                )
+            ],
+        ),
+        (
+            "name",
+            [
+                get_value_by_candidates(
+                    row,
+                    [
+                        "station_name",
+                        "station_name_th",
+                        "matched_station_name",
+                        "source_name",
+                    ],
+                    default="",
+                )
+            ],
+        ),
+    ]
+
     keys: List[str] = []
 
-    for value in values:
-        text = clean_text_lower(value)
+    for key_type, values in grouped_values:
+        for value in values:
+            normalized_value = (
+                clean_text_lower(value)
+            )
 
-        if not text:
-            continue
+            if not normalized_value:
+                continue
 
-        keys.append(text)
+            if province:
+                keys.append(
+                    (
+                        f"{key_type}|"
+                        f"{province}|"
+                        f"{normalized_value}"
+                    ).lower()
+                )
 
-        if province:
-            keys.append(f"{province}|{text}".lower())
+            keys.append(
+                (
+                    f"{key_type}|"
+                    f"{normalized_value}"
+                ).lower()
+            )
 
-    return list(dict.fromkeys(keys))
-
+    return list(
+        dict.fromkeys(keys)
+    )
 
 def find_prediction_station_location_match(
     row: Any,
@@ -3639,76 +4706,270 @@ def build_flood_prediction_latest(
     data_date: Optional[Any] = None,
     force_refresh: bool = False,
 ) -> Dict[str, Any]:
-    cache_key = CACHE_KEYS["flood_prediction_latest"]
+    requested_data_date = clean_text(
+        data_date
+    )
+
+    prediction_file = (
+        find_prediction_file(
+            data_date=(
+                requested_data_date
+                or None
+            )
+        )
+    )
 
     def builder() -> Dict[str, Any]:
-        df, meta = read_prediction_dataframe(data_date=data_date, force_refresh=force_refresh)
-        records = normalize_prediction_records(df, meta=meta, force_refresh=force_refresh)
+        df, meta = (
+            read_prediction_dataframe(
+                data_date=(
+                    requested_data_date
+                    or None
+                ),
+                force_refresh=(
+                    force_refresh
+                ),
+            )
+        )
+
+        records = (
+            normalize_prediction_records(
+                df,
+                meta=meta,
+                force_refresh=(
+                    force_refresh
+                ),
+            )
+        )
 
         return {
             "records": records,
             "total": len(records),
             "meta": meta,
-            "source_path": meta.get("source_file"),
+            "source_path": (
+                meta.get("source_file")
+            ),
             "created_at": now_iso(),
         }
+
+    if prediction_file is None:
+        data = builder()
+
+        return {
+            **data,
+            "cache_used": False,
+        }
+
+    try:
+        file_stat = (
+            prediction_file.stat()
+        )
+
+        file_signature = (
+            f"{prediction_file.resolve()}|"
+            f"{file_stat.st_mtime_ns}|"
+            f"{file_stat.st_size}"
+        )
+
+    except OSError:
+        file_signature = str(
+            prediction_file
+        )
+
+    cache_context = (
+        f"{requested_data_date or 'latest'}|"
+        f"{get_prediction_file_date(prediction_file)}|"
+        f"{file_signature}"
+    )
+
+    cache_key = (
+        f"{CACHE_KEYS['flood_prediction_latest']}_"
+        f"{make_hash_id(cache_context, length=20)}"
+    )
 
     cache_result = get_or_build_cache(
         cache_key=cache_key,
         builder=builder,
         ttl_seconds=get_flood_ttl(),
         force_refresh=force_refresh,
-        source="flood_spatial_service.build_flood_prediction_latest",
+        source=(
+            "flood_spatial_service."
+            "build_flood_prediction_latest"
+        ),
     )
 
-    return {**cache_result["data"], "cache_used": cache_result["cache_used"]}
+    return {
+        **cache_result["data"],
+        "cache_used": (
+            cache_result["cache_used"]
+        ),
+        "cache_key": cache_key,
+    }
 
-
-def get_latest_flood_predictions(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_latest_flood_predictions(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     ctx = normalize_context(context)
-    filters = ctx.get("filters", {}) if isinstance(ctx.get("filters"), dict) else {}
-    data_date = filters.get("data_date") or ctx.get("data_date")
+
+    filters = (
+        ctx.get("filters", {})
+        if isinstance(
+            ctx.get("filters"),
+            dict,
+        )
+        else {}
+    )
+
+    data_date = (
+        filters.get("data_date")
+        or ctx.get("data_date")
+    )
+
+    paginate = bool(
+        to_bool(
+            ctx.get("paginate"),
+            default=True,
+        )
+    )
 
     data = build_flood_prediction_latest(
         data_date=data_date,
-        force_refresh=ctx.get("force_refresh", False),
+        force_refresh=ctx.get(
+            "force_refresh",
+            False,
+        ),
     )
 
-    records = data.get("records", [])
-    result = filter_records_api(records, ctx, PREDICTION_SEARCHABLE_FIELDS, target="flood_prediction")
-    result["source_path"] = data.get("source_path")
-    result["prediction_meta"] = data.get("meta", {})
+    records = data.get(
+        "records",
+        [],
+    )
+
+    result = filter_records_api(
+        records,
+        ctx,
+        PREDICTION_SEARCHABLE_FIELDS,
+        target="flood_prediction_latest",
+        paginate=paginate,
+    )
+
+    result["source_path"] = (
+        data.get("source_path")
+    )
+    result["prediction_meta"] = (
+        data.get("meta", {})
+    )
+    result["cache_used"] = (
+        data.get("cache_used", False)
+    )
 
     return result
 
 
-def get_flood_prediction_summary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_flood_prediction_summary(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     ctx = normalize_context(context)
-    latest = get_latest_flood_predictions(ctx)
-    records = latest.get("records", [])
 
-    risk_counts = Counter(record.get("risk_level", "Unknown") for record in records)
-    province_counts = Counter(record.get("province", "Unknown") for record in records)
-    map_ready_count = sum(1 for record in records if to_bool(record.get("map_ready"), default=False))
-    fallback_count = sum(1 for record in records if record.get("focus_level") == "province_boundary")
+    latest = get_latest_flood_predictions(
+        {
+            **ctx,
+            "paginate": False,
+        }
+    )
+
+    records = latest.get(
+        "records",
+        [],
+    )
+
+    risk_counts = Counter(
+        record.get(
+            "risk_level",
+            "Unknown",
+        )
+        for record in records
+    )
+
+    province_counts = Counter(
+        record.get(
+            "province",
+            "Unknown",
+        )
+        for record in records
+    )
+
+    map_ready_count = sum(
+        1
+        for record in records
+        if to_bool(
+            record.get("map_ready"),
+            default=False,
+        )
+    )
+
+    fallback_count = sum(
+        1
+        for record in records
+        if record.get("focus_level")
+        == "province_boundary"
+    )
 
     return {
         "summary": {
             "total": len(records),
-            "risk_counts": dict(risk_counts),
-            "province_counts": dict(province_counts),
-            "map_ready_count": map_ready_count,
-            "map_ready_rate": round((map_ready_count / len(records)) * 100, 4) if records else 0,
-            "province_fallback_count": fallback_count,
-            "province_fallback_rate": round((fallback_count / len(records)) * 100, 4) if records else 0,
+            "risk_counts": dict(
+                risk_counts
+            ),
+            "province_counts": dict(
+                province_counts
+            ),
+            "map_ready_count": (
+                map_ready_count
+            ),
+            "map_ready_rate": (
+                round(
+                    (
+                        map_ready_count
+                        / len(records)
+                    )
+                    * 100,
+                    4,
+                )
+                if records
+                else 0
+            ),
+            "province_fallback_count": (
+                fallback_count
+            ),
+            "province_fallback_rate": (
+                round(
+                    (
+                        fallback_count
+                        / len(records)
+                    )
+                    * 100,
+                    4,
+                )
+                if records
+                else 0
+            ),
         },
-        "risk_counts": dict(risk_counts),
-        "province_counts": dict(province_counts),
+        "risk_counts": dict(
+            risk_counts
+        ),
+        "province_counts": dict(
+            province_counts
+        ),
         "total": len(records),
-        "source_path": latest.get("source_path"),
-        "prediction_meta": latest.get("prediction_meta", {}),
+        "source_path": latest.get(
+            "source_path"
+        ),
+        "prediction_meta": latest.get(
+            "prediction_meta",
+            {},
+        ),
     }
-
 
 def prediction_record_to_map_feature(record: Dict[str, Any]) -> Dict[str, Any]:
     properties = {
@@ -3758,68 +5019,186 @@ def prediction_record_to_map_feature(record: Dict[str, Any]) -> Dict[str, Any]:
         "properties": to_jsonable(properties),
     }
 
-
-def get_flood_prediction_map(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_flood_prediction_map(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     ctx = normalize_context(context)
-    latest = get_latest_flood_predictions(ctx)
-    records = latest.get("records", [])
+
+    latest = get_latest_flood_predictions(
+        {
+            **ctx,
+            "paginate": False,
+        }
+    )
+
+    records = latest.get(
+        "records",
+        [],
+    )
 
     features = [
-        prediction_record_to_map_feature(record)
+        prediction_record_to_map_feature(
+            record
+        )
         for record in records
     ]
 
     fallback_focus = [
         {
-            "record_key": record.get("record_key"),
-            "province": record.get("province"),
-            "focus_level": record.get("focus_level"),
-            "focus_fallback": record.get("focus_fallback"),
-            "focus_fallback_reason": record.get("focus_fallback_reason"),
+            "record_key": (
+                record.get("record_key")
+            ),
+            "province": (
+                record.get("province")
+            ),
+            "focus_level": (
+                record.get("focus_level")
+            ),
+            "focus_fallback": (
+                record.get(
+                    "focus_fallback"
+                )
+            ),
+            "focus_fallback_reason": (
+                record.get(
+                    "focus_fallback_reason"
+                )
+            ),
         }
         for record in records
-        if not to_bool(record.get("map_ready"), default=False) and record.get("focus_fallback")
+        if (
+            not to_bool(
+                record.get("map_ready"),
+                default=False,
+            )
+            and record.get(
+                "focus_fallback"
+            )
+        )
     ]
 
     return {
         "type": "FeatureCollection",
         "features": features,
-        "fallback_focus": fallback_focus,
+        "fallback_focus": (
+            fallback_focus
+        ),
         "total": len(records),
-        "feature_count": len(features),
-        "map_ready_count": sum(1 for record in records if to_bool(record.get("map_ready"), default=False)),
-        "source_path": latest.get("source_path"),
-        "prediction_meta": latest.get("prediction_meta", {}),
+        "feature_count": len(
+            features
+        ),
+        "map_ready_count": sum(
+            1
+            for record in records
+            if to_bool(
+                record.get("map_ready"),
+                default=False,
+            )
+        ),
+        "source_path": latest.get(
+            "source_path"
+        ),
+        "prediction_meta": latest.get(
+            "prediction_meta",
+            {},
+        ),
     }
 
-
-def get_flood_prediction_location_debug(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_flood_prediction_location_debug(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     ctx = normalize_context(context)
-    latest = get_latest_flood_predictions(ctx)
-    records = latest.get("records", [])
+
+    latest = get_latest_flood_predictions(
+        {
+            **ctx,
+            "paginate": False,
+        }
+    )
+
+    records = latest.get(
+        "records",
+        [],
+    )
 
     debug_records = [
         {
-            "record_key": record.get("record_key"),
-            "station_id": record.get("station_id"),
-            "station_code": record.get("station_code"),
-            "station_name": record.get("station_name"),
-            "province": record.get("province"),
-            "map_ready": record.get("map_ready"),
-            "has_location": record.get("has_location"),
+            "record_key": (
+                record.get("record_key")
+            ),
+            "station_id": (
+                record.get("station_id")
+            ),
+            "station_code": (
+                record.get("station_code")
+            ),
+            "station_name": (
+                record.get("station_name")
+            ),
+            "province": (
+                record.get("province")
+            ),
+            "map_ready": (
+                record.get("map_ready")
+            ),
+            "has_location": (
+                record.get("has_location")
+            ),
             "lat": record.get("lat"),
             "lon": record.get("lon"),
-            "matched_source": record.get("matched_source"),
-            "matched_station_id": record.get("matched_station_id"),
-            "matched_station_code": record.get("matched_station_code"),
-            "matched_station_name": record.get("matched_station_name"),
-            "location_match_status": record.get("location_match_status"),
-            "location_match_key": record.get("location_match_key"),
-            "location_match_candidates": record.get("location_match_candidates"),
-            "location_match_reason": record.get("location_match_reason"),
-            "focus_level": record.get("focus_level"),
-            "focus_fallback": record.get("focus_fallback"),
-            "focus_fallback_reason": record.get("focus_fallback_reason"),
+            "matched_source": (
+                record.get(
+                    "matched_source"
+                )
+            ),
+            "matched_station_id": (
+                record.get(
+                    "matched_station_id"
+                )
+            ),
+            "matched_station_code": (
+                record.get(
+                    "matched_station_code"
+                )
+            ),
+            "matched_station_name": (
+                record.get(
+                    "matched_station_name"
+                )
+            ),
+            "location_match_status": (
+                record.get(
+                    "location_match_status"
+                )
+            ),
+            "location_match_key": (
+                record.get(
+                    "location_match_key"
+                )
+            ),
+            "location_match_candidates": (
+                record.get(
+                    "location_match_candidates"
+                )
+            ),
+            "location_match_reason": (
+                record.get(
+                    "location_match_reason"
+                )
+            ),
+            "focus_level": (
+                record.get("focus_level")
+            ),
+            "focus_fallback": (
+                record.get(
+                    "focus_fallback"
+                )
+            ),
+            "focus_fallback_reason": (
+                record.get(
+                    "focus_fallback_reason"
+                )
+            ),
         }
         for record in records
     ]
@@ -3827,34 +5206,95 @@ def get_flood_prediction_location_debug(context: Optional[Dict[str, Any]] = None
     return {
         "records": debug_records,
         "total": len(debug_records),
-        "summary": get_flood_prediction_summary(ctx).get("summary", {}),
-        "source_path": latest.get("source_path"),
+        "summary": (
+            get_flood_prediction_summary(
+                {
+                    **ctx,
+                    "paginate": False,
+                }
+            ).get(
+                "summary",
+                {},
+            )
+        ),
+        "source_path": latest.get(
+            "source_path"
+        ),
+        "prediction_meta": latest.get(
+            "prediction_meta",
+            {},
+        ),
     }
-
 
 def get_flood_prediction_station_detail(
     station_id_or_name: str,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     ctx = normalize_context(context)
-    query = clean_text_lower(station_id_or_name)
-    latest = get_latest_flood_predictions(ctx)
-    records = latest.get("records", [])
+
+    query = clean_text_lower(
+        station_id_or_name
+    )
+
+    latest = get_latest_flood_predictions(
+        {
+            **ctx,
+            "paginate": False,
+        }
+    )
+
+    records = latest.get(
+        "records",
+        [],
+    )
 
     matched = [
         record
         for record in records
         if query
-        and query in " ".join(
+        and query
+        in " ".join(
             [
-                clean_text(record.get("record_key")),
-                clean_text(record.get("station_id")),
-                clean_text(record.get("station_code")),
-                clean_text(record.get("station_name")),
-                clean_text(record.get("station_name_th")),
-                clean_text(record.get("matched_station_id")),
-                clean_text(record.get("matched_station_code")),
-                clean_text(record.get("matched_station_name")),
+                clean_text(
+                    record.get(
+                        "record_key"
+                    )
+                ),
+                clean_text(
+                    record.get(
+                        "station_id"
+                    )
+                ),
+                clean_text(
+                    record.get(
+                        "station_code"
+                    )
+                ),
+                clean_text(
+                    record.get(
+                        "station_name"
+                    )
+                ),
+                clean_text(
+                    record.get(
+                        "station_name_th"
+                    )
+                ),
+                clean_text(
+                    record.get(
+                        "matched_station_id"
+                    )
+                ),
+                clean_text(
+                    record.get(
+                        "matched_station_code"
+                    )
+                ),
+                clean_text(
+                    record.get(
+                        "matched_station_name"
+                    )
+                ),
             ]
         ).lower()
     ]
@@ -3865,32 +5305,103 @@ def get_flood_prediction_station_detail(
         "records": matched,
         "summary": {
             "total": len(matched),
-            "risk_counts": dict(Counter(record.get("risk_level", "Unknown") for record in matched)),
+            "risk_counts": dict(
+                Counter(
+                    record.get(
+                        "risk_level",
+                        "Unknown",
+                    )
+                    for record in matched
+                )
+            ),
         },
+        "source_path": latest.get(
+            "source_path"
+        ),
+        "prediction_meta": latest.get(
+            "prediction_meta",
+            {},
+        ),
     }
 
-
-def get_flood_prediction_risk_distribution(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_flood_prediction_risk_distribution(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     ctx = normalize_context(context)
-    latest = get_latest_flood_predictions(ctx)
-    records = latest.get("records", [])
 
-    risk_counts = Counter(record.get("risk_level", "Unknown") for record in records)
+    latest = get_latest_flood_predictions(
+        {
+            **ctx,
+            "paginate": False,
+        }
+    )
+
+    records = latest.get(
+        "records",
+        [],
+    )
+
+    risk_counts = Counter(
+        record.get(
+            "risk_level",
+            "Unknown",
+        )
+        for record in records
+    )
+
+    ordered_risk_levels = [
+        risk_level
+        for risk_level in RISK_LEVELS
+        if risk_level in risk_counts
+    ]
+
+    ordered_risk_levels.extend(
+        sorted(
+            risk_level
+            for risk_level in risk_counts
+            if risk_level
+            not in ordered_risk_levels
+        )
+    )
 
     return {
         "records": [
             {
                 "risk_level": risk_level,
-                "count": count,
-                "risk_score": RISK_SCORE.get(risk_level, -1),
-                "risk_color": RISK_COLORS.get(risk_level, RISK_COLORS.get("Unknown", "#64748b")),
+                "count": (
+                    risk_counts[risk_level]
+                ),
+                "risk_score": (
+                    RISK_SCORE.get(
+                        risk_level,
+                        -1,
+                    )
+                ),
+                "risk_color": (
+                    RISK_COLORS.get(
+                        risk_level,
+                        RISK_COLORS.get(
+                            "Unknown",
+                            "#64748b",
+                        ),
+                    )
+                ),
             }
-            for risk_level, count in risk_counts.items()
+            for risk_level
+            in ordered_risk_levels
         ],
-        "risk_counts": dict(risk_counts),
+        "risk_counts": dict(
+            risk_counts
+        ),
         "total": len(records),
+        "source_path": latest.get(
+            "source_path"
+        ),
+        "prediction_meta": latest.get(
+            "prediction_meta",
+            {},
+        ),
     }
-
 
 def get_flood_prediction_search_results(
     query: str,
@@ -4032,46 +5543,179 @@ def get_search_results(
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     ctx = normalize_context(context)
-    ctx["search"] = clean_text(query)
+
+    ctx["search"] = clean_text(
+        query
+    )
     ctx["page"] = 1
-    ctx["page_size"] = int(limit or ctx.get("page_size", 50) or 50)
+    ctx["page_size"] = int(
+        limit
+        or ctx.get(
+            "page_size",
+            50,
+        )
+        or 50
+    )
 
-    type_key = clean_text_lower(search_type).replace("-", "_")
+    type_key = clean_text_lower(
+        search_type
+    ).replace(
+        "-",
+        "_",
+    )
 
-    records: List[Dict[str, Any]] = []
+    records: List[
+        Dict[str, Any]
+    ] = []
 
-    if type_key in {"all", "rainfall"}:
-        records.extend(build_rainfall_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+    if type_key in {
+        "all",
+        "rainfall",
+    }:
+        records.extend(
+            build_rainfall_latest(
+                force_refresh=ctx.get(
+                    "force_refresh",
+                    False,
+                )
+            ).get(
+                "records",
+                [],
+            )
+        )
 
-    if type_key in {"all", "waterlevel"}:
-        records.extend(build_waterlevel_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+    if type_key in {
+        "all",
+        "waterlevel",
+    }:
+        records.extend(
+            build_waterlevel_latest(
+                force_refresh=ctx.get(
+                    "force_refresh",
+                    False,
+                )
+            ).get(
+                "records",
+                [],
+            )
+        )
 
-    if type_key in {"all", "dam", "large_dam"}:
-        records.extend(build_large_dam_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+    if type_key in {
+        "all",
+        "dam",
+        "large_dam",
+    }:
+        records.extend(
+            build_large_dam_latest(
+                force_refresh=ctx.get(
+                    "force_refresh",
+                    False,
+                )
+            ).get(
+                "records",
+                [],
+            )
+        )
 
-    if type_key in {"all", "dam", "medium_dam"}:
-        records.extend(build_medium_dam_latest(force_refresh=ctx.get("force_refresh", False)).get("records", []))
+    if type_key in {
+        "all",
+        "dam",
+        "medium_dam",
+    }:
+        records.extend(
+            build_medium_dam_latest(
+                force_refresh=ctx.get(
+                    "force_refresh",
+                    False,
+                )
+            ).get(
+                "records",
+                [],
+            )
+        )
 
-    if type_key in {"all", "prediction", "forecast", "flood_prediction"}:
-        records.extend(get_latest_flood_predictions(ctx).get("records", []))
+    if type_key in {
+        "all",
+        "prediction",
+        "forecast",
+        "flood_prediction",
+    }:
+        prediction_result = (
+            get_latest_flood_predictions(
+                {
+                    **ctx,
+                    "paginate": False,
+                }
+            )
+        )
 
-    if type_key in {"all", "entity", "uploaded_entity"}:
+        records.extend(
+            prediction_result.get(
+                "records",
+                [],
+            )
+        )
+
+    if type_key in {
+        "all",
+        "entity",
+        "uploaded_entity",
+    }:
         try:
             import entity_upload_service
-            entity_result = entity_upload_service.get_latest_entity_records(
-                query=query,
-                limit=limit,
-                offset=0,
+
+            entity_result = (
+                entity_upload_service
+                .get_latest_entity_records(
+                    query=None,
+                    limit=None,
+                    offset=0,
+                )
             )
-            records.extend(entity_result.get("records", []))
+
+            entity_data = (
+                entity_result.get(
+                    "data",
+                    [],
+                )
+            )
+
+            if isinstance(
+                entity_data,
+                dict,
+            ):
+                entity_records = (
+                    entity_data.get(
+                        "records",
+                        [],
+                    )
+                )
+
+            elif isinstance(
+                entity_data,
+                list,
+            ):
+                entity_records = (
+                    entity_data
+                )
+
+            else:
+                entity_records = []
+
+            records.extend(
+                entity_records
+            )
+
         except Exception:
             pass
 
     return filter_records_api(
         records,
         ctx,
-        FLOOD_SEARCHABLE_FIELDS + PREDICTION_SEARCHABLE_FIELDS,
+        FLOOD_SEARCHABLE_FIELDS
+        + PREDICTION_SEARCHABLE_FIELDS,
         target="flood",
+        paginate=True,
     )
 
 def rebuild_flood_spatial_cache(force_refresh: bool = True) -> Dict[str, Any]:

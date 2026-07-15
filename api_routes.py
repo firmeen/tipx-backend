@@ -68,8 +68,58 @@ from config import (
 # 1) ROUTER
 # ============================================================
 
-router = APIRouter(prefix=API_PREFIX)
-public_router = APIRouter(prefix=PUBLIC_API_PREFIX)
+def generate_operation_id(route: Any) -> str:
+    methods = "_".join(
+        sorted(
+            method.lower()
+            for method in (getattr(route, "methods", set()) or set())
+            if method not in {"HEAD", "OPTIONS"}
+        )
+    )
+
+    route_path = str(
+        getattr(
+            route,
+            "path_format",
+            getattr(route, "path", ""),
+        )
+        or ""
+    )
+
+    normalized_path = (
+        route_path
+        .strip("/")
+        .replace("/", "_")
+        .replace("{", "")
+        .replace("}", "")
+        .replace("-", "_")
+    )
+
+    return (
+        f"{route.name}_"
+        f"{methods or 'route'}_"
+        f"{normalized_path or 'root'}"
+    )
+
+
+PUBLIC_ROUTER_PREFIX: str = (
+    PUBLIC_API_PREFIX[len(API_PREFIX):]
+    if PUBLIC_API_PREFIX.startswith(API_PREFIX)
+    else PUBLIC_API_PREFIX
+)
+
+if not PUBLIC_ROUTER_PREFIX:
+    PUBLIC_ROUTER_PREFIX = "/public"
+
+router = APIRouter(
+    prefix=API_PREFIX,
+    generate_unique_id_function=generate_operation_id,
+)
+
+public_router = APIRouter(
+    prefix=PUBLIC_ROUTER_PREFIX,
+    generate_unique_id_function=generate_operation_id,
+)
 
 
 # ============================================================
@@ -201,25 +251,21 @@ def exception_response(
     exc: Exception,
     message: str = "Unhandled API exception",
     status_code: int = 500,
-    include_traceback: bool = True,
+    include_traceback: bool = False,
 ) -> JSONResponse:
-    """
-    แปลง exception เป็น API response
-    """
-
     error_payload: Dict[str, Any] = {
         "type": exc.__class__.__name__,
-        "message": str(exc),
+        "message": str(exc) if config.DEBUG else message,
     }
 
-    if include_traceback:
+    if include_traceback and config.DEBUG:
         error_payload["traceback"] = traceback.format_exc()
 
     return error_response(
         message=message,
         errors=[error_payload],
         status_code=status_code,
-        legacy_error=str(exc),
+        legacy_error=str(exc) if config.DEBUG else None,
     )
 
 
@@ -827,25 +873,41 @@ def service_response(
 @router.get("/health")
 async def api_health() -> JSONResponse:
     validation = validate_basic_config()
-    status_code = 200 if validation["status"] != "error" else 500
+
+    data = {
+        "app": APP_NAME,
+        "short_name": APP_SHORT_NAME,
+        "version": APP_VERSION,
+        "description": APP_DESCRIPTION,
+        "environment": DEFAULT_ENV,
+        "status": validation["status"],
+        "validation": validation,
+    }
+
+    if validation["status"] == "error":
+        return error_response(
+            message="TIPX health check failed",
+            data=data,
+            errors=[
+                {
+                    "type": "ConfigurationError",
+                    "message": "Backend configuration validation failed.",
+                }
+            ],
+            meta={
+                "module": "core",
+            },
+            status_code=500,
+        )
 
     return success_response(
         message="TIPX health check",
-        data={
-            "app": APP_NAME,
-            "short_name": APP_SHORT_NAME,
-            "version": APP_VERSION,
-            "description": APP_DESCRIPTION,
-            "environment": DEFAULT_ENV,
-            "status": validation["status"],
-            "validation": validation,
-        },
+        data=data,
         meta={
             "module": "core",
         },
-        status_code=status_code,
+        status_code=200,
     )
-
 
 @router.get("/status")
 async def api_status() -> JSONResponse:
@@ -1031,8 +1093,146 @@ async def api_companies_summary(request: Request) -> JSONResponse:
     return service_response(result, "Company summary", "company_policy_service.get_company_summary")
 
 
+@router.get("/companies/ranking/income")
+async def api_companies_ranking_income(
+    request: Request,
+) -> JSONResponse:
+    context = get_common_query_context(request)
+
+    result = call_data_service(
+        "company",
+        "get_company_income_ranking",
+        {
+            "records": [],
+            "total": 0,
+        },
+        context=context,
+    )
+
+    return service_response(
+        result,
+        "Company income ranking",
+        "company_policy_service.get_company_income_ranking",
+    )
+
+
+@router.get("/companies/ranking/capital")
+async def api_companies_ranking_capital(
+    request: Request,
+) -> JSONResponse:
+    context = get_common_query_context(request)
+
+    result = call_data_service(
+        "company",
+        "get_company_capital_ranking",
+        {
+            "records": [],
+            "total": 0,
+        },
+        context=context,
+    )
+
+    return service_response(
+        result,
+        "Company capital ranking",
+        "company_policy_service.get_company_capital_ranking",
+    )
+
+
+@router.get("/companies/source-flags")
+async def api_companies_source_flags() -> JSONResponse:
+    result = call_data_service(
+        "company",
+        "get_company_source_flags",
+        {
+            "has_policy": 0,
+            "has_linkage": 0,
+            "has_location": 0,
+            "has_flood_context": 0,
+        },
+    )
+
+    return service_response(
+        result,
+        "Company source flags",
+        "company_policy_service.get_company_source_flags",
+    )
+
+
+@router.get("/companies/missing-policy")
+async def api_companies_missing_policy(
+    request: Request,
+) -> JSONResponse:
+    context = get_common_query_context(request)
+
+    result = call_data_service(
+        "company",
+        "get_companies_missing_policy",
+        {
+            "records": [],
+            "total": 0,
+        },
+        context=context,
+    )
+
+    return service_response(
+        result,
+        "Companies missing policy",
+        "company_policy_service.get_companies_missing_policy",
+    )
+
+
+@router.get("/companies/missing-linkage")
+async def api_companies_missing_linkage(
+    request: Request,
+) -> JSONResponse:
+    context = get_common_query_context(request)
+
+    result = call_data_service(
+        "company",
+        "get_companies_missing_linkage",
+        {
+            "records": [],
+            "total": 0,
+        },
+        context=context,
+    )
+
+    return service_response(
+        result,
+        "Companies missing linkage",
+        "company_policy_service.get_companies_missing_linkage",
+    )
+
+
+@router.get("/companies/missing-location")
+async def api_companies_missing_location(
+    request: Request,
+) -> JSONResponse:
+    context = get_common_query_context(request)
+
+    result = call_data_service(
+        "company",
+        "get_companies_missing_location",
+        {
+            "records": [],
+            "total": 0,
+        },
+        context=context,
+    )
+
+    return service_response(
+        result,
+        "Companies missing location",
+        "company_policy_service.get_companies_missing_location",
+    )
+
+
 @router.get("/companies/{tax_id}")
-async def api_company_detail(tax_id: str, request: Request) -> JSONResponse:
+async def api_company_detail(
+    tax_id: str,
+    request: Request,
+) -> JSONResponse:
     context = get_common_query_context(request)
 
     result = call_data_service(
@@ -1047,8 +1247,11 @@ async def api_company_detail(tax_id: str, request: Request) -> JSONResponse:
         context=context,
     )
 
-    return service_response(result, "Company detail", "company_policy_service.get_company_detail")
-
+    return service_response(
+        result,
+        "Company detail",
+        "company_policy_service.get_company_detail",
+    )
 
 @router.get("/companies/ranking/income")
 async def api_companies_ranking_income(request: Request) -> JSONResponse:

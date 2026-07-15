@@ -711,9 +711,9 @@ def create_app() -> FastAPI:
     2. create FastAPI app
     3. configure CORS
     4. register middleware
-    5. register frontend routes
-    6. register API router
-    7. register exception handlers
+    5. register exception handlers
+    6. register API และ Auth router
+    7. register frontend routes และ SPA fallback
     8. startup report
     9. return app
     """
@@ -735,17 +735,23 @@ def create_app() -> FastAPI:
 
     configure_cors(app)
     register_request_middleware(app)
-    register_frontend_routes(app)
-    register_api_routes(app)
     register_exception_handlers(app)
+    register_api_routes(app)
+    register_frontend_routes(app)
     register_startup_event(app)
 
     startup_report = build_startup_report()
     logger.info("TIPX FastAPI backend created successfully")
-    logger.info(json.dumps(startup_report, ensure_ascii=False, indent=2, default=str))
+    logger.info(
+        json.dumps(
+            startup_report,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+    )
 
     return app
-
 
 # ============================================================
 # 6) CORS
@@ -1049,9 +1055,10 @@ def register_frontend_routes(app: FastAPI) -> None:
 def register_api_routes(app: FastAPI) -> None:
     """
     Register API router จาก api_routes.py
+    และ Auth router จาก auth/auth_routes.py
 
-    api_routes.py จะถูก migrate เป็น FastAPI APIRouter
-    ถ้า import router ไม่ได้ จะลง fallback routes ให้ก่อน
+    api_routes.py ใช้ prefix จาก config.API_PREFIX
+    auth_routes.py ใช้ prefix="/auth" และถูกประกอบภายใต้ API_PREFIX
     """
 
     try:
@@ -1061,11 +1068,35 @@ def register_api_routes(app: FastAPI) -> None:
         logger.info("API router registered from api_routes.py")
 
     except Exception as exc:
-        logger.warning("Cannot register FastAPI router from api_routes.py. Fallback API routes enabled.")
-        logger.warning("api_routes import/register error: %s", str(exc))
+        logger.warning(
+            "Cannot register FastAPI router from api_routes.py. "
+            "Fallback API routes enabled."
+        )
+        logger.warning(
+            "api_routes import/register error: %s",
+            str(exc),
+        )
 
         register_fallback_api_routes(app, exc)
 
+    try:
+        from auth.auth_routes import router as auth_router
+
+        app.include_router(
+            auth_router,
+            prefix=API_PREFIX,
+        )
+
+        logger.info(
+            "Auth router registered at %s/auth",
+            API_PREFIX,
+        )
+
+    except Exception as exc:
+        logger.error(
+            "Cannot register Auth router from auth/auth_routes.py: %s",
+            str(exc),
+        )
 
 def register_fallback_api_routes(app: FastAPI, route_error: Exception) -> None:
     """
@@ -1267,9 +1298,15 @@ def register_exception_handlers(app: FastAPI) -> None:
     """
 
     @app.exception_handler(StarletteHTTPException)
-    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    async def http_exception_handler(
+        request: Request,
+        exc: StarletteHTTPException,
+    ):
         if exc.status_code == 404:
-            if request.url.path.startswith(API_PREFIX) or request.url.path.startswith(PUBLIC_API_PREFIX):
+            if (
+                request.url.path.startswith(API_PREFIX)
+                or request.url.path.startswith(PUBLIC_API_PREFIX)
+            ):
                 return app_json_response(
                     success=False,
                     message="API route not found",
@@ -1338,7 +1375,10 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    async def validation_exception_handler(
+        request: Request,
+        exc: RequestValidationError,
+    ):
         return app_json_response(
             success=False,
             message="Request validation error",
@@ -1349,7 +1389,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             errors=[
                 {
                     "code": "request_validation_error",
-                    "message": str(exc),
+                    "message": "Request data does not match the required schema.",
                     "details": exc.errors(),
                 }
             ],
@@ -1357,8 +1397,14 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(Exception)
-    async def unhandled_exception_handler(request: Request, exc: Exception):
-        logger.exception("Unhandled exception: %s", str(exc))
+    async def unhandled_exception_handler(
+        request: Request,
+        exc: Exception,
+    ):
+        logger.exception(
+            "Unhandled exception: %s",
+            str(exc),
+        )
 
         return app_json_response(
             success=False,
@@ -1368,14 +1414,13 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "method": request.method,
             },
             errors=[
-                serialize_exception(
-                    exc,
-                    include_traceback=DEBUG,
-                )
+                {
+                    "code": "unhandled_server_exception",
+                    "message": "Internal server error",
+                }
             ],
             status_code=500,
         )
-
 
 # ============================================================
 # 11) STARTUP EVENT / STARTUP REPORT

@@ -46,6 +46,7 @@ Layer Types:
 """
 
 from __future__ import annotations
+import hashlib
 import json
 import math
 import config
@@ -410,97 +411,222 @@ def now_iso() -> str:
 
     return datetime.now().isoformat(timespec="seconds")
 
-
-def normalize_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def normalize_context(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     normalize context จาก api_routes.py
     """
 
-    result = dict(DEFAULT_CONTEXT)
-    if isinstance(context, dict):
-        result.update(context)
+    raw_context = (
+        dict(context)
+        if isinstance(context, dict)
+        else {}
+    )
 
-    result["force_refresh"] = bool(to_bool(result.get("force_refresh"), default=False))
-    result["public_mode"] = bool(to_bool(result.get("public_mode"), default=False))
+    result = dict(DEFAULT_CONTEXT)
+    result.update(raw_context)
+
+    def resolve_bool(
+        primary_key: str,
+        alias_keys: Optional[List[str]] = None,
+        default: bool = False,
+    ) -> bool:
+        for key in [
+            primary_key,
+            *(alias_keys or []),
+        ]:
+            if key in raw_context:
+                return bool(
+                    to_bool(
+                        raw_context.get(key),
+                        default=default,
+                    )
+                )
+
+        return bool(
+            to_bool(
+                result.get(
+                    primary_key,
+                    default,
+                ),
+                default=default,
+            )
+        )
+
+    result["force_refresh"] = resolve_bool(
+        "force_refresh",
+        default=False,
+    )
+
+    result["public_mode"] = resolve_bool(
+        "public_mode",
+        default=False,
+    )
 
     try:
-        result["page"] = max(1, int(result.get("page", 1) or 1))
+        result["page"] = max(
+            1,
+            int(
+                result.get(
+                    "page",
+                    1,
+                )
+                or 1
+            ),
+        )
     except (TypeError, ValueError):
         result["page"] = 1
 
     try:
-        result["page_size"] = max(1, min(5000, int(result.get("page_size", 500) or 500)))
+        result["page_size"] = max(
+            1,
+            min(
+                5000,
+                int(
+                    result.get(
+                        "page_size",
+                        500,
+                    )
+                    or 500
+                ),
+            ),
+        )
     except (TypeError, ValueError):
         result["page_size"] = 500
 
-    for numeric_key, default_value in [
-        ("entity_limit", 500),
-        ("entity_offset", 0),
-        ("prediction_limit", 500),
-        ("prediction_offset", 0),
+    for (
+        numeric_key,
+        default_value,
+        minimum_value,
+    ) in [
+        ("entity_limit", 500, 1),
+        ("entity_offset", 0, 0),
+        ("prediction_limit", 500, 1),
+        ("prediction_offset", 0, 0),
     ]:
         try:
-            result[numeric_key] = max(0, int(result.get(numeric_key, default_value) or default_value))
-        except (TypeError, ValueError):
-            result[numeric_key] = default_value
+            raw_value = result.get(
+                numeric_key,
+                default_value,
+            )
 
-    result["search"] = clean_text(result.get("search", ""))
-    result["entity_query"] = clean_text(result.get("entity_query", ""))
-    result["sort_by"] = clean_text(result.get("sort_by", ""))
-    result["sort_dir"] = clean_text_lower(result.get("sort_dir", "asc")) or "asc"
-    if result["sort_dir"] not in {"asc", "desc"}:
+            if raw_value in (
+                None,
+                "",
+            ):
+                raw_value = default_value
+
+            result[numeric_key] = max(
+                minimum_value,
+                min(
+                    5000,
+                    int(raw_value),
+                ),
+            )
+
+        except (TypeError, ValueError):
+            result[numeric_key] = (
+                default_value
+            )
+
+    result["search"] = clean_text(
+        result.get("search", "")
+    )
+
+    result["entity_query"] = clean_text(
+        result.get("entity_query", "")
+    )
+
+    result["sort_by"] = clean_text(
+        result.get("sort_by", "")
+    )
+
+    result["sort_dir"] = (
+        clean_text_lower(
+            result.get(
+                "sort_dir",
+                "asc",
+            )
+        )
+        or "asc"
+    )
+
+    if result["sort_dir"] not in {
+        "asc",
+        "desc",
+    }:
         result["sort_dir"] = "asc"
 
-    if not isinstance(result.get("filters"), dict):
+    if not isinstance(
+        result.get("filters"),
+        dict,
+    ):
         result["filters"] = {}
 
-    result["include_boundary"] = bool(
-        to_bool(
-            result.get("include_boundary", result.get("include_boundaries", True)),
-            default=True,
-        )
+    result["include_boundary"] = resolve_bool(
+        "include_boundary",
+        ["include_boundaries"],
+        True,
     )
-    result["include_boundaries"] = result["include_boundary"]
 
-    result["include_province_boundary"] = bool(
-        to_bool(
-            result.get("include_province_boundary", result.get("include_province_boundaries", result["include_boundary"])),
-            default=True,
-        )
+    result["include_boundaries"] = (
+        result["include_boundary"]
     )
-    result["include_province_boundaries"] = result["include_province_boundary"]
 
-    result["include_basin_boundary"] = bool(
-        to_bool(
-            result.get("include_basin_boundary", result.get("include_basin_boundaries", result["include_boundary"])),
-            default=True,
+    result["include_province_boundary"] = (
+        resolve_bool(
+            "include_province_boundary",
+            ["include_province_boundaries"],
+            result["include_boundary"],
         )
     )
-    result["include_basin_boundaries"] = result["include_basin_boundary"]
 
-    result["include_policy"] = bool(
-        to_bool(
-            result.get("include_policy", result.get("include_policy_exposure", True)),
-            default=True,
-        )
+    result["include_province_boundaries"] = (
+        result["include_province_boundary"]
     )
-    result["include_policy_exposure"] = result["include_policy"]
 
-    result["include_linkage"] = bool(
-        to_bool(
-            result.get("include_linkage", result.get("include_linkage_lines", True)),
-            default=True,
+    result["include_basin_boundary"] = (
+        resolve_bool(
+            "include_basin_boundary",
+            ["include_basin_boundaries"],
+            result["include_boundary"],
         )
     )
-    result["include_linkage_lines"] = result["include_linkage"]
 
-    result["include_heatmap"] = bool(
-        to_bool(
-            result.get("include_heatmap", result.get("heatmap", True)),
-            default=True,
-        )
+    result["include_basin_boundaries"] = (
+        result["include_basin_boundary"]
     )
-    result["heatmap"] = result["include_heatmap"]
+
+    result["include_policy"] = resolve_bool(
+        "include_policy",
+        ["include_policy_exposure"],
+        True,
+    )
+
+    result["include_policy_exposure"] = (
+        result["include_policy"]
+    )
+
+    result["include_linkage"] = resolve_bool(
+        "include_linkage",
+        ["include_linkage_lines"],
+        True,
+    )
+
+    result["include_linkage_lines"] = (
+        result["include_linkage"]
+    )
+
+    result["include_heatmap"] = resolve_bool(
+        "include_heatmap",
+        ["heatmap"],
+        True,
+    )
+
+    result["heatmap"] = (
+        result["include_heatmap"]
+    )
 
     for key in [
         "include_companies",
@@ -512,15 +638,39 @@ def normalize_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any
         "include_entity",
         "include_branches",
     ]:
-        result[key] = bool(to_bool(result.get(key, True), default=True))
+        result[key] = resolve_bool(
+            key,
+            default=True,
+        )
 
-    result["selected_tax_id"] = normalize_tax_id(result.get("selected_tax_id") or result.get("tax_id") or "")
-    result["selected_director_id"] = clean_text(result.get("selected_director_id") or result.get("director_id") or "")
-    result["selected_province"] = clean_text(result.get("selected_province") or result.get("province") or "")
-    result["package_id"] = clean_text(result.get("package_id", ""))
+    result["selected_tax_id"] = (
+        normalize_tax_id(
+            result.get("selected_tax_id")
+            or result.get("tax_id")
+            or ""
+        )
+    )
+
+    result["selected_director_id"] = clean_text(
+        result.get("selected_director_id")
+        or result.get("director_id")
+        or ""
+    )
+
+    result["selected_province"] = clean_text(
+        result.get("selected_province")
+        or result.get("province")
+        or ""
+    )
+
+    result["package_id"] = clean_text(
+        result.get(
+            "package_id",
+            "",
+        )
+    )
 
     return result
-
 
 def normalize_map_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -535,7 +685,75 @@ def get_map_ttl() -> int:
     TTL สำหรับ map cache
     """
 
-    return int(CACHE_TTL_SECONDS.get("map", 1800))
+    return int(
+        CACHE_TTL_SECONDS.get(
+            "map",
+            1800,
+        )
+    )
+
+
+def safe_exception_message(
+    exc: Exception,
+    default: str,
+) -> str:
+    if bool(
+        getattr(
+            config,
+            "DEBUG",
+            False,
+        )
+    ):
+        return clean_text(
+            str(exc),
+            default,
+        )
+
+    return default
+
+
+def make_map_cache_key(
+    base_key: str,
+    context: Optional[Dict[str, Any]] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> str:
+    ctx = normalize_context(context)
+
+    cache_context = {
+        key: value
+        for key, value in ctx.items()
+        if key != "force_refresh"
+    }
+
+    if extra:
+        cache_context["extra"] = extra
+
+    default_context = {
+        key: value
+        for key, value in normalize_context(
+            {}
+        ).items()
+        if key != "force_refresh"
+    }
+
+    if (
+        not extra
+        and cache_context == default_context
+    ):
+        return base_key
+
+    serialized = json.dumps(
+        to_jsonable(cache_context),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    digest = hashlib.sha256(
+        serialized.encode("utf-8")
+    ).hexdigest()[:20]
+
+    return f"{base_key}_{digest}"
 
 
 def get_layer_default(layer_id: str) -> Dict[str, Any]:
@@ -1616,32 +1834,133 @@ def build_layer_payload(
 
     return to_jsonable(payload)
 
-
-def finalize_cached_payload(cache_result: Dict[str, Any]) -> Dict[str, Any]:
+def finalize_cached_payload(
+    cache_result: Dict[str, Any],
+) -> Dict[str, Any]:
     """
-    Attach cache metadata and ensure public facade payloads are JSON-safe.
+    Attach cache metadata and ensure
+    public facade payloads are JSON-safe.
     """
 
-    payload = dict(cache_result.get("data") or {})
-    if "features" not in payload and "feature_collection" in payload:
-        payload["features"] = safe_feature_collection(payload.get("feature_collection"))
-    if "feature_collection" not in payload and "features" in payload:
-        payload["feature_collection"] = safe_feature_collection(payload.get("features"))
-    if "record_count" not in payload and isinstance(payload.get("features"), dict):
-        payload["record_count"] = len(payload["features"].get("features", []))
-    if isinstance(payload.get("features"), dict) and not isinstance(payload.get("meta"), dict):
+    payload = dict(
+        cache_result.get("data")
+        or {}
+    )
+
+    if (
+        "features" not in payload
+        and "feature_collection" in payload
+    ):
+        payload["features"] = (
+            safe_feature_collection(
+                payload.get(
+                    "feature_collection"
+                )
+            )
+        )
+
+    if (
+        "feature_collection" not in payload
+        and "features" in payload
+    ):
+        payload["feature_collection"] = (
+            safe_feature_collection(
+                payload.get("features")
+            )
+        )
+
+    if (
+        "record_count" not in payload
+        and isinstance(
+            payload.get("features"),
+            dict,
+        )
+    ):
+        payload["record_count"] = len(
+            payload["features"].get(
+                "features",
+                [],
+            )
+        )
+
+    if (
+        isinstance(
+            payload.get("features"),
+            dict,
+        )
+        and not isinstance(
+            payload.get("meta"),
+            dict,
+        )
+    ):
         payload["meta"] = {
-            "record_count": payload.get("record_count", 0),
+            "record_count": payload.get(
+                "record_count",
+                0,
+            ),
             "skipped_invalid_coordinates": 0,
             "degraded": False,
             "source": "",
             "generated_at": now_iso(),
         }
-    payload["cache_used"] = bool(cache_result.get("cache_used", False))
-    if isinstance(payload.get("meta"), dict):
-        payload["meta"]["cache_used"] = payload["cache_used"]
+
+    payload["cache_used"] = bool(
+        cache_result.get(
+            "cache_used",
+            False,
+        )
+    )
+
+    if isinstance(
+        payload.get("meta"),
+        dict,
+    ):
+        payload["meta"]["cache_used"] = (
+            payload["cache_used"]
+        )
+
     return to_jsonable(payload)
 
+
+def get_cached_map_layer(
+    cache_name: str,
+    builder: Any,
+    context: Optional[Dict[str, Any]],
+    source: str,
+) -> Dict[str, Any]:
+    ctx = normalize_context(context)
+
+    cache_key = make_map_cache_key(
+        CACHE_KEYS[cache_name],
+        context=ctx,
+    )
+
+    cache_result = get_or_build_cache(
+        cache_key=cache_key,
+        builder=builder,
+        ttl_seconds=get_map_ttl(),
+        force_refresh=ctx.get(
+            "force_refresh",
+            False,
+        ),
+        source=source,
+    )
+
+    payload = finalize_cached_payload(
+        cache_result
+    )
+
+    payload["cache_key"] = cache_key
+
+    if isinstance(
+        payload.get("meta"),
+        dict,
+    ):
+        payload["meta"]["cache_key"] = (
+            cache_key
+        )
+
+    return to_jsonable(payload)
 
 def build_company_points_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -1726,59 +2045,174 @@ def build_flood_points_layer(context: Optional[Dict[str, Any]] = None) -> Dict[s
         },
     )
 
-
-def build_policy_exposure_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def build_policy_exposure_layer(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     สร้าง policy_exposure layer
 
-    ใช้ company_unified_master เฉพาะบริษัทที่มี policy และมีพิกัด
+    ใช้เฉพาะบริษัทที่มี Policy exposure
+    และมีพิกัดที่ใช้งานได้
     """
 
     ctx = normalize_context(context)
 
-    if get_company_flood_map_feature_collection is not None:
-        try:
-            feature_collection = get_company_flood_map_feature_collection(ctx)
-            return build_layer_payload(
-                layer_id="policy_exposure",
-                layer_name="Policy Flood Exposure",
-                layer_type="point",
-                feature_collection=feature_collection,
-                extra={
-                    "source": "company_flood_context",
-                },
-            )
-        except Exception:
-            pass
+    source_name = (
+        "company_unified_master"
+    )
 
-    companies = load_company_records()
     companies = [
         company
-        for company in companies
-        if to_bool(company.get("has_policy"), default=False)
+        for company in load_company_records()
+        if (
+            to_bool(
+                company.get("has_policy"),
+                default=False,
+            )
+            or (
+                (
+                    to_number(
+                        company.get(
+                            "total_premium"
+                        ),
+                        0,
+                    )
+                    or 0
+                )
+                > 0
+            )
+            or (
+                (
+                    to_number(
+                        company.get(
+                            "total_suminsure"
+                        ),
+                        0,
+                    )
+                    or 0
+                )
+                > 0
+            )
+        )
     ]
 
     if not companies:
+        source_name = (
+            "spatial_join_result"
+        )
+
         companies = [
             record
             for record in load_spatial_records()
-            if to_bool(record.get("has_policy"), default=False)
-            or not is_empty_value(record.get("total_suminsure"))
-            or not is_empty_value(record.get("total_premium"))
+            if (
+                to_bool(
+                    record.get("has_policy"),
+                    default=False,
+                )
+                or (
+                    (
+                        to_number(
+                            record.get(
+                                "total_premium"
+                            ),
+                            0,
+                        )
+                        or 0
+                    )
+                    > 0
+                )
+                or (
+                    (
+                        to_number(
+                            record.get(
+                                "total_suminsure"
+                            ),
+                            0,
+                        )
+                        or 0
+                    )
+                    > 0
+                )
+            )
         ]
 
-    companies = filter_company_records(companies, ctx)
+    companies = filter_company_records(
+        companies,
+        ctx,
+    )
 
-    features = []
+    features: List[
+        Dict[str, Any]
+    ] = []
+
     skipped_invalid_coordinates = 0
 
     for company in companies:
-        feature = build_company_feature(company)
+        normalized_company = {
+            **company,
+            "province": first_present(
+                company,
+                [
+                    "province",
+                    "company_province",
+                    "province_name_th",
+                ],
+                "",
+            ),
+            "lat": first_present(
+                company,
+                [
+                    "lat",
+                    "latitude",
+                    "company_lat",
+                    "company_latitude",
+                ],
+                None,
+            ),
+            "lon": first_present(
+                company,
+                [
+                    "lon",
+                    "longitude",
+                    "company_lon",
+                    "company_longitude",
+                ],
+                None,
+            ),
+            "flood_risk_level": first_present(
+                company,
+                [
+                    "flood_risk_level",
+                    "final_flood_risk_level",
+                    "risk_level",
+                ],
+                "Unknown",
+            ),
+        }
+
+        feature = build_company_feature(
+            normalized_company
+        )
+
         if feature:
-            feature["properties"]["feature_type"] = "policy_exposure"
-            feature["properties"]["exposure_size"] = feature["properties"].get("marker_size")
-            feature["properties"]["exposure_color"] = feature["properties"].get("marker_color")
+            feature["properties"][
+                "feature_type"
+            ] = "policy_exposure"
+
+            feature["properties"][
+                "exposure_size"
+            ] = feature["properties"].get(
+                "marker_size"
+            )
+
+            feature["properties"][
+                "exposure_color"
+            ] = feature["properties"].get(
+                "marker_color"
+            )
+
             features.append(feature)
+
         else:
             skipped_invalid_coordinates += 1
 
@@ -1786,16 +2220,30 @@ def build_policy_exposure_layer(context: Optional[Dict[str, Any]] = None) -> Dic
         layer_id="policy_exposure",
         layer_name="Policy Exposure",
         layer_type="point",
-        feature_collection=make_feature_collection(features),
+        feature_collection=(
+            make_feature_collection(
+                features
+            )
+        ),
         extra={
-            "source": "company_unified_master",
-            "company_count": len(companies),
-            "skipped_invalid_coordinates": skipped_invalid_coordinates,
-            "degraded": not bool(features),
-            "reason": "point-level policy exposure source missing or empty" if not features else "",
+            "source": source_name,
+            "company_count": len(
+                companies
+            ),
+            "skipped_invalid_coordinates": (
+                skipped_invalid_coordinates
+            ),
+            "degraded": not bool(
+                features
+            ),
+            "reason": (
+                "point-level policy exposure "
+                "source missing or empty"
+                if not features
+                else ""
+            ),
         },
     )
-
 
 def build_linkage_lines_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -1967,59 +2415,119 @@ def build_heatmap_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, A
         },
     )
 
-
-def build_province_boundaries_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def build_province_boundaries_layer(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     สร้าง province boundary layer
     """
 
     if get_province_boundaries is not None:
         try:
-            boundary = get_province_boundaries()
-            feature_collection = safe_feature_collection(boundary)
-            records = boundary.get("records", [])
+            boundary = (
+                get_province_boundaries()
+            )
+
+            feature_collection = (
+                safe_feature_collection(
+                    boundary
+                )
+            )
+
+            records = (
+                boundary.get(
+                    "records",
+                    [],
+                )
+                if isinstance(
+                    boundary,
+                    dict,
+                )
+                else []
+            )
 
             return build_layer_payload(
-                layer_id="province_boundaries",
-                layer_name="Province Boundaries",
+                layer_id=(
+                    "province_boundaries"
+                ),
+                layer_name=(
+                    "Province Boundaries"
+                ),
                 layer_type="polygon",
-                feature_collection=feature_collection,
+                feature_collection=(
+                    feature_collection
+                ),
                 visible=False,
                 opacity=0.7,
                 extra={
-                    "source": "flood_master_database",
-                    "record_count_raw": len(records),
+                    "source": (
+                        "flood_master_database"
+                    ),
+                    "record_count_raw": len(
+                        records
+                    ),
                 },
             )
+
         except Exception as exc:
             return build_layer_payload(
-                layer_id="province_boundaries",
-                layer_name="Province Boundaries",
+                layer_id=(
+                    "province_boundaries"
+                ),
+                layer_name=(
+                    "Province Boundaries"
+                ),
                 layer_type="polygon",
-                feature_collection=empty_feature_collection(),
+                feature_collection=(
+                    empty_feature_collection()
+                ),
                 visible=False,
                 opacity=0.7,
                 extra={
-                    "source": "flood_spatial_service",
+                    "source": (
+                        "flood_spatial_service"
+                    ),
                     "degraded": True,
-                    "reason": "province boundary service failed",
-                    "error_type": exc.__class__.__name__,
-                    "error_message": str(exc),
+                    "reason": (
+                        "province boundary "
+                        "service failed"
+                    ),
+                    "error_type": (
+                        exc.__class__.__name__
+                    ),
+                    "error_message": (
+                        safe_exception_message(
+                            exc,
+                            "Province boundary "
+                            "service failed.",
+                        )
+                    ),
                 },
             )
 
-    cached_records = load_boundary_records("province")
+    cached_records = load_boundary_records(
+        "province"
+    )
+
     if cached_records:
         return build_layer_payload(
             layer_id="province_boundaries",
             layer_name="Province Boundaries",
             layer_type="polygon",
-            feature_collection=boundary_records_to_feature_collection(cached_records),
+            feature_collection=(
+                boundary_records_to_feature_collection(
+                    cached_records
+                )
+            ),
             visible=False,
             opacity=0.7,
             extra={
-                "source": "province_boundaries",
-                "record_count_raw": len(cached_records),
+                "source": (
+                    "province_boundaries"
+                ),
+                "record_count_raw": len(
+                    cached_records
+                ),
                 "degraded": False,
             },
         )
@@ -2028,69 +2536,125 @@ def build_province_boundaries_layer(context: Optional[Dict[str, Any]] = None) ->
         layer_id="province_boundaries",
         layer_name="Province Boundaries",
         layer_type="polygon",
-        feature_collection=make_feature_collection([]),
+        feature_collection=(
+            empty_feature_collection()
+        ),
         visible=False,
         opacity=0.7,
         extra={
             "source": "",
             "degraded": True,
-            "reason": "province boundary source missing or empty",
+            "reason": (
+                "province boundary source "
+                "missing or empty"
+            ),
         },
     )
 
 
-def build_basin_boundaries_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def build_basin_boundaries_layer(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     สร้าง basin boundary layer
     """
 
     if get_basin_boundaries is not None:
         try:
-            boundary = get_basin_boundaries()
-            feature_collection = safe_feature_collection(boundary)
-            records = boundary.get("records", [])
+            boundary = (
+                get_basin_boundaries()
+            )
+
+            feature_collection = (
+                safe_feature_collection(
+                    boundary
+                )
+            )
+
+            records = (
+                boundary.get(
+                    "records",
+                    [],
+                )
+                if isinstance(
+                    boundary,
+                    dict,
+                )
+                else []
+            )
 
             return build_layer_payload(
                 layer_id="basin_boundaries",
                 layer_name="Basin Boundaries",
                 layer_type="polygon",
-                feature_collection=feature_collection,
+                feature_collection=(
+                    feature_collection
+                ),
                 visible=False,
                 opacity=0.7,
                 extra={
-                    "source": "flood_master_database",
-                    "record_count_raw": len(records),
+                    "source": (
+                        "flood_master_database"
+                    ),
+                    "record_count_raw": len(
+                        records
+                    ),
                 },
             )
+
         except Exception as exc:
             return build_layer_payload(
                 layer_id="basin_boundaries",
                 layer_name="Basin Boundaries",
                 layer_type="polygon",
-                feature_collection=empty_feature_collection(),
+                feature_collection=(
+                    empty_feature_collection()
+                ),
                 visible=False,
                 opacity=0.7,
                 extra={
-                    "source": "flood_spatial_service",
+                    "source": (
+                        "flood_spatial_service"
+                    ),
                     "degraded": True,
-                    "reason": "basin boundary service failed",
-                    "error_type": exc.__class__.__name__,
-                    "error_message": str(exc),
+                    "reason": (
+                        "basin boundary "
+                        "service failed"
+                    ),
+                    "error_type": (
+                        exc.__class__.__name__
+                    ),
+                    "error_message": (
+                        safe_exception_message(
+                            exc,
+                            "Basin boundary "
+                            "service failed.",
+                        )
+                    ),
                 },
             )
 
-    cached_records = load_boundary_records("basin")
+    cached_records = load_boundary_records(
+        "basin"
+    )
+
     if cached_records:
         return build_layer_payload(
             layer_id="basin_boundaries",
             layer_name="Basin Boundaries",
             layer_type="polygon",
-            feature_collection=boundary_records_to_feature_collection(cached_records),
+            feature_collection=(
+                boundary_records_to_feature_collection(
+                    cached_records
+                )
+            ),
             visible=False,
             opacity=0.7,
             extra={
                 "source": "basin_boundaries",
-                "record_count_raw": len(cached_records),
+                "record_count_raw": len(
+                    cached_records
+                ),
                 "degraded": False,
             },
         )
@@ -2099,16 +2663,20 @@ def build_basin_boundaries_layer(context: Optional[Dict[str, Any]] = None) -> Di
         layer_id="basin_boundaries",
         layer_name="Basin Boundaries",
         layer_type="polygon",
-        feature_collection=make_feature_collection([]),
+        feature_collection=(
+            empty_feature_collection()
+        ),
         visible=False,
         opacity=0.7,
         extra={
             "source": "",
             "degraded": True,
-            "reason": "basin boundary source missing or empty",
+            "reason": (
+                "basin boundary source "
+                "missing or empty"
+            ),
         },
     )
-
 
 # ============================================================
 # 8) API LAYER FUNCTIONS
@@ -2122,7 +2690,8 @@ def build_flood_runtime_records_layer(
     service_func: Any,
 ) -> Dict[str, Any]:
     """
-    สร้าง rainfall/waterlevel/dam layer จาก flood_spatial_service
+    สร้าง rainfall/waterlevel/dam layer
+    จาก flood_spatial_service
     """
 
     ctx = normalize_context(context)
@@ -2132,44 +2701,102 @@ def build_flood_runtime_records_layer(
             layer_id=layer_id,
             layer_name=layer_name,
             layer_type="point",
-            reason="flood runtime service unavailable",
+            reason=(
+                "flood runtime service "
+                "unavailable"
+            ),
             degraded=True,
         )
 
     try:
-        payload = service_func(context=ctx)
-        records = extract_records_from_service_payload(payload)
+        service_context = {
+            **ctx,
+            "page": 1,
+            "page_size": max(
+                ctx.get(
+                    "page_size",
+                    500,
+                ),
+                500,
+            ),
+        }
 
-        features: List[Dict[str, Any]] = []
+        payload = service_func(
+            context=service_context
+        )
+
+        records = (
+            extract_records_from_service_payload(
+                payload
+            )
+        )
+
+        features: List[
+            Dict[str, Any]
+        ] = []
+
         skipped_invalid_coordinates = 0
 
         for record in records:
             normalized_record = {
                 **record,
-                "source_type": record.get("source_type") or source_type,
+                "source_type": (
+                    record.get("source_type")
+                    or source_type
+                ),
             }
-            feature = build_flood_feature(normalized_record)
+
+            feature = build_flood_feature(
+                normalized_record
+            )
 
             if feature:
-                feature["properties"]["feature_type"] = layer_id
-                feature["properties"]["object_type"] = source_type
+                feature["properties"][
+                    "feature_type"
+                ] = layer_id
+
+                feature["properties"][
+                    "object_type"
+                ] = source_type
+
                 features.append(feature)
+
             else:
                 skipped_invalid_coordinates += 1
+
+        degraded = not bool(features)
 
         return build_layer_payload(
             layer_id=layer_id,
             layer_name=layer_name,
             layer_type="point",
-            feature_collection=make_feature_collection(features),
+            feature_collection=(
+                make_feature_collection(
+                    features
+                )
+            ),
             extra={
                 "source": "excel",
-                "upstream_service": f"flood_spatial_service.{getattr(service_func, '__name__', '')}",
-                "upstream_cache_keys": [f"flood_{source_type}_latest"],
-                "raw_record_count": len(records),
-                "skipped_invalid_coordinates": skipped_invalid_coordinates,
-                "degraded": not bool(features),
-                "reason": f"{layer_id} source missing or empty" if not features else "",
+                "upstream_service": (
+                    "flood_spatial_service."
+                    f"{getattr(service_func, '__name__', '')}"
+                ),
+                "upstream_cache_keys": [
+                    f"flood_{source_type}_latest"
+                ],
+                "raw_record_count": len(
+                    records
+                ),
+                "skipped_invalid_coordinates": (
+                    skipped_invalid_coordinates
+                ),
+                "degraded": degraded,
+                "reason": (
+                    f"{layer_id} source "
+                    "missing or empty"
+                    if degraded
+                    else ""
+                ),
             },
         )
 
@@ -2178,7 +2805,358 @@ def build_flood_runtime_records_layer(
             layer_id=layer_id,
             layer_name=layer_name,
             layer_type="point",
-            reason=str(exc),
+            reason=safe_exception_message(
+                exc,
+                (
+                    f"{layer_name} layer "
+                    "build failed."
+                ),
+            ),
+            degraded=True,
+        )
+
+
+def build_prediction_layer(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    สร้าง prediction layer จาก
+    flood_spatial_service.get_flood_prediction_map()
+    """
+
+    ctx = normalize_context(context)
+
+    if get_flood_prediction_map is None:
+        return make_empty_layer(
+            layer_id="prediction",
+            layer_name="Flood Prediction",
+            layer_type="point",
+            reason=(
+                "prediction service "
+                "unavailable"
+            ),
+            degraded=True,
+        )
+
+    try:
+        prediction_context = {
+            **ctx,
+            "paginate": False,
+        }
+
+        payload = get_flood_prediction_map(
+            context=prediction_context
+        )
+
+        feature_collection = (
+            extract_feature_collection_from_service_payload(
+                payload
+            )
+        )
+
+        data = extract_service_data(
+            payload
+        )
+
+        all_features = list(
+            feature_collection.get(
+                "features",
+                [],
+            )
+        )
+
+        offset = max(
+            0,
+            int(
+                ctx.get(
+                    "prediction_offset",
+                    0,
+                )
+                or 0
+            ),
+        )
+
+        limit = max(
+            1,
+            min(
+                5000,
+                int(
+                    ctx.get(
+                        "prediction_limit",
+                        500,
+                    )
+                    or 500
+                ),
+            ),
+        )
+
+        selected_features = all_features[
+            offset:
+            offset + limit
+        ]
+
+        fallback_focus: List[
+            Dict[str, Any]
+        ] = []
+
+        raw_total = len(all_features)
+
+        if isinstance(data, dict):
+            fallback_focus = list(
+                data.get(
+                    "fallback_focus",
+                    [],
+                )
+                or []
+            )
+
+            raw_total = int(
+                data.get(
+                    "total",
+                    raw_total,
+                )
+                or raw_total
+            )
+
+        degraded = not bool(
+            selected_features
+            or fallback_focus
+        )
+
+        return build_layer_payload(
+            layer_id="prediction",
+            layer_name="Flood Prediction",
+            layer_type="point",
+            feature_collection=(
+                make_feature_collection(
+                    selected_features
+                )
+            ),
+            extra={
+                "source": "excel",
+                "upstream_service": (
+                    "flood_spatial_service."
+                    "get_flood_prediction_map"
+                ),
+                "upstream_cache_keys": [
+                    "flood_prediction_map",
+                    "flood_prediction_latest",
+                ],
+                "fallback_focus": (
+                    fallback_focus
+                ),
+                "fallback_focus_count": len(
+                    fallback_focus
+                ),
+                "record_count_raw": raw_total,
+                "returned": len(
+                    selected_features
+                ),
+                "limit": limit,
+                "offset": offset,
+                "degraded": degraded,
+                "reason": (
+                    "prediction source "
+                    "missing or empty"
+                    if degraded
+                    else ""
+                ),
+            },
+        )
+
+    except Exception as exc:
+        return make_empty_layer(
+            layer_id="prediction",
+            layer_name="Flood Prediction",
+            layer_type="point",
+            reason=safe_exception_message(
+                exc,
+                (
+                    "Flood prediction "
+                    "layer build failed."
+                ),
+            ),
+            degraded=True,
+        )
+
+
+def build_entity_layer(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    สร้าง entity layer จาก
+    entity_upload_service.get_latest_entity_map_features()
+    """
+
+    ctx = normalize_context(context)
+
+    try:
+        import entity_upload_service
+
+        filters = (
+            ctx.get("filters", {})
+            if isinstance(
+                ctx.get("filters"),
+                dict,
+            )
+            else {}
+        )
+
+        risk_level = (
+            filters.get("risk_level")
+            or filters.get("risk")
+            or filters.get("risk_group")
+        )
+
+        payload = (
+            entity_upload_service
+            .get_latest_entity_map_features(
+                province=(
+                    ctx.get(
+                        "selected_province"
+                    )
+                    or None
+                ),
+                risk_level=(
+                    risk_level
+                    or None
+                ),
+                query=(
+                    ctx.get(
+                        "entity_query"
+                    )
+                    or ctx.get("search")
+                    or None
+                ),
+                limit=ctx.get(
+                    "entity_limit"
+                ),
+                offset=ctx.get(
+                    "entity_offset"
+                ),
+                context=ctx,
+            )
+        )
+
+        feature_collection = (
+            extract_feature_collection_from_service_payload(
+                payload
+            )
+        )
+
+        data = extract_service_data(
+            payload
+        )
+
+        meta = (
+            payload.get("meta", {})
+            if isinstance(
+                payload,
+                dict,
+            )
+            and isinstance(
+                payload.get("meta"),
+                dict,
+            )
+            else {}
+        )
+
+        feature_count = len(
+            feature_collection.get(
+                "features",
+                [],
+            )
+        )
+
+        raw_total = feature_count
+
+        if isinstance(data, dict):
+            raw_total = int(
+                data.get(
+                    "total",
+                    data.get(
+                        "feature_count",
+                        feature_count,
+                    ),
+                )
+                or feature_count
+            )
+
+        upstream_success = (
+            bool(
+                payload.get(
+                    "success",
+                    True,
+                )
+            )
+            if isinstance(
+                payload,
+                dict,
+            )
+            else True
+        )
+
+        degraded = bool(
+            not upstream_success
+            or (
+                raw_total > 0
+                and feature_count == 0
+            )
+        )
+
+        return build_layer_payload(
+            layer_id="entity",
+            layer_name=(
+                "Uploaded Entity Overlay"
+            ),
+            layer_type="point",
+            feature_collection=(
+                feature_collection
+            ),
+            extra={
+                "source": (
+                    "uploaded_entity"
+                ),
+                "upstream_service": (
+                    "entity_upload_service."
+                    "get_latest_entity_map_features"
+                ),
+                "upstream_cache_keys": [
+                    "uploaded_entity_latest"
+                ],
+                "upload_id": meta.get(
+                    "upload_id"
+                ),
+                "updated_at": meta.get(
+                    "updated_at"
+                ),
+                "record_count_raw": (
+                    raw_total
+                ),
+                "degraded": degraded,
+                "reason": (
+                    "uploaded entity layer "
+                    "is unavailable"
+                    if degraded
+                    else ""
+                ),
+            },
+        )
+
+    except Exception as exc:
+        return make_empty_layer(
+            layer_id="entity",
+            layer_name=(
+                "Uploaded Entity Overlay"
+            ),
+            layer_type="point",
+            reason=safe_exception_message(
+                exc,
+                (
+                    "Uploaded entity layer "
+                    "build failed."
+                ),
+            ),
             degraded=True,
         )
 
@@ -2213,113 +3191,6 @@ def build_dam_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     )
 
 
-def build_prediction_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    สร้าง prediction layer จาก flood_spatial_service.get_flood_prediction_map()
-    """
-
-    ctx = normalize_context(context)
-
-    if get_flood_prediction_map is None:
-        return make_empty_layer(
-            layer_id="prediction",
-            layer_name="Flood Prediction",
-            layer_type="point",
-            reason="prediction service unavailable",
-            degraded=True,
-        )
-
-    try:
-        prediction_context = {
-            **ctx,
-            "limit": ctx.get("prediction_limit"),
-            "offset": ctx.get("prediction_offset"),
-            "page_size": ctx.get("prediction_limit"),
-        }
-
-        payload = get_flood_prediction_map(context=prediction_context)
-        feature_collection = extract_feature_collection_from_service_payload(payload)
-        data = extract_service_data(payload)
-
-        fallback_focus = []
-        if isinstance(data, dict):
-            fallback_focus = data.get("fallback_focus", []) or []
-
-        return build_layer_payload(
-            layer_id="prediction",
-            layer_name="Flood Prediction",
-            layer_type="point",
-            feature_collection=feature_collection,
-            extra={
-                "source": "excel",
-                "upstream_service": "flood_spatial_service.get_flood_prediction_map",
-                "upstream_cache_keys": ["flood_prediction_map", "flood_prediction_latest"],
-                "fallback_focus": fallback_focus,
-                "fallback_focus_count": len(fallback_focus),
-                "record_count_raw": len(feature_collection.get("features", [])),
-                "degraded": False,
-            },
-        )
-
-    except Exception as exc:
-        return make_empty_layer(
-            layer_id="prediction",
-            layer_name="Flood Prediction",
-            layer_type="point",
-            reason=str(exc),
-            degraded=True,
-        )
-
-
-def build_entity_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    สร้าง entity layer จาก entity_upload_service.get_latest_entity_map_features()
-    """
-
-    ctx = normalize_context(context)
-
-    try:
-        import entity_upload_service
-
-        payload = entity_upload_service.get_latest_entity_map_features(
-            province=ctx.get("selected_province") or None,
-            risk_level=ctx.get("filters", {}).get("risk_level") if isinstance(ctx.get("filters"), dict) else None,
-            query=ctx.get("entity_query") or ctx.get("search") or None,
-            limit=ctx.get("entity_limit"),
-            offset=ctx.get("entity_offset"),
-            context=ctx,
-        )
-
-        feature_collection = extract_feature_collection_from_service_payload(payload)
-        data = extract_service_data(payload)
-        meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
-
-        return build_layer_payload(
-            layer_id="entity",
-            layer_name="Uploaded Entity Overlay",
-            layer_type="point",
-            feature_collection=feature_collection,
-            extra={
-                "source": "uploaded_entity",
-                "upstream_service": "entity_upload_service.get_latest_entity_map_features",
-                "upstream_cache_keys": ["uploaded_entity_latest"],
-                "upload_id": meta.get("upload_id") if isinstance(meta, dict) else None,
-                "updated_at": meta.get("updated_at") if isinstance(meta, dict) else None,
-                "record_count_raw": data.get("total") if isinstance(data, dict) else len(feature_collection.get("features", [])),
-                "degraded": False,
-            },
-        )
-
-    except Exception as exc:
-        return make_empty_layer(
-            layer_id="entity",
-            layer_name="Uploaded Entity Overlay",
-            layer_type="point",
-            reason=str(exc),
-            degraded=True,
-        )
-
-
 def build_province_boundary_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     layer = build_province_boundaries_layer(context)
     return clone_layer_with_alias(layer, "province_boundary", "Province Boundary")
@@ -2329,8 +3200,9 @@ def build_basin_boundary_layer(context: Optional[Dict[str, Any]] = None) -> Dict
     layer = build_basin_boundaries_layer(context)
     return clone_layer_with_alias(layer, "basin_boundary", "Basin Boundary")
 
-
-def get_map_prediction(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_prediction(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/prediction
@@ -2338,21 +3210,22 @@ def get_map_prediction(context: Optional[Dict[str, Any]] = None) -> Dict[str, An
 
     ctx = normalize_context(context)
 
-    def builder() -> Dict[str, Any]:
-        return build_prediction_layer(ctx)
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_prediction"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_prediction",
+    return get_cached_map_layer(
+        cache_name="map_prediction",
+        builder=lambda: (
+            build_prediction_layer(ctx)
+        ),
+        context=ctx,
+        source=(
+            "map_graph_service."
+            "get_map_prediction"
+        ),
     )
 
-    return finalize_cached_payload(cache_result)
 
-
-def get_map_entity(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_entity(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/entity
@@ -2360,21 +3233,22 @@ def get_map_entity(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
     ctx = normalize_context(context)
 
-    def builder() -> Dict[str, Any]:
-        return build_entity_layer(ctx)
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_entity"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_entity",
+    return get_cached_map_layer(
+        cache_name="map_entity",
+        builder=lambda: (
+            build_entity_layer(ctx)
+        ),
+        context=ctx,
+        source=(
+            "map_graph_service."
+            "get_map_entity"
+        ),
     )
 
-    return finalize_cached_payload(cache_result)
 
-
-def get_map_boundaries(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_boundaries(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/boundaries
@@ -2383,137 +3257,50 @@ def get_map_boundaries(context: Optional[Dict[str, Any]] = None) -> Dict[str, An
     ctx = normalize_context(context)
 
     def builder() -> Dict[str, Any]:
-        province_layer = build_province_boundary_layer(ctx)
-        basin_layer = build_basin_boundary_layer(ctx)
+        province_layer = (
+            build_province_boundary_layer(
+                ctx
+            )
+        )
 
-        return {
-            "layers": {
-                "province_boundary": province_layer,
-                "basin_boundary": basin_layer,
-                "province_boundaries": clone_layer_with_alias(province_layer, "province_boundaries", "Province Boundaries"),
-                "basin_boundaries": clone_layer_with_alias(basin_layer, "basin_boundaries", "Basin Boundaries"),
-            },
-            "layer_order": [
-                "province_boundary",
-                "basin_boundary",
-                "province_boundaries",
-                "basin_boundaries",
-            ],
-            "summary": {
-                "layer_count": 4,
-                "feature_count": get_layer_record_count(province_layer) + get_layer_record_count(basin_layer),
-                "generated_at": now_iso(),
-            },
-        }
+        basin_layer = (
+            build_basin_boundary_layer(
+                ctx
+            )
+        )
 
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_boundaries"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_boundaries",
-    )
-
-    return to_jsonable(
-        {
-            **dict(cache_result.get("data") or {}),
-            "cache_used": cache_result.get("cache_used", False),
-        }
-    )
-
-def get_map_layers(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    API:
-    GET /api/map/layers
-
-    คืน layer ทั้งหมดที่ OpenLayers ต้องใช้
-    """
-
-    ctx = normalize_context(context)
-
-    def builder() -> Dict[str, Any]:
-        layer_builders = [
-            (
-                "province_boundary",
-                bool(ctx.get("include_boundary") and ctx.get("include_province_boundary")),
-                build_province_boundary_layer,
-                "Province Boundary",
-                "polygon",
-            ),
-            (
-                "basin_boundary",
-                bool(ctx.get("include_boundary") and ctx.get("include_basin_boundary")),
-                build_basin_boundary_layer,
-                "Basin Boundary",
-                "polygon",
-            ),
-            ("rainfall", bool(ctx.get("include_rainfall") and ctx.get("include_flood")), build_rainfall_layer, "Rainfall", "point"),
-            ("waterlevel", bool(ctx.get("include_waterlevel") and ctx.get("include_flood")), build_waterlevel_layer, "Water Level", "point"),
-            ("dam", bool(ctx.get("include_dam") and ctx.get("include_flood")), build_dam_layer, "Dam Storage", "point"),
-            ("prediction", bool(ctx.get("include_prediction")), build_prediction_layer, "Flood Prediction", "point"),
-            ("entity", bool(ctx.get("include_entity")), build_entity_layer, "Uploaded Entity Overlay", "point"),
-            ("flood_points", bool(ctx.get("include_flood")), build_flood_points_layer, "Flood Sources", "point"),
-            ("policy_exposure", bool(ctx.get("include_policy_exposure")), build_policy_exposure_layer, "Policy Exposure", "point"),
-            ("company_points", bool(ctx.get("include_companies")), build_company_points_layer, "Company Points", "point"),
-            ("branch_points", bool(ctx.get("include_branches")), build_branch_points_layer, "Branch / Province Fallback Points", "point"),
-            ("heatmap", bool(ctx.get("include_heatmap")), build_heatmap_layer, "Exposure Heatmap", "heatmap"),
-            ("linkage_lines", bool(ctx.get("include_linkage_lines")), build_linkage_lines_layer, "Shared Director Lines", "line"),
-        ]
-
-        layers_by_id: Dict[str, Dict[str, Any]] = {}
-        errors: List[Dict[str, Any]] = []
-
-        for layer_id, enabled, layer_builder, layer_name, layer_type in layer_builders:
-            if not enabled:
-                continue
-
-            try:
-                layers_by_id[layer_id] = layer_builder(ctx)
-            except Exception as exc:
-                layers_by_id[layer_id] = make_empty_layer(
-                    layer_id=layer_id,
-                    layer_name=layer_name,
-                    layer_type=layer_type,
-                    reason=str(exc),
-                    degraded=True,
-                )
-                errors.append(
-                    {
-                        "layer_id": layer_id,
-                        "error_type": exc.__class__.__name__,
-                        "message": str(exc),
-                    }
-                )
-
-        if "province_boundary" in layers_by_id:
-            layers_by_id["province_boundaries"] = clone_layer_with_alias(
-                layers_by_id["province_boundary"],
+        province_alias = (
+            clone_layer_with_alias(
+                province_layer,
                 "province_boundaries",
                 "Province Boundaries",
             )
+        )
 
-        if "basin_boundary" in layers_by_id:
-            layers_by_id["basin_boundaries"] = clone_layer_with_alias(
-                layers_by_id["basin_boundary"],
-                "basin_boundaries",
-                "Basin Boundaries",
-            )
-
-        canonical_layer_order = [
-            layer_id
-            for layer_id in DEFAULT_LAYER_ORDER
-            if layer_id in layers_by_id
-        ]
-
-        compatibility_layer_order = [
-            "province_boundaries",
+        basin_alias = clone_layer_with_alias(
+            basin_layer,
             "basin_boundaries",
-        ]
+            "Basin Boundaries",
+        )
 
-        layer_order = canonical_layer_order + [
-            layer_id
-            for layer_id in compatibility_layer_order
-            if layer_id in layers_by_id and layer_id not in canonical_layer_order
+        layers_by_id = {
+            "province_boundary": (
+                province_layer
+            ),
+            "basin_boundary": (
+                basin_layer
+            ),
+            "province_boundaries": (
+                province_alias
+            ),
+            "basin_boundaries": (
+                basin_alias
+            ),
+        }
+
+        layer_order = [
+            "province_boundary",
+            "basin_boundary",
         ]
 
         layer_list = [
@@ -2521,91 +3308,137 @@ def get_map_layers(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             for layer_id in layer_order
         ]
 
-        counts = {
-            layer_id: get_layer_record_count(layer)
-            for layer_id, layer in layers_by_id.items()
-        }
+        feature_count = (
+            get_layer_record_count(
+                province_layer
+            )
+            + get_layer_record_count(
+                basin_layer
+            )
+        )
 
-        record_count = sum(counts.get(layer_id, 0) for layer_id in canonical_layer_order)
-        degraded = bool(errors) or any(layer.get("meta", {}).get("degraded") for layer in layer_list)
+        degraded_layer_ids = [
+            layer_id
+            for layer_id in layer_order
+            if bool(
+                (
+                    layers_by_id[
+                        layer_id
+                    ].get("meta", {})
+                    or {}
+                ).get("degraded")
+            )
+        ]
+
         generated_at = now_iso()
 
         return {
-            "map": {
-                "center": MAP_DEFAULT_CENTER,
-                "zoom": MAP_DEFAULT_ZOOM,
-                "min_zoom": MAP_MIN_ZOOM,
-                "max_zoom": MAP_MAX_ZOOM,
-                "base_tile_url": MAP_BASE_TILE_URL,
-                "base_attribution": MAP_BASE_ATTRIBUTION,
-            },
-            "center": MAP_DEFAULT_CENTER,
-            "zoom": MAP_DEFAULT_ZOOM,
-            "min_zoom": MAP_MIN_ZOOM,
-            "max_zoom": MAP_MAX_ZOOM,
-            "base_tile_url": MAP_BASE_TILE_URL,
-            "base_attribution": MAP_BASE_ATTRIBUTION,
             "layers": layers_by_id,
             "layers_by_id": layers_by_id,
             "layer_order": layer_order,
             "layer_list": layer_list,
+            "layers_list": layer_list,
             "summary": {
-                "layer_count": len(layer_order),
-                "feature_count": record_count,
-                "record_count": record_count,
-                "record_count_by_layer": counts,
-                "generated_at": generated_at,
-                "degraded": degraded,
+                "layer_count": len(
+                    layer_order
+                ),
+                "canonical_layer_count": len(
+                    layer_order
+                ),
+                "feature_count": (
+                    feature_count
+                ),
+                "record_count": (
+                    feature_count
+                ),
+                "compatibility_layers": [
+                    "province_boundaries",
+                    "basin_boundaries",
+                ],
+                "degraded_layer_ids": (
+                    degraded_layer_ids
+                ),
+                "degraded": bool(
+                    degraded_layer_ids
+                ),
+                "generated_at": (
+                    generated_at
+                ),
             },
             "meta": {
-                "source": "excel" if getattr(config, "USE_EXCEL_DATA_SOURCE", True) else "mysql",
-                "generated_at": generated_at,
-                "layer_count": len(layer_order),
-                "record_count": record_count,
-                "counts": counts,
-                "record_count_by_layer": counts,
-                "filters": ctx.get("filters", {}),
-                "upstream_cache_keys": [
-                    "flood_rainfall_latest",
-                    "flood_waterlevel_latest",
-                    "flood_large_dam_latest",
-                    "flood_medium_dam_latest",
-                    "flood_prediction_map",
-                    "uploaded_entity_latest",
-                    "company_unified_master",
-                    "policy_flood_exposure",
-                    "linkage_graph_payload",
-                    "shared_director_links",
-                ],
-                "degraded": degraded,
-                "errors": errors,
+                "generated_at": (
+                    generated_at
+                ),
+                "created_at": (
+                    generated_at
+                ),
+                "degraded": bool(
+                    degraded_layer_ids
+                ),
+                "degraded_layer_ids": (
+                    degraded_layer_ids
+                ),
+                "compatibility_aliases": {
+                    "province_boundaries": (
+                        "province_boundary"
+                    ),
+                    "basin_boundaries": (
+                        "basin_boundary"
+                    ),
+                },
             },
-            "context": ctx,
         }
 
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_layers"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_layers",
+    cache_key = make_map_cache_key(
+        CACHE_KEYS["map_boundaries"],
+        context=ctx,
     )
 
-    data = dict(cache_result.get("data") or {})
-    if not isinstance(data.get("layers"), dict):
-        data = builder()
+    cache_result = get_or_build_cache(
+        cache_key=cache_key,
+        builder=builder,
+        ttl_seconds=get_map_ttl(),
+        force_refresh=ctx.get(
+            "force_refresh",
+            False,
+        ),
+        source=(
+            "map_graph_service."
+            "get_map_boundaries"
+        ),
+    )
 
-    payload = {
-        **data,
-        "cache_used": cache_result["cache_used"],
-    }
+    payload = dict(
+        cache_result.get("data")
+        or {}
+    )
 
-    if isinstance(payload.get("meta"), dict):
-        payload["meta"]["cache_used"] = cache_result["cache_used"]
+    payload["cache_used"] = bool(
+        cache_result.get(
+            "cache_used",
+            False,
+        )
+    )
+
+    payload["cache_key"] = cache_key
+
+    if isinstance(
+        payload.get("meta"),
+        dict,
+    ):
+        payload["meta"]["cache_used"] = (
+            payload["cache_used"]
+        )
+
+        payload["meta"]["cache_key"] = (
+            cache_key
+        )
 
     return to_jsonable(payload)
 
-def get_map_companies(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_companies(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/companies
@@ -2613,21 +3446,22 @@ def get_map_companies(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any
 
     ctx = normalize_context(context)
 
-    def builder() -> Dict[str, Any]:
-        return build_company_points_layer(ctx)
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_companies"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_companies",
+    return get_cached_map_layer(
+        cache_name="map_companies",
+        builder=lambda: (
+            build_company_points_layer(ctx)
+        ),
+        context=ctx,
+        source=(
+            "map_graph_service."
+            "get_map_companies"
+        ),
     )
 
-    return finalize_cached_payload(cache_result)
 
-
-def get_map_rainfall(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_rainfall(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/rainfall
@@ -2635,21 +3469,22 @@ def get_map_rainfall(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
 
     ctx = normalize_context(context)
 
-    def builder() -> Dict[str, Any]:
-        return build_rainfall_layer(ctx)
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_rainfall"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_rainfall",
+    return get_cached_map_layer(
+        cache_name="map_rainfall",
+        builder=lambda: (
+            build_rainfall_layer(ctx)
+        ),
+        context=ctx,
+        source=(
+            "map_graph_service."
+            "get_map_rainfall"
+        ),
     )
 
-    return finalize_cached_payload(cache_result)
 
-
-def get_map_waterlevel(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_waterlevel(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/waterlevel
@@ -2657,21 +3492,22 @@ def get_map_waterlevel(context: Optional[Dict[str, Any]] = None) -> Dict[str, An
 
     ctx = normalize_context(context)
 
-    def builder() -> Dict[str, Any]:
-        return build_waterlevel_layer(ctx)
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_waterlevel"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_waterlevel",
+    return get_cached_map_layer(
+        cache_name="map_waterlevel",
+        builder=lambda: (
+            build_waterlevel_layer(ctx)
+        ),
+        context=ctx,
+        source=(
+            "map_graph_service."
+            "get_map_waterlevel"
+        ),
     )
 
-    return finalize_cached_payload(cache_result)
 
-
-def get_map_dam(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_dam(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/dam
@@ -2679,21 +3515,22 @@ def get_map_dam(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
     ctx = normalize_context(context)
 
-    def builder() -> Dict[str, Any]:
-        return build_dam_layer(ctx)
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_dam"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_dam",
+    return get_cached_map_layer(
+        cache_name="map_dam",
+        builder=lambda: (
+            build_dam_layer(ctx)
+        ),
+        context=ctx,
+        source=(
+            "map_graph_service."
+            "get_map_dam"
+        ),
     )
 
-    return finalize_cached_payload(cache_result)
 
-
-def get_map_entities(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_entities(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API alias:
     GET /api/map/entities
@@ -2702,14 +3539,21 @@ def get_map_entities(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     return get_map_entity(context)
 
 
-def get_map_prediction_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_prediction_layer(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     return get_map_prediction(context)
 
 
-def get_map_entity_layer(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_entity_layer(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     return get_map_entity(context)
 
-def get_map_flood(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+
+def get_map_flood(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/flood
@@ -2717,21 +3561,22 @@ def get_map_flood(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
     ctx = normalize_context(context)
 
-    def builder() -> Dict[str, Any]:
-        return build_flood_points_layer(ctx)
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_flood"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_flood",
+    return get_cached_map_layer(
+        cache_name="map_flood",
+        builder=lambda: (
+            build_flood_points_layer(ctx)
+        ),
+        context=ctx,
+        source=(
+            "map_graph_service."
+            "get_map_flood"
+        ),
     )
 
-    return finalize_cached_payload(cache_result)
 
-
-def get_map_policy_exposure(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_policy_exposure(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/policy-exposure
@@ -2739,21 +3584,22 @@ def get_map_policy_exposure(context: Optional[Dict[str, Any]] = None) -> Dict[st
 
     ctx = normalize_context(context)
 
-    def builder() -> Dict[str, Any]:
-        return build_policy_exposure_layer(ctx)
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_policy_exposure"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_policy_exposure",
+    return get_cached_map_layer(
+        cache_name="map_policy_exposure",
+        builder=lambda: (
+            build_policy_exposure_layer(ctx)
+        ),
+        context=ctx,
+        source=(
+            "map_graph_service."
+            "get_map_policy_exposure"
+        ),
     )
 
-    return finalize_cached_payload(cache_result)
 
-
-def get_map_linkage_lines(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_linkage_lines(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/linkage-lines
@@ -2761,21 +3607,22 @@ def get_map_linkage_lines(context: Optional[Dict[str, Any]] = None) -> Dict[str,
 
     ctx = normalize_context(context)
 
-    def builder() -> Dict[str, Any]:
-        return build_linkage_lines_layer(ctx)
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_linkage_lines"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_linkage_lines",
+    return get_cached_map_layer(
+        cache_name="map_linkage_lines",
+        builder=lambda: (
+            build_linkage_lines_layer(ctx)
+        ),
+        context=ctx,
+        source=(
+            "map_graph_service."
+            "get_map_linkage_lines"
+        ),
     )
 
-    return finalize_cached_payload(cache_result)
 
-
-def get_map_branches(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_branches(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/branches
@@ -2783,21 +3630,22 @@ def get_map_branches(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
 
     ctx = normalize_context(context)
 
-    def builder() -> Dict[str, Any]:
-        return build_branch_points_layer(ctx)
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_branches"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_branches",
+    return get_cached_map_layer(
+        cache_name="map_branches",
+        builder=lambda: (
+            build_branch_points_layer(ctx)
+        ),
+        context=ctx,
+        source=(
+            "map_graph_service."
+            "get_map_branches"
+        ),
     )
 
-    return finalize_cached_payload(cache_result)
 
-
-def get_map_heatmap(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_heatmap(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/heatmap
@@ -2805,31 +3653,32 @@ def get_map_heatmap(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
     ctx = normalize_context(context)
 
-    def builder() -> Dict[str, Any]:
-        return build_heatmap_layer(ctx)
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_heatmap"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_heatmap",
+    return get_cached_map_layer(
+        cache_name="map_heatmap",
+        builder=lambda: (
+            build_heatmap_layer(ctx)
+        ),
+        context=ctx,
+        source=(
+            "map_graph_service."
+            "get_map_heatmap"
+        ),
     )
-
-    return finalize_cached_payload(cache_result)
-
 
 # ============================================================
 # 9) FULL MAP LAYERS
 # ============================================================
 
-def get_map_layers(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_map_layers(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/layers
 
     คืน merged layer contract สำหรับ OpenLayers:
-    rainfall / waterlevel / dam / prediction / entity / boundary / company / policy / linkage
+    rainfall / waterlevel / dam / prediction /
+    entity / boundary / company / policy / linkage
     """
 
     ctx = normalize_context(context)
@@ -2838,144 +3687,259 @@ def get_map_layers(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         layer_builders = [
             (
                 "province_boundary",
-                bool(ctx.get("include_boundary") and ctx.get("include_province_boundary")),
+                bool(
+                    ctx.get("include_boundary")
+                    and ctx.get(
+                        "include_province_boundary"
+                    )
+                ),
                 build_province_boundary_layer,
                 "Province Boundary",
                 "polygon",
             ),
             (
                 "basin_boundary",
-                bool(ctx.get("include_boundary") and ctx.get("include_basin_boundary")),
+                bool(
+                    ctx.get("include_boundary")
+                    and ctx.get(
+                        "include_basin_boundary"
+                    )
+                ),
                 build_basin_boundary_layer,
                 "Basin Boundary",
                 "polygon",
             ),
             (
                 "rainfall",
-                bool(ctx.get("include_flood") and ctx.get("include_rainfall")),
+                bool(
+                    ctx.get("include_flood")
+                    and ctx.get(
+                        "include_rainfall"
+                    )
+                ),
                 build_rainfall_layer,
                 "Rainfall",
                 "point",
             ),
             (
                 "waterlevel",
-                bool(ctx.get("include_flood") and ctx.get("include_waterlevel")),
+                bool(
+                    ctx.get("include_flood")
+                    and ctx.get(
+                        "include_waterlevel"
+                    )
+                ),
                 build_waterlevel_layer,
                 "Water Level",
                 "point",
             ),
             (
                 "dam",
-                bool(ctx.get("include_flood") and ctx.get("include_dam")),
+                bool(
+                    ctx.get("include_flood")
+                    and ctx.get(
+                        "include_dam"
+                    )
+                ),
                 build_dam_layer,
                 "Dam Storage",
                 "point",
             ),
             (
                 "prediction",
-                bool(ctx.get("include_prediction")),
+                bool(
+                    ctx.get(
+                        "include_prediction"
+                    )
+                ),
                 build_prediction_layer,
                 "Flood Prediction",
                 "point",
             ),
             (
                 "entity",
-                bool(ctx.get("include_entity")),
+                bool(
+                    ctx.get("include_entity")
+                ),
                 build_entity_layer,
                 "Uploaded Entity Overlay",
                 "point",
             ),
             (
                 "flood_points",
-                bool(ctx.get("include_flood")),
+                bool(
+                    ctx.get("include_flood")
+                ),
                 build_flood_points_layer,
                 "Flood Sources",
                 "point",
             ),
             (
                 "policy_exposure",
-                bool(ctx.get("include_policy_exposure")),
+                bool(
+                    ctx.get(
+                        "include_policy_exposure"
+                    )
+                ),
                 build_policy_exposure_layer,
                 "Policy Exposure",
                 "point",
             ),
             (
                 "company_points",
-                bool(ctx.get("include_companies")),
+                bool(
+                    ctx.get(
+                        "include_companies"
+                    )
+                ),
                 build_company_points_layer,
                 "Company Points",
                 "point",
             ),
             (
                 "branch_points",
-                bool(ctx.get("include_branches")),
+                bool(
+                    ctx.get(
+                        "include_branches"
+                    )
+                ),
                 build_branch_points_layer,
-                "Branch / Province Fallback Points",
+                (
+                    "Branch / Province "
+                    "Fallback Points"
+                ),
                 "point",
             ),
             (
                 "heatmap",
-                bool(ctx.get("include_heatmap")),
+                bool(
+                    ctx.get(
+                        "include_heatmap"
+                    )
+                ),
                 build_heatmap_layer,
                 "Exposure Heatmap",
                 "heatmap",
             ),
             (
                 "linkage_lines",
-                bool(ctx.get("include_linkage_lines")),
+                bool(
+                    ctx.get(
+                        "include_linkage_lines"
+                    )
+                ),
                 build_linkage_lines_layer,
                 "Shared Director Lines",
                 "line",
             ),
         ]
 
-        layers_by_id: Dict[str, Dict[str, Any]] = {}
-        errors: List[Dict[str, Any]] = []
+        layers_by_id: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
 
-        for layer_id, enabled, layer_builder, layer_name, layer_type in layer_builders:
+        errors: List[
+            Dict[str, Any]
+        ] = []
+
+        for (
+            layer_id,
+            enabled,
+            layer_builder,
+            layer_name,
+            layer_type,
+        ) in layer_builders:
             if not enabled:
                 continue
 
             try:
                 layer = layer_builder(ctx)
-                if not isinstance(layer, dict):
+
+                if not isinstance(
+                    layer,
+                    dict,
+                ):
                     layer = make_empty_layer(
                         layer_id=layer_id,
                         layer_name=layer_name,
                         layer_type=layer_type,
-                        reason="layer builder returned invalid payload",
+                        reason=(
+                            "layer builder returned "
+                            "invalid payload"
+                        ),
                         degraded=True,
                     )
-                layers_by_id[layer_id] = layer
+
+                layers_by_id[
+                    layer_id
+                ] = layer
+
             except Exception as exc:
-                layers_by_id[layer_id] = make_empty_layer(
+                safe_message = (
+                    safe_exception_message(
+                        exc,
+                        (
+                            f"{layer_name} layer "
+                            "build failed."
+                        ),
+                    )
+                )
+
+                layers_by_id[
+                    layer_id
+                ] = make_empty_layer(
                     layer_id=layer_id,
                     layer_name=layer_name,
                     layer_type=layer_type,
-                    reason=str(exc),
+                    reason=safe_message,
                     degraded=True,
                 )
+
                 errors.append(
                     {
                         "layer_id": layer_id,
-                        "error_type": exc.__class__.__name__,
-                        "message": str(exc),
+                        "error_type": (
+                            exc.__class__.__name__
+                        ),
+                        "message": safe_message,
                     }
                 )
 
+        compatibility_aliases: Dict[
+            str,
+            str,
+        ] = {}
+
         if "province_boundary" in layers_by_id:
-            layers_by_id["province_boundaries"] = clone_layer_with_alias(
-                layers_by_id["province_boundary"],
+            layers_by_id[
+                "province_boundaries"
+            ] = clone_layer_with_alias(
+                layers_by_id[
+                    "province_boundary"
+                ],
                 "province_boundaries",
                 "Province Boundaries",
             )
 
+            compatibility_aliases[
+                "province_boundaries"
+            ] = "province_boundary"
+
         if "basin_boundary" in layers_by_id:
-            layers_by_id["basin_boundaries"] = clone_layer_with_alias(
-                layers_by_id["basin_boundary"],
+            layers_by_id[
+                "basin_boundaries"
+            ] = clone_layer_with_alias(
+                layers_by_id[
+                    "basin_boundary"
+                ],
                 "basin_boundaries",
                 "Basin Boundaries",
             )
+
+            compatibility_aliases[
+                "basin_boundaries"
+            ] = "basin_boundary"
 
         canonical_layer_order = [
             layer_id
@@ -2983,62 +3947,81 @@ def get_map_layers(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             if layer_id in layers_by_id
         ]
 
-        compatibility_layer_order = [
-            layer_id
-            for layer_id in [
-                "province_boundaries",
-                "basin_boundaries",
-            ]
-            if layer_id in layers_by_id and layer_id not in canonical_layer_order
-        ]
-
-        layer_order = canonical_layer_order + compatibility_layer_order
+        layer_order = list(
+            canonical_layer_order
+        )
 
         layer_list = [
             layers_by_id[layer_id]
             for layer_id in layer_order
-            if layer_id in layers_by_id
         ]
 
         counts = {
-            layer_id: get_layer_record_count(layer)
-            for layer_id, layer in layers_by_id.items()
+            layer_id: get_layer_record_count(
+                layer
+            )
+            for layer_id, layer
+            in layers_by_id.items()
         }
 
         canonical_record_count = sum(
-            counts.get(layer_id, 0)
-            for layer_id in canonical_layer_order
-        )
-
-        total_feature_count = sum(
-            counts.get(layer_id, 0)
-            for layer_id in layer_order
+            counts.get(
+                layer_id,
+                0,
+            )
+            for layer_id
+            in canonical_layer_order
         )
 
         degraded_layer_ids = [
             layer_id
-            for layer_id, layer in layers_by_id.items()
-            if isinstance(layer.get("meta"), dict) and layer["meta"].get("degraded")
+            for layer_id
+            in canonical_layer_order
+            if bool(
+                (
+                    layers_by_id[
+                        layer_id
+                    ].get(
+                        "meta",
+                        {},
+                    )
+                    or {}
+                ).get("degraded")
+            )
         ]
 
         generated_at = now_iso()
-        degraded = bool(errors or degraded_layer_ids)
+
+        degraded = bool(
+            errors
+            or degraded_layer_ids
+        )
 
         return {
             "map": {
-                "center": MAP_DEFAULT_CENTER,
+                "center": (
+                    MAP_DEFAULT_CENTER
+                ),
                 "zoom": MAP_DEFAULT_ZOOM,
                 "min_zoom": MAP_MIN_ZOOM,
                 "max_zoom": MAP_MAX_ZOOM,
-                "base_tile_url": MAP_BASE_TILE_URL,
-                "base_attribution": MAP_BASE_ATTRIBUTION,
+                "base_tile_url": (
+                    MAP_BASE_TILE_URL
+                ),
+                "base_attribution": (
+                    MAP_BASE_ATTRIBUTION
+                ),
             },
             "center": MAP_DEFAULT_CENTER,
             "zoom": MAP_DEFAULT_ZOOM,
             "min_zoom": MAP_MIN_ZOOM,
             "max_zoom": MAP_MAX_ZOOM,
-            "base_tile_url": MAP_BASE_TILE_URL,
-            "base_attribution": MAP_BASE_ATTRIBUTION,
+            "base_tile_url": (
+                MAP_BASE_TILE_URL
+            ),
+            "base_attribution": (
+                MAP_BASE_ATTRIBUTION
+            ),
             "layers": layers_by_id,
             "layers_by_id": layers_by_id,
             "layer_order": layer_order,
@@ -3046,28 +4029,70 @@ def get_map_layers(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "layers_list": layer_list,
             "legacy_layers": layer_list,
             "summary": {
-                "layer_count": len(layer_order),
-                "canonical_layer_count": len(canonical_layer_order),
-                "feature_count": total_feature_count,
-                "record_count": canonical_record_count,
-                "record_count_by_layer": counts,
-                "enabled_layers": canonical_layer_order,
-                "compatibility_layers": compatibility_layer_order,
-                "degraded_layer_ids": degraded_layer_ids,
-                "generated_at": generated_at,
+                "layer_count": len(
+                    layer_order
+                ),
+                "canonical_layer_count": len(
+                    canonical_layer_order
+                ),
+                "feature_count": (
+                    canonical_record_count
+                ),
+                "record_count": (
+                    canonical_record_count
+                ),
+                "record_count_by_layer": (
+                    counts
+                ),
+                "enabled_layers": (
+                    canonical_layer_order
+                ),
+                "compatibility_layers": list(
+                    compatibility_aliases
+                ),
+                "degraded_layer_ids": (
+                    degraded_layer_ids
+                ),
+                "generated_at": (
+                    generated_at
+                ),
                 "degraded": degraded,
             },
             "meta": {
-                "source": "excel" if getattr(config, "USE_EXCEL_DATA_SOURCE", True) else "mysql",
+                "source": (
+                    "excel"
+                    if getattr(
+                        config,
+                        "USE_EXCEL_DATA_SOURCE",
+                        True,
+                    )
+                    else "mysql"
+                ),
                 "generated_at": generated_at,
                 "created_at": generated_at,
-                "layer_count": len(layer_order),
-                "canonical_layer_count": len(canonical_layer_order),
-                "feature_count": total_feature_count,
-                "record_count": canonical_record_count,
+                "layer_count": len(
+                    layer_order
+                ),
+                "canonical_layer_count": len(
+                    canonical_layer_order
+                ),
+                "feature_count": (
+                    canonical_record_count
+                ),
+                "record_count": (
+                    canonical_record_count
+                ),
                 "counts": counts,
-                "record_count_by_layer": counts,
-                "filters": ctx.get("filters", {}),
+                "record_count_by_layer": (
+                    counts
+                ),
+                "filters": ctx.get(
+                    "filters",
+                    {},
+                ),
+                "compatibility_aliases": (
+                    compatibility_aliases
+                ),
                 "upstream_cache_keys": [
                     "flood_rainfall_latest",
                     "flood_waterlevel_latest",
@@ -3084,32 +4109,66 @@ def get_map_layers(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
                     "basin_boundaries",
                 ],
                 "degraded": degraded,
-                "degraded_layer_ids": degraded_layer_ids,
+                "degraded_layer_ids": (
+                    degraded_layer_ids
+                ),
                 "errors": errors,
             },
             "context": ctx,
         }
 
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["map_layers"],
-        builder=builder,
-        ttl_seconds=get_map_ttl(),
-        force_refresh=ctx.get("force_refresh", False),
-        source="map_graph_service.get_map_layers",
+    cache_key = make_map_cache_key(
+        CACHE_KEYS["map_layers"],
+        context=ctx,
     )
 
-    data = dict(cache_result.get("data") or {})
+    cache_result = get_or_build_cache(
+        cache_key=cache_key,
+        builder=builder,
+        ttl_seconds=get_map_ttl(),
+        force_refresh=ctx.get(
+            "force_refresh",
+            False,
+        ),
+        source=(
+            "map_graph_service."
+            "get_map_layers"
+        ),
+    )
 
-    if not isinstance(data.get("layers"), dict):
+    data = dict(
+        cache_result.get("data")
+        or {}
+    )
+
+    if not isinstance(
+        data.get("layers"),
+        dict,
+    ):
         data = builder()
 
     payload = {
         **data,
-        "cache_used": cache_result["cache_used"],
+        "cache_used": bool(
+            cache_result.get(
+                "cache_used",
+                False,
+            )
+        ),
+        "cache_key": cache_key,
     }
 
-    if isinstance(payload.get("meta"), dict):
-        payload["meta"]["cache_used"] = cache_result["cache_used"]
+    if isinstance(
+        payload.get("meta"),
+        dict,
+    ):
+        payload["meta"]["cache_used"] = (
+            payload["cache_used"]
+        )
+
+        payload["meta"]["cache_key"] = (
+            cache_key
+        )
 
     return to_jsonable(payload)
 
@@ -3117,53 +4176,111 @@ def get_map_layers(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 # 10) SELECTED CONTEXT
 # ============================================================
 
-def find_company_by_tax_id(tax_id: str) -> Optional[Dict[str, Any]]:
+def find_company_by_tax_id(
+    tax_id: str,
+) -> Optional[Dict[str, Any]]:
     """
     หา company จาก company_unified_master
     """
 
-    tax_id_norm = normalize_tax_id(tax_id)
+    tax_id_norm = normalize_tax_id(
+        tax_id
+    )
+
+    if not tax_id_norm:
+        return None
 
     for company in load_company_records():
-        if normalize_tax_id(company.get("tax_id_norm")) == tax_id_norm:
+        company_tax_id = normalize_tax_id(
+            first_present(
+                company,
+                [
+                    "tax_id_norm",
+                    "tax_id",
+                    "company_tax_id",
+                ],
+                "",
+            )
+        )
+
+        if company_tax_id == tax_id_norm:
             return company
 
     return None
 
 
-def find_spatial_by_tax_id(tax_id: str) -> Optional[Dict[str, Any]]:
+def find_spatial_by_tax_id(
+    tax_id: str,
+) -> Optional[Dict[str, Any]]:
     """
     หา spatial context จาก spatial_join_result
     """
 
-    tax_id_norm = normalize_tax_id(tax_id)
+    tax_id_norm = normalize_tax_id(
+        tax_id
+    )
+
+    if not tax_id_norm:
+        return None
 
     for record in load_spatial_records():
-        if normalize_tax_id(record.get("tax_id_norm")) == tax_id_norm:
+        record_tax_id = normalize_tax_id(
+            first_present(
+                record,
+                [
+                    "tax_id_norm",
+                    "tax_id",
+                    "company_tax_id",
+                ],
+                "",
+            )
+        )
+
+        if record_tax_id == tax_id_norm:
             return record
 
     return None
 
-def get_selected_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_selected_context(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/map/selected-context
-
-    ใช้ตอน user คลิก marker / node แล้ว frontend ต้องการ context รอบตัว
     """
 
     ctx = normalize_context(context)
 
-    selected_tax_id = ctx.get("selected_tax_id")
-    selected_director_id = ctx.get("selected_director_id")
-    selected_province = ctx.get("selected_province")
-    feature_type = clean_text(ctx.get("feature_type") or ctx.get("object_type") or "")
-    feature_id = clean_text(ctx.get("feature_id") or ctx.get("record_key") or "")
+    selected_tax_id = (
+        ctx.get("selected_tax_id")
+    )
+
+    selected_director_id = clean_text(
+        ctx.get("selected_director_id")
+    )
+
+    selected_province = clean_text(
+        ctx.get("selected_province")
+    )
+
+    feature_type = clean_text_lower(
+        ctx.get("feature_type")
+        or ctx.get("object_type")
+        or ""
+    )
+
+    feature_id = clean_text(
+        ctx.get("feature_id")
+        or ctx.get("record_key")
+        or ""
+    )
 
     result: Dict[str, Any] = {
         "selected": {
             "tax_id_norm": selected_tax_id,
-            "director_id": selected_director_id,
+            "director_id": (
+                selected_director_id
+            ),
             "province": selected_province,
             "feature_type": feature_type,
             "feature_id": feature_id,
@@ -3196,15 +4313,44 @@ def get_selected_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, 
     }
 
     if selected_tax_id:
-        company = find_company_by_tax_id(selected_tax_id)
-        spatial = find_spatial_by_tax_id(selected_tax_id)
+        company = find_company_by_tax_id(
+            selected_tax_id
+        )
 
-        result["company"] = company or {}
-        result["spatial"] = spatial or {}
-        result["meta"]["found"] = bool(company or spatial)
+        spatial = find_spatial_by_tax_id(
+            selected_tax_id
+        )
 
-        if company:
-            lat, lon, valid, issue = safe_get_lat_lon(company)
+        result["company"] = (
+            company
+            or {}
+        )
+
+        result["spatial"] = (
+            spatial
+            or {}
+        )
+
+        result["meta"]["found"] = bool(
+            company
+            or spatial
+        )
+
+        focus_record = (
+            company
+            or spatial
+            or {}
+        )
+
+        if focus_record:
+            (
+                lat,
+                lon,
+                valid,
+                issue,
+            ) = safe_get_lat_lon(
+                focus_record
+            )
 
             if valid:
                 result["map_focus"] = {
@@ -3214,136 +4360,409 @@ def get_selected_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, 
                     "focus_fallback": None,
                 }
 
-                result["nearby_companies"] = find_nearby_companies(
-                    origin_company=company,
+                result[
+                    "nearby_companies"
+                ] = find_nearby_companies(
+                    origin_company=focus_record,
                     limit=20,
                     max_distance_km=50,
                 )
 
-                result["nearby_flood_sources"] = find_nearby_flood_sources(
+                result[
+                    "nearby_flood_sources"
+                ] = find_nearby_flood_sources(
                     lat=lat,
                     lon=lon,
                     limit=20,
                     max_distance_km=80,
                 )
+
             else:
-                province = clean_text(company.get("province") or selected_province)
+                province = clean_text(
+                    first_present(
+                        focus_record,
+                        [
+                            "province",
+                            "company_province",
+                            "province_name_th",
+                        ],
+                        selected_province,
+                    )
+                )
+
                 result["map_focus"] = {
-                    "center": MAP_DEFAULT_CENTER,
+                    "center": (
+                        MAP_DEFAULT_CENTER
+                    ),
                     "zoom": 8,
-                    "focus_level": "province_boundary" if province else "default",
-                    "focus_fallback": {
-                        "type": "province_boundary",
-                        "province": province,
-                        "reason": issue,
-                    } if province else None,
+                    "focus_level": (
+                        "province_boundary"
+                        if province
+                        else "default"
+                    ),
+                    "focus_fallback": (
+                        {
+                            "type": (
+                                "province_boundary"
+                            ),
+                            "province": province,
+                            "reason": issue,
+                        }
+                        if province
+                        else None
+                    ),
                 }
 
         result["linkage_lines"] = [
             link
-            for link in load_shared_director_links()
-            if normalize_tax_id(link.get("source_tax_id")) == selected_tax_id
-            or normalize_tax_id(link.get("target_tax_id")) == selected_tax_id
-        ]
+            for link in load_linkage_records()
+            if (
+                normalize_tax_id(
+                    first_present(
+                        link,
+                        [
+                            "source_tax_id",
+                            "source_tax_id_norm",
+                            "company_a_tax_id",
+                            "from_tax_id",
+                        ],
+                        "",
+                    )
+                )
+                == selected_tax_id
+                or normalize_tax_id(
+                    first_present(
+                        link,
+                        [
+                            "target_tax_id",
+                            "target_tax_id_norm",
+                            "company_b_tax_id",
+                            "to_tax_id",
+                        ],
+                        "",
+                    )
+                )
+                == selected_tax_id
+            )
+        ][:100]
 
         result["nearby"] = {
-            "companies": result["nearby_companies"],
-            "flood_sources": result["nearby_flood_sources"],
+            "companies": result[
+                "nearby_companies"
+            ],
+            "flood_sources": result[
+                "nearby_flood_sources"
+            ],
         }
 
     if selected_director_id:
         director_links = [
             link
             for link in load_linkage_records()
-            if clean_text(link.get("director_id") or link.get("person_id")) == selected_director_id
-            or selected_director_id in clean_text(link.get("shared_directors_text"))
+            if (
+                clean_text(
+                    link.get("director_id")
+                    or link.get("person_id")
+                )
+                == selected_director_id
+                or selected_director_id
+                in clean_text(
+                    link.get(
+                        "shared_directors_text"
+                    )
+                )
+            )
         ]
+
         result["director"] = {
-            "director_id": selected_director_id,
-            "connected_link_count": len(director_links),
-            "connected_links": director_links[:50],
+            "director_id": (
+                selected_director_id
+            ),
+            "connected_link_count": len(
+                director_links
+            ),
+            "connected_links": (
+                director_links[:50]
+            ),
         }
-        result["meta"]["found"] = result["meta"]["found"] or bool(director_links)
+
+        result["meta"]["found"] = (
+            result["meta"]["found"]
+            or bool(director_links)
+        )
 
     if selected_province:
-        province_context = build_province_context(selected_province)
-        result["province_context"] = province_context
-        result["province"] = province_context
+        province_context = (
+            build_province_context(
+                selected_province
+            )
+        )
+
+        result["province_context"] = (
+            province_context
+        )
+
+        result["province"] = (
+            province_context
+        )
+
         result["map_focus"] = {
             **result["map_focus"],
-            "focus_level": "province_boundary",
+            "focus_level": (
+                "province_boundary"
+            ),
             "focus_fallback": {
-                "type": "province_boundary",
-                "province": selected_province,
+                "type": (
+                    "province_boundary"
+                ),
+                "province": (
+                    selected_province
+                ),
             },
         }
-        result["meta"]["found"] = result["meta"]["found"] or bool(province_context)
 
-    if feature_type in {"prediction", "forecast", "flood_prediction"} and feature_id:
+        result["meta"]["found"] = (
+            result["meta"]["found"]
+            or bool(province_context)
+        )
+
+    if (
+        feature_type in {
+            "prediction",
+            "forecast",
+            "flood_prediction",
+        }
+        and feature_id
+    ):
         try:
-            prediction_layer = build_prediction_layer(ctx)
-            features = prediction_layer.get("feature_collection", {}).get("features", [])
+            prediction_layer = (
+                build_prediction_layer(ctx)
+            )
+
+            features = (
+                prediction_layer.get(
+                    "feature_collection",
+                    {},
+                ).get(
+                    "features",
+                    [],
+                )
+            )
+
             matched = [
                 feature
                 for feature in features
-                if clean_text(feature.get("properties", {}).get("record_key")) == feature_id
-                or clean_text(feature.get("properties", {}).get("feature_id")) == feature_id
+                if (
+                    clean_text(
+                        feature.get(
+                            "properties",
+                            {},
+                        ).get("record_key")
+                    )
+                    == feature_id
+                    or clean_text(
+                        feature.get(
+                            "properties",
+                            {},
+                        ).get("feature_id")
+                    )
+                    == feature_id
+                )
             ]
-            result["prediction"] = matched[0].get("properties", {}) if matched else {}
-            result["meta"]["found"] = result["meta"]["found"] or bool(matched)
+
+            result["prediction"] = (
+                matched[0].get(
+                    "properties",
+                    {},
+                )
+                if matched
+                else {}
+            )
+
+            result["meta"]["found"] = (
+                result["meta"]["found"]
+                or bool(matched)
+            )
 
             if matched:
-                properties = matched[0].get("properties", {})
-                geometry = matched[0].get("geometry")
+                properties = matched[0].get(
+                    "properties",
+                    {},
+                )
 
-                if isinstance(geometry, dict) and geometry.get("type") == "Point":
-                    coordinates = geometry.get("coordinates", [])
+                geometry = matched[0].get(
+                    "geometry"
+                )
+
+                if (
+                    isinstance(
+                        geometry,
+                        dict,
+                    )
+                    and geometry.get("type")
+                    == "Point"
+                ):
+                    coordinates = geometry.get(
+                        "coordinates",
+                        [],
+                    )
+
                     if len(coordinates) >= 2:
                         result["map_focus"] = {
-                            "center": [coordinates[0], coordinates[1]],
+                            "center": [
+                                coordinates[0],
+                                coordinates[1],
+                            ],
                             "zoom": 12,
-                            "focus_level": "point",
+                            "focus_level": (
+                                "point"
+                            ),
                             "focus_fallback": None,
                         }
-                elif properties.get("focus_fallback"):
+
+                elif properties.get(
+                    "focus_fallback"
+                ):
                     result["map_focus"] = {
-                        "center": MAP_DEFAULT_CENTER,
+                        "center": (
+                            MAP_DEFAULT_CENTER
+                        ),
                         "zoom": 8,
-                        "focus_level": properties.get("focus_level") or "province_boundary",
-                        "focus_fallback": properties.get("focus_fallback"),
+                        "focus_level": (
+                            properties.get(
+                                "focus_level"
+                            )
+                            or (
+                                "province_boundary"
+                            )
+                        ),
+                        "focus_fallback": (
+                            properties.get(
+                                "focus_fallback"
+                            )
+                        ),
                     }
+
         except Exception as exc:
             result["meta"]["degraded"] = True
-            result["meta"]["prediction_error"] = str(exc)
 
-    if feature_type in {"entity", "uploaded_entity"} and feature_id:
+            result["meta"][
+                "prediction_error"
+            ] = safe_exception_message(
+                exc,
+                (
+                    "Prediction context "
+                    "could not be loaded."
+                ),
+            )
+
+    if (
+        feature_type in {
+            "entity",
+            "uploaded_entity",
+        }
+        and feature_id
+    ):
         try:
-            entity_layer = build_entity_layer(ctx)
-            features = entity_layer.get("feature_collection", {}).get("features", [])
+            entity_layer = (
+                build_entity_layer(ctx)
+            )
+
+            features = (
+                entity_layer.get(
+                    "feature_collection",
+                    {},
+                ).get(
+                    "features",
+                    [],
+                )
+            )
+
             matched = [
                 feature
                 for feature in features
-                if clean_text(feature.get("properties", {}).get("entity_id")) == feature_id
-                or clean_text(feature.get("properties", {}).get("record_key")) == feature_id
+                if (
+                    clean_text(
+                        feature.get(
+                            "properties",
+                            {},
+                        ).get("entity_id")
+                    )
+                    == feature_id
+                    or clean_text(
+                        feature.get(
+                            "properties",
+                            {},
+                        ).get("record_key")
+                    )
+                    == feature_id
+                    or clean_text(
+                        feature.get(
+                            "properties",
+                            {},
+                        ).get("feature_id")
+                    )
+                    == feature_id
+                )
             ]
-            result["entity"] = matched[0].get("properties", {}) if matched else {}
-            result["meta"]["found"] = result["meta"]["found"] or bool(matched)
 
-            if matched and isinstance(matched[0].get("geometry"), dict):
-                coordinates = matched[0]["geometry"].get("coordinates", [])
+            result["entity"] = (
+                matched[0].get(
+                    "properties",
+                    {},
+                )
+                if matched
+                else {}
+            )
+
+            result["meta"]["found"] = (
+                result["meta"]["found"]
+                or bool(matched)
+            )
+
+            if (
+                matched
+                and isinstance(
+                    matched[0].get(
+                        "geometry"
+                    ),
+                    dict,
+                )
+            ):
+                coordinates = (
+                    matched[0][
+                        "geometry"
+                    ].get(
+                        "coordinates",
+                        [],
+                    )
+                )
+
                 if len(coordinates) >= 2:
                     result["map_focus"] = {
-                        "center": [coordinates[0], coordinates[1]],
+                        "center": [
+                            coordinates[0],
+                            coordinates[1],
+                        ],
                         "zoom": 12,
                         "focus_level": "point",
                         "focus_fallback": None,
                     }
+
         except Exception as exc:
             result["meta"]["degraded"] = True
-            result["meta"]["entity_error"] = str(exc)
+
+            result["meta"][
+                "entity_error"
+            ] = safe_exception_message(
+                exc,
+                (
+                    "Entity context "
+                    "could not be loaded."
+                ),
+            )
 
     return to_jsonable(result)
-
 
 def find_nearby_companies(
     origin_company: Dict[str, Any],
@@ -3354,43 +4773,232 @@ def find_nearby_companies(
     หา nearby companies จาก origin company
     """
 
-    origin_tax_id = normalize_tax_id(origin_company.get("tax_id_norm"))
-    origin_lat = origin_company.get("lat")
-    origin_lon = origin_company.get("lon")
+    origin_tax_id = normalize_tax_id(
+        first_present(
+            origin_company,
+            [
+                "tax_id_norm",
+                "tax_id",
+                "company_tax_id",
+            ],
+            "",
+        )
+    )
 
-    nearby: List[Dict[str, Any]] = []
+    (
+        origin_lat,
+        origin_lon,
+        origin_valid,
+        _origin_issue,
+    ) = safe_get_lat_lon(
+        origin_company
+    )
+
+    if not origin_valid:
+        return []
+
+    safe_limit = max(
+        1,
+        min(
+            int(limit or 20),
+            500,
+        ),
+    )
+
+    safe_max_distance = max(
+        0.0,
+        float(
+            max_distance_km
+            or 0
+        ),
+    )
+
+    nearby: List[
+        Dict[str, Any]
+    ] = []
 
     for company in load_company_records():
-        tax_id = normalize_tax_id(company.get("tax_id_norm"))
+        tax_id = normalize_tax_id(
+            first_present(
+                company,
+                [
+                    "tax_id_norm",
+                    "tax_id",
+                    "company_tax_id",
+                ],
+                "",
+            )
+        )
 
-        if tax_id == origin_tax_id:
+        if (
+            not tax_id
+            or tax_id == origin_tax_id
+        ):
             continue
 
-        distance = haversine_km(origin_lat, origin_lon, company.get("lat"), company.get("lon"))
+        (
+            company_lat,
+            company_lon,
+            company_valid,
+            _company_issue,
+        ) = safe_get_lat_lon(
+            company
+        )
 
-        if distance is None:
+        if not company_valid:
             continue
 
-        if distance > max_distance_km:
+        distance = haversine_km(
+            origin_lat,
+            origin_lon,
+            company_lat,
+            company_lon,
+        )
+
+        if (
+            distance is None
+            or distance > safe_max_distance
+        ):
             continue
 
-        item = {
-            "tax_id_norm": tax_id,
-            "company_name": company.get("company_name"),
-            "province": company.get("province"),
-            "lat": company.get("lat"),
-            "lon": company.get("lon"),
-            "distance_km": distance,
-            "flood_risk_level": company.get("flood_risk_level"),
-            "total_suminsure": company.get("total_suminsure"),
-        }
+        nearby.append(
+            {
+                "tax_id_norm": tax_id,
+                "company_name": (
+                    company.get(
+                        "company_name"
+                    )
+                ),
+                "province": first_present(
+                    company,
+                    [
+                        "province",
+                        "company_province",
+                        "province_name_th",
+                    ],
+                    "",
+                ),
+                "lat": company_lat,
+                "lon": company_lon,
+                "distance_km": distance,
+                "flood_risk_level": (
+                    first_present(
+                        company,
+                        [
+                            "flood_risk_level",
+                            "final_flood_risk_level",
+                            "risk_level",
+                        ],
+                        "Unknown",
+                    )
+                ),
+                "total_suminsure": (
+                    company.get(
+                        "total_suminsure"
+                    )
+                ),
+            }
+        )
 
-        nearby.append(item)
+    nearby = sorted(
+        nearby,
+        key=lambda item: (
+            item["distance_km"]
+        ),
+    )
 
-    nearby = sorted(nearby, key=lambda item: item["distance_km"])
+    return nearby[:safe_limit]
 
-    return nearby[:limit]
 
+def find_nearby_flood_sources(
+    lat: Any,
+    lon: Any,
+    limit: int = 20,
+    max_distance_km: float = 80,
+) -> List[Dict[str, Any]]:
+    """
+    หา nearby flood sources
+    """
+
+    origin = validate_coordinate(
+        lat,
+        lon,
+    )
+
+    if not origin.get("valid"):
+        return []
+
+    safe_limit = max(
+        1,
+        min(
+            int(limit or 20),
+            500,
+        ),
+    )
+
+    safe_max_distance = max(
+        0.0,
+        float(
+            max_distance_km
+            or 0
+        ),
+    )
+
+    sources: List[
+        Dict[str, Any]
+    ] = []
+
+    for source in load_flood_records():
+        (
+            source_lat,
+            source_lon,
+            source_valid,
+            _source_issue,
+        ) = safe_get_lat_lon(
+            source
+        )
+
+        if not source_valid:
+            continue
+
+        distance = haversine_km(
+            origin.get("lat"),
+            origin.get("lon"),
+            source_lat,
+            source_lon,
+        )
+
+        if (
+            distance is None
+            or distance > safe_max_distance
+        ):
+            continue
+
+        item = dict(source)
+        item["lat"] = source_lat
+        item["lon"] = source_lon
+        item["distance_km"] = distance
+
+        sources.append(item)
+
+    sources = sorted(
+        sources,
+        key=lambda item: (
+            item.get(
+                "distance_km",
+                999999,
+            ),
+            -(
+                to_number(
+                    item.get("risk_score"),
+                    -1,
+                )
+                or -1
+            ),
+        ),
+    )
+
+    return sources[:safe_limit]
 
 def find_nearby_flood_sources(
     lat: Any,
@@ -3629,83 +5237,246 @@ def get_external_viewer_map_payload(context: Optional[Dict[str, Any]] = None) ->
 # 12) CACHE REBUILD
 # ============================================================
 
-def rebuild_map_cache(context: Optional[Dict[str, Any]] = None, force_refresh: Optional[bool] = None) -> Dict[str, Any]:
+def rebuild_map_cache(
+    context: Optional[Dict[str, Any]] = None,
+    force_refresh: Optional[bool] = None,
+) -> Dict[str, Any]:
     """
     rebuild cache ทั้งหมดของ map_graph_service.py
     """
 
     if isinstance(context, bool):
-        context = {"force_refresh": context}
+        context = {
+            "force_refresh": context
+        }
 
     ctx = normalize_context(context)
 
     if force_refresh is not None:
-        ctx["force_refresh"] = bool(force_refresh)
+        ctx["force_refresh"] = bool(
+            force_refresh
+        )
 
-    results: Dict[str, Dict[str, Any]] = {}
+    results: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
 
     rebuild_plan = [
-        ("map_companies", get_map_companies),
-        ("map_flood", get_map_flood),
-        ("map_rainfall", get_map_rainfall),
-        ("map_waterlevel", get_map_waterlevel),
-        ("map_dam", get_map_dam),
-        ("map_prediction", get_map_prediction),
-        ("map_entity", get_map_entity),
-        ("map_boundaries", get_map_boundaries),
-        ("map_policy_exposure", get_map_policy_exposure),
-        ("map_linkage_lines", get_map_linkage_lines),
-        ("map_branches", get_map_branches),
-        ("map_heatmap", get_map_heatmap),
-        ("map_layers", get_map_layers),
-        ("map_selected_context", get_selected_context),
+        (
+            "map_companies",
+            get_map_companies,
+        ),
+        (
+            "map_flood",
+            get_map_flood,
+        ),
+        (
+            "map_rainfall",
+            get_map_rainfall,
+        ),
+        (
+            "map_waterlevel",
+            get_map_waterlevel,
+        ),
+        (
+            "map_dam",
+            get_map_dam,
+        ),
+        (
+            "map_prediction",
+            get_map_prediction,
+        ),
+        (
+            "map_entity",
+            get_map_entity,
+        ),
+        (
+            "map_boundaries",
+            get_map_boundaries,
+        ),
+        (
+            "map_policy_exposure",
+            get_map_policy_exposure,
+        ),
+        (
+            "map_linkage_lines",
+            get_map_linkage_lines,
+        ),
+        (
+            "map_branches",
+            get_map_branches,
+        ),
+        (
+            "map_heatmap",
+            get_map_heatmap,
+        ),
+        (
+            "map_layers",
+            get_map_layers,
+        ),
+        (
+            "map_selected_context",
+            get_selected_context,
+        ),
     ]
 
-    errors: List[Dict[str, Any]] = []
+    errors: List[
+        Dict[str, Any]
+    ] = []
 
-    for cache_key, function_ref in rebuild_plan:
+    for cache_name, function_ref in rebuild_plan:
         try:
-            results[cache_key] = function_ref(ctx)
+            result = function_ref(ctx)
+
+            results[cache_name] = (
+                result
+                if isinstance(
+                    result,
+                    dict,
+                )
+                else {}
+            )
+
         except Exception as exc:
-            results[cache_key] = {
+            safe_message = (
+                safe_exception_message(
+                    exc,
+                    (
+                        f"{cache_name} "
+                        "rebuild failed."
+                    ),
+                )
+            )
+
+            results[cache_name] = {
                 "record_count": 0,
                 "summary": {
                     "feature_count": 0,
+                    "record_count": 0,
                     "degraded": True,
                 },
                 "meta": {
                     "degraded": True,
-                    "error_type": exc.__class__.__name__,
-                    "error_message": str(exc),
-                    "generated_at": now_iso(),
+                    "error_type": (
+                        exc.__class__.__name__
+                    ),
+                    "error_message": (
+                        safe_message
+                    ),
+                    "generated_at": (
+                        now_iso()
+                    ),
                 },
                 "cache_used": False,
             }
+
             errors.append(
                 {
-                    "cache_key": cache_key,
-                    "error_type": exc.__class__.__name__,
-                    "message": str(exc),
+                    "cache_key": cache_name,
+                    "error_type": (
+                        exc.__class__.__name__
+                    ),
+                    "message": safe_message,
                 }
             )
 
-    return to_jsonable({
-        "rebuilt": True,
-        "degraded": bool(errors),
-        "results": {
-            key: {
-                "record_count": value.get("record_count") or value.get("summary", {}).get("record_count") or value.get("summary", {}).get("feature_count") or 0,
-                "feature_count": value.get("summary", {}).get("feature_count") or value.get("record_count") or 0,
-                "cache_used": value.get("cache_used"),
-                "degraded": bool(value.get("meta", {}).get("degraded") or value.get("summary", {}).get("degraded")),
-                "created_at": value.get("meta", {}).get("created_at") or value.get("meta", {}).get("generated_at") or value.get("summary", {}).get("generated_at"),
-            }
-            for key, value in results.items()
-        },
-        "errors": errors,
-        "generated_at": now_iso(),
-    })
-
+    return to_jsonable(
+        {
+            "rebuilt": True,
+            "degraded": bool(errors),
+            "results": {
+                key: {
+                    "record_count": (
+                        value.get(
+                            "record_count"
+                        )
+                        or (
+                            value.get(
+                                "summary",
+                                {},
+                            )
+                            or {}
+                        ).get("record_count")
+                        or (
+                            value.get(
+                                "summary",
+                                {},
+                            )
+                            or {}
+                        ).get("feature_count")
+                        or 0
+                    ),
+                    "feature_count": (
+                        (
+                            value.get(
+                                "summary",
+                                {},
+                            )
+                            or {}
+                        ).get("feature_count")
+                        or value.get(
+                            "record_count"
+                        )
+                        or 0
+                    ),
+                    "cache_used": (
+                        value.get(
+                            "cache_used"
+                        )
+                    ),
+                    "cache_key": (
+                        value.get(
+                            "cache_key"
+                        )
+                    ),
+                    "degraded": bool(
+                        (
+                            value.get(
+                                "meta",
+                                {},
+                            )
+                            or {}
+                        ).get("degraded")
+                        or (
+                            value.get(
+                                "summary",
+                                {},
+                            )
+                            or {}
+                        ).get("degraded")
+                    ),
+                    "created_at": (
+                        (
+                            value.get(
+                                "meta",
+                                {},
+                            )
+                            or {}
+                        ).get("created_at")
+                        or (
+                            value.get(
+                                "meta",
+                                {},
+                            )
+                            or {}
+                        ).get("generated_at")
+                        or (
+                            value.get(
+                                "summary",
+                                {},
+                            )
+                            or {}
+                        ).get("generated_at")
+                    ),
+                }
+                for key, value
+                in results.items()
+            },
+            "errors": errors,
+            "generated_at": now_iso(),
+        }
+    )
 
 # ============================================================
 # 13) BACKWARD COMPATIBILITY ALIASES

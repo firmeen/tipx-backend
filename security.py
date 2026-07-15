@@ -50,154 +50,39 @@ import secrets
 from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
-from urllib.parse import quote
+from typing import Any, Dict, Iterable, List, Optional, Union
+from urllib.parse import quote, unquote
 
-try:
-    from config import (
-        APP_SHORT_NAME,
-        APP_VERSION,
-        SECRET_KEY,
-        PACKAGE_TOKEN_SALT,
-        ENABLE_PACKAGE_ACCESS_TOKEN,
-        PUBLIC_PACKAGE_READ_ONLY,
-        MASK_TAX_ID_VISIBLE_LAST_DIGITS,
-        MASK_DIRECTOR_VISIBLE_FIRST_CHARS,
-        PACKAGE_SECURITY_OPTIONS,
-        PACKAGE_DEFAULT_EXPIRE_DAYS,
-        PACKAGE_MAX_EXPIRE_DAYS,
-    )
-    CONFIG_LOADED = True
-except Exception as e:
-    CONFIG_LOADED = False
-    CONFIG_ERROR = str(e)
-    APP_SHORT_NAME = "TIPX"
-    APP_VERSION = "unknown"
-    SECRET_KEY = "tipx-local-security-fallback"
-    PACKAGE_TOKEN_SALT = "tipx-package-token"
-    ENABLE_PACKAGE_ACCESS_TOKEN = True
-    PUBLIC_PACKAGE_READ_ONLY = True
-    MASK_TAX_ID_VISIBLE_LAST_DIGITS = 4
-    MASK_DIRECTOR_VISIBLE_FIRST_CHARS = 1
-    PACKAGE_SECURITY_OPTIONS = {
-        "mask_tax_id": True,
-        "mask_director_name": True,
-        "mask_person_name": True,
-        "mask_address": True,
-        "hide_financial_fields": False,
-        "remove_internal_paths": True,
-        "remove_debug_fields": True,
-        "public": True,
-    }
-    PACKAGE_DEFAULT_EXPIRE_DAYS = 30
-    PACKAGE_MAX_EXPIRE_DAYS = 365
+from config import (
+    APP_SHORT_NAME,
+    APP_VERSION,
+    PUBLIC_API_PREFIX,
+    SECRET_KEY,
+    PACKAGE_TOKEN_SALT,
+    ENABLE_PACKAGE_ACCESS_TOKEN,
+    PUBLIC_PACKAGE_READ_ONLY,
+    MASK_TAX_ID_VISIBLE_LAST_DIGITS,
+    MASK_DIRECTOR_VISIBLE_FIRST_CHARS,
+    PACKAGE_SECURITY_OPTIONS,
+    PACKAGE_DEFAULT_EXPIRE_DAYS,
+    PACKAGE_MAX_EXPIRE_DAYS,
+)
 
-try:
-    from utils import (
-        clean_text,
-        clean_text_lower,
-        is_empty_value,
-        mask_tax_id,
-        normalize_tax_id,
-        now_iso,
-        to_jsonable,
-        to_bool,
-        to_int,
-        write_json,
-        read_json,
-        make_hash_id,
-    )
-    UTILS_LOADED = True
-except Exception as e:
-    UTILS_LOADED = False
-    UTILS_ERROR = str(e)
+from utils import (
+    clean_text,
+    clean_text_lower,
+    is_empty_value,
+    normalize_tax_id,
+    now_iso,
+    to_jsonable,
+    to_bool,
+    to_int,
+    make_hash_id,
+    validate_coordinate,
+)
 
-    def clean_text(value: Any, default: str = "") -> str:
-        if value is None:
-            return default
-        text = str(value).strip()
-        return text if text else default
-
-    def clean_text_lower(value: Any, default: str = "") -> str:
-        return clean_text(value, default=default).lower()
-
-    def is_empty_value(value: Any) -> bool:
-        if value is None:
-            return True
-        if isinstance(value, str) and value.strip() in {"", "-", "N/A", "n/a", "None", "none", "null", "nan", "NaN"}:
-            return True
-        if isinstance(value, float) and value != value:
-            return True
-        return False
-
-    def normalize_tax_id(value: Any) -> str:
-        return "".join(ch for ch in clean_text(value) if ch.isdigit())
-
-    def now_iso() -> str:
-        return datetime.now().isoformat(timespec="seconds")
-
-    def to_jsonable(value: Any) -> Any:
-        if value is None or isinstance(value, (str, int, bool)):
-            return value
-        if isinstance(value, float):
-            return None if value != value else value
-        if isinstance(value, (datetime, Path)):
-            return value.isoformat() if isinstance(value, datetime) else str(value)
-        if isinstance(value, dict):
-            return {str(k): to_jsonable(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple, set)):
-            return [to_jsonable(item) for item in value]
-        if hasattr(value, "to_dict"):
-            try:
-                return to_jsonable(value.to_dict("records"))
-            except Exception:
-                try:
-                    return to_jsonable(value.to_dict())
-                except Exception:
-                    pass
-        return clean_text(value)
-
-    def to_bool(value: Any, default: bool = False) -> bool:
-        if isinstance(value, bool):
-            return value
-        if is_empty_value(value):
-            return default
-        return clean_text_lower(value) in {"1", "true", "yes", "y", "on"}
-
-    def to_int(value: Any, default: int = 0) -> int:
-        try:
-            return int(float(clean_text(value)))
-        except Exception:
-            return default
-
-    def write_json(path: Any, data: Any, **kwargs: Any) -> Path:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(to_jsonable(data), ensure_ascii=False, indent=2), encoding="utf-8")
-        return target
-
-    def read_json(path: Any, default: Any = None) -> Any:
-        try:
-            target = Path(path)
-            if not target.exists():
-                return default
-            return json.loads(target.read_text(encoding="utf-8"))
-        except Exception:
-            return default
-
-    def make_hash_id(*parts: Any, length: int = 12) -> str:
-        text = "|".join(clean_text(part) for part in parts)
-        return hashlib.sha256(text.encode("utf-8")).hexdigest()[: max(6, int(length or 12))]
-
-    def mask_tax_id(value: Any, visible_last: int = 4) -> str:
-        digits = normalize_tax_id(value)
-        if not digits:
-            return ""
-        visible = max(0, min(len(digits), int(visible_last or 0)))
-        if len(digits) <= visible:
-            return "*" * len(digits) if digits else "***"
-        return "*" * (len(digits) - visible) + digits[-visible:]
-
+CONFIG_LOADED = True
+UTILS_LOADED = True
 
 # ============================================================
 # 1) SECURITY CONSTANTS
@@ -337,6 +222,10 @@ PACKAGE_STATUS_VALUES: List[str] = [
 
 
 TOKEN_VERSION: str = "v1"
+MAX_PACKAGE_TOKEN_LENGTH: int = 8192
+MAX_PACKAGE_TOKEN_BODY_LENGTH: int = 6144
+TOKEN_CLOCK_SKEW_SECONDS: int = 300
+MIN_SECURITY_SECRET_LENGTH: int = 16
 
 
 # ============================================================
@@ -345,17 +234,44 @@ TOKEN_VERSION: str = "v1"
 
 def get_security_secret() -> bytes:
     """
-    คืน secret key ในรูป bytes
-
-    ใช้สำหรับ:
-    - sign token
-    - verify token
-    - checksum บางส่วน
+    คืน secret key สำหรับ HMAC package token
     """
 
-    secret = f"{SECRET_KEY}:{PACKAGE_TOKEN_SALT}:{APP_SHORT_NAME}:{APP_VERSION}"
-    return secret.encode("utf-8")
+    secret_key = clean_text(
+        SECRET_KEY
+    )
+    token_salt = clean_text(
+        PACKAGE_TOKEN_SALT
+    )
 
+    if (
+        len(secret_key)
+        < MIN_SECURITY_SECRET_LENGTH
+    ):
+        raise RuntimeError(
+            "TIPX_SECRET_KEY is not configured "
+            "or is too short."
+        )
+
+    if (
+        len(token_salt)
+        < MIN_SECURITY_SECRET_LENGTH
+    ):
+        raise RuntimeError(
+            "TIPX_PACKAGE_TOKEN_SALT is not "
+            "configured or is too short."
+        )
+
+    material = (
+        "TIPX_PACKAGE_ACCESS"
+        f"|{TOKEN_VERSION}"
+        f"|{secret_key}"
+        f"|{token_salt}"
+    )
+
+    return material.encode(
+        "utf-8"
+    )
 
 def sha256_text(value: Any) -> str:
     """
@@ -433,268 +349,89 @@ def b64url_encode(data: Union[str, bytes, Dict[str, Any]]) -> str:
     encoded = base64.urlsafe_b64encode(raw).decode("utf-8")
     return encoded.rstrip("=")
 
-
-def b64url_decode(value: str) -> bytes:
+def b64url_decode(
+    value: str,
+) -> bytes:
     """
     decode base64 url-safe string
     """
 
-    text = clean_text(value)
-    padding = "=" * (-len(text) % 4)
-    return base64.urlsafe_b64decode((text + padding).encode("utf-8"))
-
-
-def b64url_decode_json(value: str) -> Dict[str, Any]:
-    """
-    decode base64 url-safe string เป็น JSON dict
-    """
-
-    raw = b64url_decode(value)
-
-    try:
-        data = json.loads(raw.decode("utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-# ============================================================
-# 4) MASKING HELPERS
-# ============================================================
-
-def mask_string_keep_edges(
-    value: Any,
-    visible_start: int = 0,
-    visible_end: int = 0,
-    mask_char: str = "*",
-    empty_value: str = "",
-) -> str:
-    """
-    mask string โดยเก็บตัวอักษรต้น/ท้ายไว้บางส่วน
-
-    ตัวอย่าง:
-    value = "บริษัทตัวอย่าง"
-    visible_start = 2
-    visible_end = 0
-    result = "บร**********"
-    """
-
-    text = clean_text(value)
+    text = clean_text(
+        value
+    )
 
     if not text:
-        return empty_value
+        raise ValueError(
+            "Empty base64 payload."
+        )
 
-    visible_start = max(0, int(visible_start))
-    visible_end = max(0, int(visible_end))
+    if (
+        len(text)
+        > MAX_PACKAGE_TOKEN_BODY_LENGTH
+    ):
+        raise ValueError(
+            "Base64 payload is too large."
+        )
 
-    if visible_start + visible_end >= len(text):
-        return text
+    if any(
+        not (
+            character.isalnum()
+            or character in {
+                "-",
+                "_",
+            }
+        )
+        for character in text
+    ):
+        raise ValueError(
+            "Invalid base64url characters."
+        )
 
-    start = text[:visible_start] if visible_start else ""
-    end = text[-visible_end:] if visible_end else ""
-    middle_len = len(text) - visible_start - visible_end
+    padding = "=" * (
+        -len(text) % 4
+    )
 
-    return f"{start}{mask_char * middle_len}{end}"
-
-
-def mask_director_name(
-    value: Any,
-    visible_first_chars: int = MASK_DIRECTOR_VISIBLE_FIRST_CHARS,
-) -> str:
-    """
-    mask ชื่อกรรมการ
-
-    ค่า default:
-    - แสดง 2 ตัวแรก
-    - ที่เหลือเป็น *
-    """
-
-    return mask_string_keep_edges(
-        value,
-        visible_start=visible_first_chars,
-        visible_end=0,
-        mask_char="*",
+    return base64.b64decode(
+        (text + padding).encode(
+            "ascii"
+        ),
+        altchars=b"-_",
+        validate=True,
     )
 
 
-def mask_address(value: Any) -> str:
-    """
-    mask ที่อยู่
-
-    ไม่แสดงรายละเอียดที่อยู่เต็ม
-    """
-
-    text = clean_text(value)
-
-    if not text:
-        return ""
-
-    return "[masked address]"
-
-
-def mask_financial_value(value: Any) -> Optional[Any]:
-    """
-    ซ่อนค่าทางการเงิน
-    """
-
-    if is_empty_value(value):
-        return None
-
-    return None
-
-
-def is_tax_id_field(field_name: Any) -> bool:
-    """
-    ตรวจว่า field เป็นกลุ่ม tax id หรือไม่
-    """
-
-    name = clean_text_lower(field_name)
-    return name in {clean_text_lower(f) for f in SENSITIVE_FIELD_GROUPS["tax_id"]}
-
-
-def is_director_field(field_name: Any) -> bool:
-    """
-    ตรวจว่า field เป็นกลุ่ม director หรือไม่
-    """
-
-    name = clean_text_lower(field_name)
-    return name in {clean_text_lower(f) for f in SENSITIVE_FIELD_GROUPS["director_name"]}
-
-
-def is_address_field(field_name: Any) -> bool:
-    """
-    ตรวจว่า field เป็นกลุ่ม address หรือไม่
-    """
-
-    name = clean_text_lower(field_name)
-    return name in {clean_text_lower(f) for f in SENSITIVE_FIELD_GROUPS["address"]}
-
-
-def is_financial_field(field_name: Any) -> bool:
-    """
-    ตรวจว่า field เป็นกลุ่ม financial หรือไม่
-    """
-
-    name = clean_text_lower(field_name)
-    return name in {clean_text_lower(f) for f in SENSITIVE_FIELD_GROUPS["financial"]}
-
-
-def is_precise_location_field(field_name: Any) -> bool:
-    """
-    ตรวจว่า field เป็นพิกัดละเอียดหรือไม่
-    """
-
-    name = clean_text_lower(field_name)
-    return name in {clean_text_lower(f) for f in SENSITIVE_FIELD_GROUPS["location_precise"]}
-
-
-def normalize_security_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, bool]:
-    """
-    normalize package security options
-
-    ถ้าไม่ได้ส่งมา ใช้ค่า default จาก config
-    """
-
-    base = dict(PACKAGE_SECURITY_OPTIONS)
-    incoming = options or {}
-
-    for key in base.keys():
-        if key in incoming:
-            base[key] = bool(to_bool(incoming.get(key), default=base[key]))
-
-    return base
-
-
-def mask_record(
-    record: Dict[str, Any],
-    security_options: Optional[Dict[str, Any]] = None,
+def b64url_decode_json(
+    value: str,
 ) -> Dict[str, Any]:
     """
-    mask record 1 แถว ตาม security options
-
-    Options:
-    - mask_tax_id
-    - mask_director_name
-    - mask_address
-    - hide_financial_fields
-    - allow_external_filter
-    - include_data_quality
+    decode base64 url-safe string
+    เป็น JSON dict
     """
 
-    options = normalize_security_options(security_options)
-    result = deepcopy(record)
+    try:
+        raw = b64url_decode(
+            value
+        )
 
-    for key, value in list(result.items()):
-        if options.get("mask_tax_id") and is_tax_id_field(key):
-            result[key] = mask_tax_id(
-                value,
-                visible_last_digits=MASK_TAX_ID_VISIBLE_LAST_DIGITS,
-            )
+        if len(raw) > 4096:
+            return {}
 
-        elif options.get("mask_director_name") and is_director_field(key):
-            if key == "boardlist" and isinstance(value, str):
-                names = [item.strip() for item in value.replace("\n", ",").split(",") if item.strip()]
-                result[key] = ", ".join(mask_director_name(name) for name in names)
-            else:
-                result[key] = mask_director_name(value)
+        data = json.loads(
+            raw.decode("utf-8")
+        )
 
-        elif options.get("mask_address") and is_address_field(key):
-            result[key] = mask_address(value)
+    except (
+        ValueError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+        return {}
 
-        elif options.get("hide_financial_fields") and is_financial_field(key):
-            result[key] = mask_financial_value(value)
-
-    return result
-
-
-def mask_records(
-    records: List[Dict[str, Any]],
-    security_options: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
-    """
-    mask records หลายแถว
-    """
-
-    return [
-        mask_record(record, security_options=security_options)
-        for record in records
-        if isinstance(record, dict)
-    ]
-
-
-def mask_nested_payload(
-    payload: Any,
-    security_options: Optional[Dict[str, Any]] = None,
-) -> Any:
-    """
-    mask payload แบบ nested
-
-    รองรับ:
-    - dict
-    - list
-    - primitive
-    """
-
-    options = normalize_security_options(security_options)
-
-    if isinstance(payload, list):
-        return [
-            mask_nested_payload(item, security_options=options)
-            for item in payload
-        ]
-
-    if isinstance(payload, dict):
-        masked = {}
-
-        for key, value in payload.items():
-            if isinstance(value, (dict, list)):
-                masked[key] = mask_nested_payload(value, security_options=options)
-            else:
-                masked[key] = mask_record({key: value}, security_options=options).get(key)
-
-        return masked
-
-    return payload
+    return (
+        data
+        if isinstance(data, dict)
+        else {}
+    )
 
 
 # ============================================================
@@ -729,47 +466,82 @@ def remove_internal_keys(payload: Any) -> Any:
     return payload
 
 
-def sanitize_public_payload(
-    payload: Any,
-    security_options: Optional[Dict[str, Any]] = None,
-) -> Any:
-    """
-    sanitize payload สำหรับ public package
-
-    ขั้นตอน:
-    1. ลบ internal keys
-    2. mask nested payload
-    3. แปลงเป็น JSON safe
-    """
-
-    cleaned = remove_internal_keys(payload)
-    masked = mask_nested_payload(cleaned, security_options=security_options)
-    return to_jsonable(masked)
-
-
-def sanitize_package_components(components: Optional[List[str]]) -> List[str]:
+def sanitize_package_components(
+    components: Optional[List[str]],
+) -> List[str]:
     """
     sanitize component list สำหรับ package
-
-    เอาเฉพาะ component ที่ public allowed
     """
 
     if not components:
-        return list(PUBLIC_ALLOWED_PACKAGE_COMPONENTS)
+        return list(
+            PUBLIC_ALLOWED_PACKAGE_COMPONENTS
+        )
+
+    allowed = set(
+        PUBLIC_ALLOWED_PACKAGE_COMPONENTS
+    )
 
     result: List[str] = []
 
     for component in components:
-        item = clean_text(component)
+        item = (
+            clean_text_lower(
+                component
+            )
+            .replace(
+                "-",
+                "_",
+            )
+        )
 
-        if not item:
+        if (
+            not item
+            or item not in allowed
+            or item in result
+        ):
             continue
 
-        if item in PUBLIC_ALLOWED_PACKAGE_COMPONENTS and item not in result:
-            result.append(item)
+        result.append(item)
 
     return result
 
+
+def sanitize_package_filters(
+    filters: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    sanitize filter payload ที่บันทึกใน package
+    """
+
+    if not isinstance(
+        filters,
+        dict,
+    ):
+        return {}
+
+    policy = normalize_security_policy(
+        {
+            **PACKAGE_SECURITY_OPTIONS,
+            "public": True,
+            "remove_internal_paths": True,
+            "remove_debug_fields": True,
+        }
+    )
+
+    sanitized = sanitize_public_payload(
+        filters,
+        policy=policy,
+    )
+
+    return (
+        sanitized
+        if isinstance(
+            sanitized,
+            dict,
+        )
+        else {}
+    )
 
 def sanitize_package_filters(filters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -787,33 +559,6 @@ def sanitize_package_filters(filters: Optional[Dict[str, Any]]) -> Dict[str, Any
 # ============================================================
 # 6) PACKAGE ACCESS TOKEN
 # ============================================================
-
-def build_token_payload(
-    package_id: str,
-    expire_at: Optional[str] = None,
-    scope: Optional[List[str]] = None,
-    read_only: bool = True,
-) -> Dict[str, Any]:
-    """
-    สร้าง payload สำหรับ token
-    """
-
-    package_id = clean_text(package_id)
-
-    if not expire_at:
-        expire_at_dt = datetime.now() + timedelta(days=PACKAGE_DEFAULT_EXPIRE_DAYS)
-        expire_at = expire_at_dt.isoformat(timespec="seconds")
-
-    return {
-        "version": TOKEN_VERSION,
-        "package_id": package_id,
-        "scope": scope or ["read"],
-        "read_only": bool(read_only),
-        "issued_at": now_iso(),
-        "expire_at": expire_at,
-        "nonce": random_token(16),
-    }
-
 
 def encode_access_token(payload: Dict[str, Any]) -> str:
     """
@@ -976,71 +721,200 @@ def verify_access_token(
 # 7) PACKAGE METADATA SECURITY
 # ============================================================
 
-def normalize_package_status(status: Any) -> str:
+def normalize_package_status(
+    status: Any,
+) -> str:
     """
     normalize package status
     """
 
-    text = clean_text_lower(status)
+    text = clean_text_lower(
+        status
+    )
+
+    if not text:
+        return "active"
 
     if text in PACKAGE_STATUS_VALUES:
         return text
 
-    return "active"
+    return "disabled"
 
 
-def is_package_expired(package_meta: Dict[str, Any]) -> bool:
+def parse_security_datetime(
+    value: Any,
+) -> Optional[datetime]:
+    text = clean_text(
+        value
+    )
+
+    if not text:
+        return None
+
+    if text.endswith("Z"):
+        text = (
+            text[:-1]
+            + "+00:00"
+        )
+
+    try:
+        return datetime.fromisoformat(
+            text
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+
+def is_package_expired(
+    package_meta: Dict[str, Any],
+) -> bool:
     """
     ตรวจว่า package หมดอายุหรือยัง
     """
 
-    expire_at_raw = package_meta.get("expire_at")
+    if not isinstance(
+        package_meta,
+        dict,
+    ):
+        return True
+
+    expire_at_raw = (
+        package_meta.get(
+            "expires_at"
+        )
+        or package_meta.get(
+            "expire_at"
+        )
+    )
 
     if not expire_at_raw:
         return False
 
-    try:
-        expire_at = datetime.fromisoformat(str(expire_at_raw))
-        return datetime.now() > expire_at
-    except Exception:
-        return False
+    expire_at = (
+        parse_security_datetime(
+            expire_at_raw
+        )
+    )
+
+    if expire_at is None:
+        return True
+
+    current_time = (
+        datetime.now(
+            expire_at.tzinfo
+        )
+        if expire_at.tzinfo
+        is not None
+        else datetime.now()
+    )
+
+    return (
+        current_time
+        >= expire_at
+    )
 
 
-def is_package_publicly_accessible(package_meta: Dict[str, Any]) -> Dict[str, Any]:
+def is_package_publicly_accessible(
+    package_meta: Dict[str, Any],
+) -> Dict[str, Any]:
     """
-    ตรวจว่า package สามารถเปิดใน external viewer ได้ไหม
+    ตรวจว่า package สามารถเปิดใน
+    external viewer ได้หรือไม่
     """
 
-    status = normalize_package_status(package_meta.get("status", "active"))
+    if not isinstance(
+        package_meta,
+        dict,
+    ) or not package_meta:
+        return {
+            "allowed": False,
+            "reason": (
+                "package_not_found"
+            ),
+        }
+
+    if not to_bool(
+        package_meta.get(
+            "enabled",
+            True,
+        ),
+        default=True,
+    ):
+        return {
+            "allowed": False,
+            "reason": (
+                "package_disabled"
+            ),
+        }
+
+    status = normalize_package_status(
+        package_meta.get(
+            "status",
+            "active",
+        )
+    )
 
     if status != "active":
         return {
             "allowed": False,
-            "reason": f"package_status_{status}",
+            "reason": (
+                f"package_status_{status}"
+            ),
         }
 
-    if is_package_expired(package_meta):
+    if is_package_expired(
+        package_meta
+    ):
         return {
             "allowed": False,
-            "reason": "package_expired",
+            "reason": (
+                "package_expired"
+            ),
         }
 
     allow_public_access = to_bool(
-        package_meta.get("allow_public_access", True),
-        default=True,
+        package_meta.get(
+            "allow_public_access",
+            package_meta.get(
+                "public",
+                False,
+            ),
+        ),
+        default=False,
     )
 
     if not allow_public_access:
         return {
             "allowed": False,
-            "reason": "public_access_disabled",
+            "reason": (
+                "public_access_disabled"
+            ),
+        }
+
+    if (
+        PUBLIC_PACKAGE_READ_ONLY
+        and not to_bool(
+            package_meta.get(
+                "read_only",
+                True,
+            ),
+            default=True,
+        )
+    ):
+        return {
+            "allowed": False,
+            "reason": (
+                "package_not_read_only"
+            ),
         }
 
     return {
         "allowed": True,
         "reason": "ok",
     }
-
 
 def build_public_package_url(
     package_id: str,
@@ -1050,21 +924,75 @@ def build_public_package_url(
 ) -> str:
     """
     สร้าง public package URL
-
-    ถ้า base_url ว่าง จะใช้ path relative
     """
 
-    safe_id = quote(clean_text(package_id))
+    safe_id = quote(
+        clean_text(package_id),
+        safe="",
+    )
 
     if base_url:
-        url = f"{base_url.rstrip('/')}/external/{safe_id}"
+        url = (
+            f"{base_url.rstrip('/')}"
+            f"/external/{safe_id}"
+        )
     else:
-        url = f"/external/{safe_id}"
-
-    if include_token and token:
-        url = f"{url}?token={quote(token)}"
+        url = (
+            f"/external/{safe_id}"
+        )
 
     return url
+
+
+def build_public_api_urls(
+    package_id: str,
+    public_prefix: str = (
+        PUBLIC_API_PREFIX
+    ),
+) -> Dict[str, str]:
+    """
+    สร้าง public API URL ของ package
+    """
+
+    safe_id = quote(
+        clean_text(package_id),
+        safe="",
+    )
+
+    prefix = (
+        clean_text(
+            public_prefix,
+            PUBLIC_API_PREFIX,
+        ).rstrip("/")
+    )
+
+    base = (
+        f"{prefix}/packages/"
+        f"{safe_id}"
+    )
+
+    return {
+        "meta": f"{base}/meta",
+        "data": f"{base}/data",
+        "summary": (
+            f"{base}/summary"
+        ),
+        "map": f"{base}/map",
+        "charts": f"{base}/charts",
+        "tables": f"{base}/tables",
+        "data_quality": (
+            f"{base}/data-quality"
+        ),
+        "prediction": (
+            f"{base}/prediction"
+        ),
+        "entity": (
+            f"{base}/entity"
+        ),
+        "access_log": (
+            f"{base}/access-log"
+        ),
+    }
 
 def build_public_api_urls(
     package_id: str,
@@ -1106,9 +1034,15 @@ def build_package_meta(
     package_id: str,
     package_name: Any = "",
     description: Any = "",
-    filters: Optional[Dict[str, Any]] = None,
-    components: Optional[List[str]] = None,
-    security_options: Optional[Dict[str, Any]] = None,
+    filters: Optional[
+        Dict[str, Any]
+    ] = None,
+    components: Optional[
+        List[str]
+    ] = None,
+    security_options: Optional[
+        Dict[str, Any]
+    ] = None,
     expire_days: Optional[int] = None,
     created_by: str = "system",
     allow_public_access: bool = True,
@@ -1118,90 +1052,299 @@ def build_package_meta(
     สร้าง package meta มาตรฐาน
 
     รองรับ call แบบ:
-    - build_package_meta(package_id, package_name, description, ...)
-    - build_package_meta(package_id, request_dict, snapshot_dict)
+    - build_package_meta(
+        package_id,
+        package_name,
+        description,
+      )
+    - build_package_meta(
+        package_id,
+        request_dict,
+        snapshot_dict,
+      )
     """
+
+    clean_package_id = clean_text(
+        package_id
+    )
+
+    if (
+        not clean_package_id
+        or len(clean_package_id) > 128
+        or Path(
+            clean_package_id
+        ).name
+        != clean_package_id
+    ):
+        raise ValueError(
+            "Invalid package_id."
+        )
 
     request: Dict[str, Any] = {}
     snapshot: Dict[str, Any] = {}
 
-    if isinstance(package_name, dict):
-        request = dict(package_name)
-        if isinstance(description, dict):
-            snapshot = dict(description)
+    if isinstance(
+        package_name,
+        dict,
+    ):
+        request = dict(
+            package_name
+        )
 
-        package_name = request.get("package_name") or request.get("name") or package_id
-        description = request.get("description", "")
-        filters = request.get("filters", filters or {})
-        components = request.get("components", components)
-        security_options = request.get("security", security_options)
-        expire_days = request.get("expire_days") or request.get("expires_days") or expire_days
-        created_by = request.get("created_by", created_by)
-        allow_public_access = to_bool(request.get("allow_public_access", request.get("public", allow_public_access)), default=True)
-        base_url = clean_text(request.get("base_url", base_url))
+        if isinstance(
+            description,
+            dict,
+        ):
+            snapshot = dict(
+                description
+            )
 
-    days = to_int(expire_days, default=PACKAGE_DEFAULT_EXPIRE_DAYS) or PACKAGE_DEFAULT_EXPIRE_DAYS
-    days = max(1, min(days, PACKAGE_MAX_EXPIRE_DAYS))
+        package_name = (
+            request.get(
+                "package_name"
+            )
+            or request.get("name")
+            or clean_package_id
+        )
 
-    expire_at = datetime.now() + timedelta(days=days)
+        description = request.get(
+            "description",
+            "",
+        )
 
-    safe_security = normalize_security_policy(security_options)
-    safe_security["public"] = True
-    safe_security["remove_internal_paths"] = True
-    safe_security["remove_debug_fields"] = True
+        filters = request.get(
+            "filters",
+            filters or {},
+        )
 
-    safe_components = sanitize_package_components(components)
-    safe_filters = sanitize_package_filters(filters or {})
+        components = request.get(
+            "components",
+            components,
+        )
 
-    token = generate_package_access_token(
-        package_id=package_id,
-        expire_days=days,
-        scope=["data"],
+        security_options = (
+            request.get(
+                "security",
+                security_options,
+            )
+        )
+
+        expire_days = (
+            request.get(
+                "expire_days"
+            )
+            or request.get(
+                "expires_days"
+            )
+            or expire_days
+        )
+
+        created_by = request.get(
+            "created_by",
+            created_by,
+        )
+
+        allow_public_access = (
+            to_bool(
+                request.get(
+                    "allow_public_access",
+                    request.get(
+                        "public",
+                        allow_public_access,
+                    ),
+                ),
+                default=bool(
+                    allow_public_access
+                ),
+            )
+        )
+
+        base_url = clean_text(
+            request.get(
+                "base_url",
+                base_url,
+            )
+        )
+
+    days = to_int(
+        expire_days,
+        default=(
+            PACKAGE_DEFAULT_EXPIRE_DAYS
+        ),
     )
 
-    public_url = build_public_package_url(
-        package_id=package_id,
-        base_url=base_url,
-        include_token=ENABLE_PACKAGE_ACCESS_TOKEN,
-        token=token,
+    if days <= 0:
+        days = (
+            PACKAGE_DEFAULT_EXPIRE_DAYS
+        )
+
+    days = max(
+        1,
+        min(
+            days,
+            PACKAGE_MAX_EXPIRE_DAYS,
+        ),
+    )
+
+    created_at = now_iso()
+
+    expire_at = (
+        datetime.now()
+        + timedelta(days=days)
+    )
+
+    safe_security = (
+        normalize_security_policy(
+            security_options
+        )
+    )
+
+    safe_security["public"] = True
+    safe_security[
+        "mask_tax_id"
+    ] = True
+    safe_security[
+        "mask_director_name"
+    ] = True
+    safe_security[
+        "mask_person_name"
+    ] = True
+    safe_security[
+        "mask_address"
+    ] = True
+    safe_security[
+        "remove_internal_paths"
+    ] = True
+    safe_security[
+        "remove_debug_fields"
+    ] = True
+
+    safe_components = (
+        sanitize_package_components(
+            components
+        )
+    )
+
+    safe_filters = (
+        sanitize_package_filters(
+            filters or {}
+        )
+    )
+
+    token = ""
+
+    if ENABLE_PACKAGE_ACCESS_TOKEN:
+        token = (
+            generate_package_access_token(
+                package_id=(
+                    clean_package_id
+                ),
+                expire_days=days,
+                scope=["data"],
+            )
+        )
+
+    public_url = (
+        build_public_package_url(
+            package_id=(
+                clean_package_id
+            ),
+            base_url=base_url,
+            include_token=False,
+            token="",
+        )
     )
 
     checksum = clean_text(
         snapshot.get("checksum")
-        or snapshot.get("package_checksum")
-        or snapshot.get("snapshot_checksum")
+        or snapshot.get(
+            "package_checksum"
+        )
+        or snapshot.get(
+            "snapshot_checksum"
+        )
+    )
+
+    require_token = bool(
+        ENABLE_PACKAGE_ACCESS_TOKEN
+        and allow_public_access
     )
 
     return {
-        "package_id": clean_text(package_id),
-        "package_name": clean_text(package_name, default=package_id),
-        "name": clean_text(package_name, default=package_id),
-        "description": clean_text(description),
-        "created_at": now_iso(),
-        "created_by": clean_text(created_by, default="system"),
-        "expire_at": expire_at.isoformat(timespec="seconds"),
-        "expires_at": expire_at.isoformat(timespec="seconds"),
+        "package_id": (
+            clean_package_id
+        ),
+        "package_name": clean_text(
+            package_name,
+            default=clean_package_id,
+        ),
+        "name": clean_text(
+            package_name,
+            default=clean_package_id,
+        ),
+        "description": clean_text(
+            description
+        ),
+        "created_at": created_at,
+        "updated_at": created_at,
+        "created_by": clean_text(
+            created_by,
+            default="system",
+        ),
+        "expire_at": (
+            expire_at.isoformat(
+                timespec="seconds"
+            )
+        ),
+        "expires_at": (
+            expire_at.isoformat(
+                timespec="seconds"
+            )
+        ),
         "status": "active",
         "enabled": True,
-        "allow_public_access": bool(allow_public_access),
-        "public": bool(allow_public_access),
-        "read_only": PUBLIC_PACKAGE_READ_ONLY,
+        "allow_public_access": bool(
+            allow_public_access
+        ),
+        "public": bool(
+            allow_public_access
+        ),
+        "read_only": (
+            PUBLIC_PACKAGE_READ_ONLY
+        ),
         "snapshot_only": True,
-        "package_source": "cache_snapshot",
-        "public_viewer_source": "public_data_json_only",
+        "package_source": (
+            "cache_snapshot"
+        ),
+        "public_viewer_source": (
+            "public_data_json_only"
+        ),
         "components": safe_components,
         "filters": safe_filters,
         "security": safe_security,
         "public_url": public_url,
-        "public_api_urls": build_public_api_urls(package_id),
-        "public_urls": build_public_package_url_meta(package_id, base_url=base_url),
-        "access_token_enabled": ENABLE_PACKAGE_ACCESS_TOKEN,
-        "access_token": token if ENABLE_PACKAGE_ACCESS_TOKEN else "",
-        "require_token": False,
+        "public_api_urls": (
+            build_public_api_urls(
+                clean_package_id
+            )
+        ),
+        "public_urls": (
+            build_public_package_url_meta(
+                clean_package_id,
+                base_url=base_url,
+            )
+        ),
+        "access_token_enabled": bool(
+            ENABLE_PACKAGE_ACCESS_TOKEN
+        ),
+        "access_token": token,
+        "require_token": require_token,
         "record_counts": {},
         "files": [],
         "checksum": checksum,
-        "checksum_components": PACKAGE_CHECKSUM_COMPONENTS,
+        "checksum_components": (
+            PACKAGE_CHECKSUM_COMPONENTS
+        ),
         "app": {
             "name": APP_SHORT_NAME,
             "version": APP_VERSION,
@@ -1236,37 +1379,6 @@ def attach_package_checksum(package_payload: Dict[str, Any]) -> Dict[str, Any]:
 
     return result
 
-
-def verify_package_checksum(package_payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    verify checksum ของ package payload
-    """
-
-    if not isinstance(package_payload, dict):
-        return {
-            "valid": False,
-            "reason": "payload_not_dict",
-            "expected": "",
-            "actual": "",
-        }
-
-    actual = ""
-
-    if isinstance(package_payload.get("package_meta"), dict):
-        actual = clean_text(package_payload["package_meta"].get("checksum"))
-    else:
-        actual = clean_text(package_payload.get("checksum"))
-
-    expected = build_package_checksum(package_payload)
-
-    return {
-        "valid": bool(actual) and constant_time_equal(actual, expected),
-        "reason": "ok" if bool(actual) and constant_time_equal(actual, expected) else "checksum_mismatch",
-        "expected": expected,
-        "actual": actual,
-    }
-
-
 # ============================================================
 # 9) PACKAGE ACCESS CHECK
 # ============================================================
@@ -1277,82 +1389,59 @@ def check_public_package_access(
     required_scope: str = "data",
 ) -> Dict[str, Any]:
     """
-    ตรวจสิทธิ์การเปิด package ใน external viewer
+    ตรวจสิทธิ์การเปิด package
+    ใน external viewer
     """
 
-    meta = package_meta if isinstance(package_meta, dict) else {}
+    result = public_access_allowed(
+        package_meta=package_meta,
+        component=required_scope,
+        token=token,
+    )
 
-    if not meta:
-        return {
-            "allowed": False,
-            "reason": "package_not_found",
-            "token": {
-                "required": ENABLE_PACKAGE_ACCESS_TOKEN,
-                "valid": False,
-            },
-        }
-
-    access_status = is_package_publicly_accessible(meta)
-
-    if not access_status.get("allowed"):
-        return {
-            "allowed": False,
-            "reason": access_status.get("reason"),
-            "token": {
-                "required": ENABLE_PACKAGE_ACCESS_TOKEN,
-                "valid": False,
-            },
-        }
-
-    scope = normalize_access_scope(required_scope)
-
-    if ENABLE_PACKAGE_ACCESS_TOKEN and token:
-        verification = verify_package_access_token(
-            token,
-            package_id=meta.get("package_id"),
-            scope=scope,
+    token_required = bool(
+        to_bool(
+            (
+                package_meta.get(
+                    "require_token"
+                )
+                if isinstance(
+                    package_meta,
+                    dict,
+                )
+                else False
+            ),
+            default=(
+                ENABLE_PACKAGE_ACCESS_TOKEN
+            ),
         )
-
-        if not verification.get("valid"):
-            return {
-                "allowed": False,
-                "reason": verification.get("reason"),
-                "token": {
-                    "required": True,
-                    "valid": False,
-                    "verification": verification,
-                },
-            }
-
-        return {
-            "allowed": True,
-            "reason": "token_verified",
-            "component": scope,
-            "token": {
-                "required": True,
-                "valid": True,
-                "verification": verification,
-            },
-        }
-
-    if to_bool(meta.get("require_token"), default=False):
-        return {
-            "allowed": False,
-            "reason": "missing_token",
-            "component": scope,
-            "token": {
-                "required": True,
-                "valid": False,
-            },
-        }
+    )
 
     return {
-        "allowed": True,
-        "reason": "ok",
-        "component": scope,
+        "allowed": bool(
+            result.get(
+                "allowed",
+                False,
+            )
+        ),
+        "reason": clean_text(
+            result.get("reason"),
+            "access_denied",
+        ),
+        "component": result.get(
+            "component",
+            normalize_access_scope(
+                required_scope
+            ),
+        ),
         "token": {
-            "required": False,
-            "valid": True,
+            "required": token_required,
+            "valid": bool(
+                result.get(
+                    "token_valid",
+                    not token_required,
+                )
+            ),
         },
     }
 
@@ -1364,57 +1453,148 @@ def build_public_package_snapshot(
     token: str = "",
 ) -> Dict[str, Any]:
     """
-    สร้าง public snapshot สำหรับ external viewer
-
-    external viewer อ่าน snapshot ที่ generate แล้วเท่านั้น
+    สร้าง public snapshot สำหรับ
+    external viewer
     """
 
-    if not isinstance(package_snapshot, dict):
+    if not isinstance(
+        package_snapshot,
+        dict,
+    ):
         return {
             "allowed": False,
-            "reason": "invalid_package_snapshot",
+            "reason": (
+                "invalid_package_snapshot"
+            ),
             "data": {},
         }
 
     package_meta = (
-        package_snapshot.get("package_meta")
-        or package_snapshot.get("meta")
+        package_snapshot.get(
+            "package_meta"
+        )
+        or package_snapshot.get(
+            "meta"
+        )
         or {}
     )
 
-    if not isinstance(package_meta, dict):
-        package_meta = {}
-
-    if not package_meta:
-        package_meta = {
-            "package_id": package_snapshot.get("package_id", ""),
-            "package_name": package_snapshot.get("package_name", package_snapshot.get("package_id", "")),
-            "status": "active",
-            "enabled": True,
-            "allow_public_access": True,
-            "public": True,
-            "security": PACKAGE_SECURITY_OPTIONS,
-            "components": PUBLIC_ALLOWED_PACKAGE_COMPONENTS,
-            "require_token": False,
+    if not isinstance(
+        package_meta,
+        dict,
+    ) or not package_meta:
+        return {
+            "allowed": False,
+            "reason": (
+                "package_meta_missing"
+            ),
+            "data": {},
         }
 
-    access = check_public_package_access(
-        package_meta=package_meta,
-        token=token,
-        required_scope="data",
+    package_id = clean_text(
+        package_meta.get(
+            "package_id"
+        )
+        or package_snapshot.get(
+            "package_id"
+        )
+    )
+
+    if not package_id:
+        return {
+            "allowed": False,
+            "reason": (
+                "package_id_missing"
+            ),
+            "data": {},
+        }
+
+    snapshot_package_id = clean_text(
+        package_snapshot.get(
+            "package_id"
+        )
+    )
+
+    if (
+        snapshot_package_id
+        and snapshot_package_id
+        != package_id
+    ):
+        return {
+            "allowed": False,
+            "reason": (
+                "package_id_mismatch"
+            ),
+            "data": {},
+        }
+
+    checksum = clean_text(
+        package_snapshot.get(
+            "checksum"
+        )
+        or package_meta.get(
+            "checksum"
+        )
+    )
+
+    if not checksum:
+        return {
+            "allowed": False,
+            "reason": (
+                "package_checksum_missing"
+            ),
+            "data": {},
+        }
+
+    checksum_result = (
+        verify_package_checksum(
+            package_snapshot,
+            checksum=checksum,
+        )
+    )
+
+    if not checksum_result.get(
+        "valid"
+    ):
+        return {
+            "allowed": False,
+            "reason": (
+                "package_checksum_invalid"
+            ),
+            "data": {},
+        }
+
+    access = (
+        check_public_package_access(
+            package_meta=package_meta,
+            token=token,
+            required_scope="data",
+        )
     )
 
     if not access.get("allowed"):
         return {
             "allowed": False,
-            "reason": access.get("reason"),
+            "reason": access.get(
+                "reason",
+                "access_denied",
+            ),
             "access": access,
             "data": {},
         }
 
-    security_options = package_meta.get("security", PACKAGE_SECURITY_OPTIONS)
+    security_options = (
+        normalize_security_policy(
+            package_meta.get(
+                "security",
+                PACKAGE_SECURITY_OPTIONS,
+            )
+        )
+    )
 
-    snapshot_source = deepcopy(package_snapshot)
+    snapshot_source = deepcopy(
+        package_snapshot
+    )
 
     for key in [
         "raw_cache",
@@ -1426,61 +1606,165 @@ def build_public_package_snapshot(
         "debug",
         "debug_info",
     ]:
-        snapshot_source.pop(key, None)
+        snapshot_source.pop(
+            key,
+            None,
+        )
 
-    public_snapshot = sanitize_public_payload(
-        snapshot_source,
-        security_options=security_options,
+    selected_components = (
+        sanitize_package_components(
+            package_meta.get(
+                "components"
+            )
+        )
     )
 
-    if isinstance(public_snapshot, dict):
-        root_data = public_snapshot.get("data", {}) if isinstance(public_snapshot.get("data"), dict) else {}
+    source_data = (
+        snapshot_source.get(
+            "data",
+            {},
+        )
+        if isinstance(
+            snapshot_source.get(
+                "data"
+            ),
+            dict,
+        )
+        else {}
+    )
 
-        if isinstance(root_data, dict) and "data_quality" in root_data:
-            root_data["data_quality"] = sanitize_public_payload(
-                root_data.get("data_quality", {}),
-                security_options=security_options,
-            )
-            public_snapshot["data"] = root_data
+    snapshot_source["data"] = (
+        filter_package_data_by_components(
+            source_data,
+            selected_components,
+        )
+    )
 
-        if "data_quality" in public_snapshot:
-            public_snapshot["data_quality"] = sanitize_public_payload(
-                public_snapshot.get("data_quality", {}),
-                security_options=security_options,
-            )
+    public_snapshot = (
+        sanitize_public_payload(
+            snapshot_source,
+            policy=security_options,
+        )
+    )
 
-        safe_meta = build_safe_public_meta(package_meta)
-
-        public_snapshot["package_meta"] = {
-            **safe_meta,
-            "checksum": create_package_checksum(public_snapshot),
-            "checksum_components": PACKAGE_CHECKSUM_COMPONENTS,
-            "read_only": PUBLIC_PACKAGE_READ_ONLY,
-            "snapshot_only": True,
+    if not isinstance(
+        public_snapshot,
+        dict,
+    ):
+        return {
+            "allowed": False,
+            "reason": (
+                "public_snapshot_invalid"
+            ),
+            "data": {},
         }
 
-        public_snapshot.setdefault("public_meta", {})
-        public_snapshot["public_meta"].update(
-            {
-                "read_only": PUBLIC_PACKAGE_READ_ONLY,
-                "snapshot_only": True,
-                "access_checked_at": now_iso(),
-                "token_required": False,
-                "components": package_meta.get("components", PUBLIC_ALLOWED_PACKAGE_COMPONENTS),
-                "checksum_components": PACKAGE_CHECKSUM_COMPONENTS,
-                "public_viewer_source": "public_data_json_only",
-                "public_viewer_reads_raw_cache": False,
-                "public_viewer_reads_raw_excel": False,
-            }
+    safe_meta = (
+        build_safe_public_meta(
+            package_meta
         )
+    )
+
+    safe_meta.update(
+        {
+            "package_id": package_id,
+            "checksum": checksum,
+            "checksum_components": (
+                PACKAGE_CHECKSUM_COMPONENTS
+            ),
+            "read_only": (
+                PUBLIC_PACKAGE_READ_ONLY
+            ),
+            "snapshot_only": True,
+        }
+    )
+
+    public_snapshot[
+        "package_meta"
+    ] = safe_meta
+
+    public_snapshot.setdefault(
+        "public_meta",
+        {},
+    )
+
+    public_snapshot[
+        "public_meta"
+    ].update(
+        {
+            "read_only": (
+                PUBLIC_PACKAGE_READ_ONLY
+            ),
+            "snapshot_only": True,
+            "access_checked_at": (
+                now_iso()
+            ),
+            "token_required": bool(
+                to_bool(
+                    package_meta.get(
+                        "require_token"
+                    ),
+                    default=(
+                        ENABLE_PACKAGE_ACCESS_TOKEN
+                    ),
+                )
+            ),
+            "components": (
+                selected_components
+            ),
+            "checksum_components": (
+                PACKAGE_CHECKSUM_COMPONENTS
+            ),
+            "public_viewer_source": (
+                "public_data_json_only"
+            ),
+            "public_viewer_reads_raw_cache": (
+                False
+            ),
+            "public_viewer_reads_raw_excel": (
+                False
+            ),
+        }
+    )
+
+    safe_access = {
+        "allowed": True,
+        "reason": access.get(
+            "reason",
+            "ok",
+        ),
+        "component": access.get(
+            "component",
+            "data",
+        ),
+        "token": {
+            "required": (
+                access.get(
+                    "token",
+                    {},
+                ).get(
+                    "required",
+                    False,
+                )
+            ),
+            "valid": (
+                access.get(
+                    "token",
+                    {},
+                ).get(
+                    "valid",
+                    True,
+                )
+            ),
+        },
+    }
 
     return {
         "allowed": True,
         "reason": "ok",
-        "access": access,
+        "access": safe_access,
         "data": public_snapshot,
     }
-
 
 def extract_public_package_component(
     package_snapshot: Dict[str, Any],
@@ -1488,92 +1772,268 @@ def extract_public_package_component(
     token: str = "",
 ) -> Dict[str, Any]:
     """
-    ดึง component เฉพาะจาก package snapshot
+    ดึง component เฉพาะจาก
+    package snapshot
     """
 
-    public_result = build_public_package_snapshot(
-        package_snapshot=package_snapshot,
-        token=token,
+    component_key = (
+        clean_text_lower(
+            component,
+            default="data",
+        )
+        .replace(
+            "-",
+            "_",
+        )
     )
-
-    if not public_result.get("allowed"):
-        return public_result
-
-    data = public_result.get("data", {})
-    component_key = clean_text_lower(component, default="data")
 
     component_aliases = {
         "map_layers": "map",
-        "flood_prediction": "prediction",
-        "flood_prediction_latest": "prediction",
+        "flood_prediction": (
+            "prediction"
+        ),
+        "flood_prediction_latest": (
+            "prediction"
+        ),
+        "flood_prediction_map": (
+            "prediction"
+        ),
         "uploaded_entity": "entity",
-        "uploaded_entity_latest": "entity",
+        "uploaded_entity_latest": (
+            "entity"
+        ),
     }
 
-    canonical_component = component_aliases.get(component_key, component_key)
+    canonical_component = (
+        component_aliases.get(
+            component_key,
+            component_key,
+        )
+    )
 
-    root_data = data.get("data", {}) if isinstance(data, dict) and isinstance(data.get("data"), dict) else {}
+    package_meta = (
+        package_snapshot.get(
+            "package_meta"
+        )
+        or package_snapshot.get(
+            "meta"
+        )
+        or {}
+        if isinstance(
+            package_snapshot,
+            dict,
+        )
+        else {}
+    )
 
-    if canonical_component == "data":
+    component_access = (
+        public_access_allowed(
+            package_meta=package_meta,
+            component=(
+                canonical_component
+            ),
+            token=token,
+        )
+    )
+
+    if not component_access.get(
+        "allowed"
+    ):
+        return {
+            "allowed": False,
+            "reason": (
+                component_access.get(
+                    "reason",
+                    "access_denied",
+                )
+            ),
+            "access": (
+                component_access
+            ),
+            "data": {},
+        }
+
+    public_result = (
+        build_public_package_snapshot(
+            package_snapshot=(
+                package_snapshot
+            ),
+            token=token,
+        )
+    )
+
+    if not public_result.get(
+        "allowed"
+    ):
+        return public_result
+
+    data = public_result.get(
+        "data",
+        {},
+    )
+
+    root_data = (
+        data.get(
+            "data",
+            {},
+        )
+        if (
+            isinstance(data, dict)
+            and isinstance(
+                data.get("data"),
+                dict,
+            )
+        )
+        else {}
+    )
+
+    if component_key == "data":
         component_data = data
 
-    elif canonical_component == "meta":
-        component_data = data.get("package_meta", data.get("meta", {})) if isinstance(data, dict) else {}
+    elif component_key == "meta":
+        component_data = (
+            data.get(
+                "package_meta",
+                data.get("meta", {}),
+            )
+            if isinstance(
+                data,
+                dict,
+            )
+            else {}
+        )
 
-    elif canonical_component == "summary":
-        component_data = root_data.get("summary", data.get("summary", {})) if isinstance(data, dict) else {}
+    elif component_key == (
+        "flood_prediction_map"
+    ):
+        component_data = (
+            root_data.get(
+                "flood_prediction_map"
+            )
+            or data.get(
+                "flood_prediction_map"
+            )
+            or {}
+        )
 
     elif canonical_component == "map":
         component_data = (
-            root_data.get("map")
-            or root_data.get("map_layers")
+            root_data.get(
+                component_key
+            )
+            or root_data.get("map")
+            or root_data.get(
+                "map_layers"
+            )
+            or data.get(
+                component_key
+            )
             or data.get("map")
-            or data.get("map_layers")
+            or data.get(
+                "map_layers"
+            )
             or {}
-        ) if isinstance(data, dict) else {}
+        )
 
-    elif canonical_component == "charts":
-        component_data = root_data.get("charts", data.get("charts", {})) if isinstance(data, dict) else {}
-
-    elif canonical_component == "tables":
-        component_data = root_data.get("tables", data.get("tables", {})) if isinstance(data, dict) else {}
-
-    elif canonical_component == "data_quality":
-        component_data = root_data.get("data_quality", data.get("data_quality", {})) if isinstance(data, dict) else {}
-        component_data = sanitize_public_payload(component_data)
-
-    elif canonical_component == "prediction":
+    elif canonical_component == (
+        "prediction"
+    ):
         component_data = (
-            root_data.get("prediction")
-            or root_data.get("flood_prediction")
-            or root_data.get("flood_prediction_latest")
-            or data.get("prediction")
-            or data.get("flood_prediction")
-            or data.get("flood_prediction_latest")
+            root_data.get(
+                component_key
+            )
+            or root_data.get(
+                "prediction"
+            )
+            or root_data.get(
+                "flood_prediction"
+            )
+            or root_data.get(
+                "flood_prediction_latest"
+            )
+            or data.get(
+                component_key
+            )
+            or data.get(
+                "prediction"
+            )
             or {}
-        ) if isinstance(data, dict) else {}
+        )
 
-    elif canonical_component == "entity":
+    elif canonical_component == (
+        "entity"
+    ):
         component_data = (
-            root_data.get("entity")
-            or root_data.get("uploaded_entity")
-            or root_data.get("uploaded_entity_latest")
+            root_data.get(
+                component_key
+            )
+            or root_data.get("entity")
+            or root_data.get(
+                "uploaded_entity"
+            )
+            or root_data.get(
+                "uploaded_entity_latest"
+            )
+            or data.get(
+                component_key
+            )
             or data.get("entity")
-            or data.get("uploaded_entity")
-            or data.get("uploaded_entity_latest")
             or {}
-        ) if isinstance(data, dict) else {}
+        )
 
     else:
-        component_data = root_data.get(canonical_component, data.get(canonical_component, {})) if isinstance(data, dict) else {}
+        component_data = (
+            root_data.get(
+                canonical_component
+            )
+            or data.get(
+                canonical_component,
+                {},
+            )
+            if isinstance(
+                data,
+                dict,
+            )
+            else {}
+        )
+
+    security_options = (
+        package_meta.get(
+            "security",
+            PACKAGE_SECURITY_OPTIONS,
+        )
+        if isinstance(
+            package_meta,
+            dict,
+        )
+        else PACKAGE_SECURITY_OPTIONS
+    )
 
     return {
         "allowed": True,
         "reason": "ok",
-        "access": public_result.get("access", {}),
-        "component": canonical_component,
-        "requested_component": component,
-        "data": sanitize_public_payload(component_data),
+        "access": {
+            "allowed": True,
+            "reason": (
+                component_access.get(
+                    "reason",
+                    "ok",
+                )
+            ),
+            "component": (
+                canonical_component
+            ),
+        },
+        "component": (
+            canonical_component
+        ),
+        "requested_component": (
+            component_key
+        ),
+        "data": sanitize_public_payload(
+            component_data,
+            policy=security_options,
+        ),
     }
 
 # ============================================================
@@ -1665,68 +2125,155 @@ def build_access_log_record(
     action: str = "view",
     allowed: bool = True,
     reason: str = "ok",
-    extra: Optional[Dict[str, Any]] = None,
+    extra: Optional[
+        Dict[str, Any]
+    ] = None,
 ) -> Dict[str, Any]:
     """
-    สร้าง access log record สำหรับ external package
+    สร้าง access log record
+    สำหรับ external package
     """
 
-    package_id = clean_text(package_id)
+    clean_package_id = clean_text(
+        package_id
+    )
 
-    key = f"{package_id}|{remote_addr}|{user_agent}|{action}|{now_iso()}"
+    clean_remote_addr = clean_text(
+        remote_addr
+    )
+
+    clean_user_agent = clean_text(
+        user_agent
+    )[:500]
+
+    accessed_at = now_iso()
+
+    entropy = secrets.token_hex(
+        8
+    )
+
+    key = (
+        f"{clean_package_id}"
+        f"|{clean_remote_addr}"
+        f"|{clean_user_agent}"
+        f"|{action}"
+        f"|{accessed_at}"
+        f"|{entropy}"
+    )
+
+    sanitized_extra = (
+        remove_private_fields(
+            extra or {}
+        )
+    )
 
     return {
-        "log_id": make_hash_id(key, prefix="access", length=20),
-        "package_id": package_id,
-        "action": clean_text(action, default="view"),
+        "log_id": make_hash_id(
+            key,
+            prefix="access",
+            length=20,
+        ),
+        "package_id": (
+            clean_package_id
+        ),
+        "action": clean_text(
+            action,
+            default="view",
+        ),
         "allowed": bool(allowed),
-        "reason": clean_text(reason, default="ok"),
-        "remote_addr": clean_text(remote_addr),
-        "user_agent": clean_text(user_agent),
-        "accessed_at": now_iso(),
-        "extra": to_jsonable(extra or {}),
+        "reason": clean_text(
+            reason,
+            default="ok",
+        )[:200],
+        "remote_addr": "",
+        "remote_addr_hash": (
+            sha256_text(
+                clean_remote_addr
+            )[:16]
+            if clean_remote_addr
+            else ""
+        ),
+        "user_agent": "",
+        "user_agent_hash": (
+            sha256_text(
+                clean_user_agent
+            )[:16]
+            if clean_user_agent
+            else ""
+        ),
+        "accessed_at": (
+            accessed_at
+        ),
+        "extra": to_jsonable(
+            sanitized_extra
+        ),
     }
-
 
 # ============================================================
 # 13) FIELD-LEVEL EXPORT POLICY
 # ============================================================
 
 def get_export_field_policy(
-    security_options: Optional[Dict[str, Any]] = None,
+    security_options: Optional[
+        Dict[str, Any]
+    ] = None,
 ) -> Dict[str, Any]:
     """
     คืน policy การ export field
-
-    ใช้โดย dashboard_package_service.py
     """
 
-    options = normalize_security_options(security_options)
+    options = (
+        normalize_security_policy(
+            security_options
+        )
+    )
 
     hidden_fields: List[str] = []
-    masked_fields: Dict[str, str] = {}
+    masked_fields: Dict[
+        str,
+        str,
+    ] = {}
 
     if options.get("mask_tax_id"):
-        for field in SENSITIVE_FIELD_GROUPS["tax_id"]:
-            masked_fields[field] = "tax_id_mask"
+        for field in TAX_ID_FIELDS:
+            masked_fields[
+                field
+            ] = "tax_id_mask"
 
-    if options.get("mask_director_name"):
-        for field in SENSITIVE_FIELD_GROUPS["director_name"]:
-            masked_fields[field] = "director_name_mask"
+    if options.get(
+        "mask_director_name"
+    ):
+        for field in (
+            DIRECTOR_PERSON_FIELDS
+        ):
+            masked_fields[
+                field
+            ] = (
+                "director_name_mask"
+            )
 
     if options.get("mask_address"):
-        for field in SENSITIVE_FIELD_GROUPS["address"]:
-            masked_fields[field] = "address_mask"
+        for field in ADDRESS_FIELDS:
+            masked_fields[
+                field
+            ] = "address_mask"
 
-    if options.get("hide_financial_fields"):
-        hidden_fields.extend(SENSITIVE_FIELD_GROUPS["financial"])
+    if options.get(
+        "hide_financial_fields"
+    ):
+        hidden_fields.extend(
+            FINANCIAL_FIELDS
+        )
 
     return {
         "security_options": options,
-        "hidden_fields": sorted(set(hidden_fields)),
-        "masked_fields": masked_fields,
+        "hidden_fields": sorted(
+            set(hidden_fields)
+        ),
+        "masked_fields": (
+            masked_fields
+        ),
     }
-
 
 def apply_export_field_policy_to_record(
     record: Dict[str, Any],
@@ -1809,14 +2356,32 @@ def build_public_error(
     status: str = "denied",
 ) -> Dict[str, Any]:
     """
-    สร้าง error object สำหรับ public package API
+    สร้าง error object สำหรับ
+    public package API
     """
 
+    safe_reason = clean_text(
+        reason,
+        default="access_denied",
+    )[:200]
+
+    if _looks_like_local_path(
+        safe_reason
+    ):
+        safe_reason = (
+            "access_denied"
+        )
+
     return {
-        "status": status,
+        "status": clean_text(
+            status,
+            default="denied",
+        ),
         "allowed": False,
-        "reason": clean_text(reason, default="unknown"),
-        "package_id": clean_text(package_id),
+        "reason": safe_reason,
+        "package_id": clean_text(
+            package_id
+        ),
         "timestamp": now_iso(),
     }
 
@@ -1827,18 +2392,24 @@ def build_public_success(
     component: str = "",
 ) -> Dict[str, Any]:
     """
-    สร้าง success object สำหรับ public package API
+    สร้าง success object สำหรับ
+    public package API
     """
 
     return {
         "status": "ok",
         "allowed": True,
-        "package_id": clean_text(package_id),
-        "component": clean_text(component),
+        "package_id": clean_text(
+            package_id
+        ),
+        "component": clean_text(
+            component
+        ),
         "timestamp": now_iso(),
-        "data": to_jsonable(data),
+        "data": sanitize_public_payload(
+            data
+        ),
     }
-
 
 # ============================================================
 # 15) MODULE HEALTH
@@ -1849,31 +2420,106 @@ def get_security_summary() -> Dict[str, Any]:
     คืน summary ของ security module
     """
 
+    secret_key_configured = bool(
+        len(
+            clean_text(
+                SECRET_KEY
+            )
+        )
+        >= MIN_SECURITY_SECRET_LENGTH
+    )
+
+    token_salt_configured = bool(
+        len(
+            clean_text(
+                PACKAGE_TOKEN_SALT
+            )
+        )
+        >= MIN_SECURITY_SECRET_LENGTH
+    )
+
+    token_security_ready = bool(
+        not ENABLE_PACKAGE_ACCESS_TOKEN
+        or (
+            secret_key_configured
+            and token_salt_configured
+        )
+    )
+
     return {
         "module": "security",
-        "ready": True,
+        "ready": token_security_ready,
         "app": APP_SHORT_NAME,
         "version": APP_VERSION,
-        "public_package_read_only": PUBLIC_PACKAGE_READ_ONLY,
-        "snapshot_only_public_viewer": True,
-        "public_viewer_source": "public_data_json_only",
-        "public_viewer_reads_raw_cache": False,
-        "public_viewer_reads_raw_excel": False,
-        "access_token_enabled": ENABLE_PACKAGE_ACCESS_TOKEN,
+        "public_package_read_only": (
+            PUBLIC_PACKAGE_READ_ONLY
+        ),
+        "snapshot_only_public_viewer": (
+            True
+        ),
+        "public_viewer_source": (
+            "public_data_json_only"
+        ),
+        "public_viewer_reads_raw_cache": (
+            False
+        ),
+        "public_viewer_reads_raw_excel": (
+            False
+        ),
+        "access_token_enabled": bool(
+            ENABLE_PACKAGE_ACCESS_TOKEN
+        ),
+        "token_security_ready": (
+            token_security_ready
+        ),
+        "secret_key_configured": (
+            secret_key_configured
+        ),
+        "token_salt_configured": (
+            token_salt_configured
+        ),
         "token_version": TOKEN_VERSION,
         "masking": {
-            "tax_id_visible_last_digits": MASK_TAX_ID_VISIBLE_LAST_DIGITS,
-            "director_visible_first_chars": MASK_DIRECTOR_VISIBLE_FIRST_CHARS,
-            "default_security_options": PACKAGE_SECURITY_OPTIONS,
+            "tax_id_visible_last_digits": (
+                MASK_TAX_ID_VISIBLE_LAST_DIGITS
+            ),
+            "director_visible_first_chars": (
+                MASK_DIRECTOR_VISIBLE_FIRST_CHARS
+            ),
+            "default_security_options": (
+                normalize_security_policy(
+                    PACKAGE_SECURITY_OPTIONS
+                )
+            ),
         },
-        "public_allowed_components": PUBLIC_ALLOWED_PACKAGE_COMPONENTS,
-        "public_prediction_allowed_fields": sorted(PUBLIC_PREDICTION_ALLOWED_FIELDS),
-        "public_entity_allowed_fields": sorted(PUBLIC_ENTITY_ALLOWED_FIELDS),
-        "forbidden_internal_keys": PUBLIC_FORBIDDEN_INTERNAL_KEYS,
-        "internal_path_fields": sorted(INTERNAL_PATH_FIELDS),
-        "debug_private_fields": sorted(DEBUG_PRIVATE_FIELDS),
-        "checksum_components": PACKAGE_CHECKSUM_COMPONENTS,
-        "package_status_values": PACKAGE_STATUS_VALUES,
+        "public_allowed_components": (
+            PUBLIC_ALLOWED_PACKAGE_COMPONENTS
+        ),
+        "public_prediction_allowed_fields": (
+            sorted(
+                PUBLIC_PREDICTION_ALLOWED_FIELDS
+            )
+        ),
+        "public_entity_allowed_fields": (
+            sorted(
+                PUBLIC_ENTITY_ALLOWED_FIELDS
+            )
+        ),
+        "forbidden_internal_keys": (
+            PUBLIC_FORBIDDEN_INTERNAL_KEYS
+        ),
+        "internal_path_fields": sorted(
+            INTERNAL_PATH_FIELDS
+        ),
+        "debug_private_fields": sorted(
+            DEBUG_PRIVATE_FIELDS
+        ),
+        "checksum_components": (
+            PACKAGE_CHECKSUM_COMPONENTS
+        ),
+        "package_status_values": (
+            PACKAGE_STATUS_VALUES
+        ),
         "checked_at": now_iso(),
     }
 
@@ -1887,53 +2533,134 @@ def run_security_self_test() -> Dict[str, Any]:
     """
 
     package_id = "PKG_TEST"
-    token = generate_package_access_token(package_id, expire_days=1)
-    verify = verify_access_token(token, expected_package_id=package_id)
+
+    token = ""
+    token_error = ""
+
+    if ENABLE_PACKAGE_ACCESS_TOKEN:
+        try:
+            token = (
+                generate_package_access_token(
+                    package_id,
+                    expire_days=1,
+                    scope=["data"],
+                )
+            )
+
+            verify = verify_access_token(
+                token,
+                expected_package_id=(
+                    package_id
+                ),
+                expected_scope="data",
+            )
+
+        except Exception as exc:
+            token_error = (
+                exc.__class__.__name__
+            )
+
+            verify = {
+                "valid": False,
+                "reason": (
+                    "token_configuration_error"
+                ),
+            }
+
+    else:
+        verify = {
+            "valid": True,
+            "reason": (
+                "token_feature_disabled"
+            ),
+        }
 
     sample_record = {
-        "tax_id_norm": "0105560000000",
-        "director_name": "นายตัวอย่าง ทดสอบ",
-        "address": "99/9 ถนนตัวอย่าง แขวงตัวอย่าง เขตตัวอย่าง กรุงเทพฯ",
+        "tax_id_norm": (
+            "0105560000000"
+        ),
+        "director_name": (
+            "นายตัวอย่าง ทดสอบ"
+        ),
+        "address": (
+            "99/9 ถนนตัวอย่าง "
+            "กรุงเทพฯ"
+        ),
         "total_premium": 1000000,
-        "company_name": "บริษัท ตัวอย่าง จำกัด",
-        "source_file": "/mnt/data/internal.xlsx",
+        "company_name": (
+            "บริษัท ตัวอย่าง จำกัด"
+        ),
+        "source_file": (
+            "/mnt/data/internal.xlsx"
+        ),
     }
 
     prediction_record = {
         "object_type": "prediction",
-        "source_type": "flood_prediction",
-        "record_key": "prediction|1373690|2026-07-01|2026-07-03|2",
+        "source_type": (
+            "flood_prediction"
+        ),
+        "record_key": (
+            "prediction|1373690|"
+            "2026-07-01|"
+            "2026-07-03|2"
+        ),
         "province": "น่าน",
-        "station_name": "สถานีตัวอย่าง",
+        "station_name": (
+            "สถานีตัวอย่าง"
+        ),
         "risk_level": "Critical",
-        "target_date": "2026-07-03",
+        "target_date": (
+            "2026-07-03"
+        ),
         "forecast_horizon_day": 2,
         "latest_value": 4.25,
         "latest_unit": "m",
         "map_ready": True,
         "latitude": 18.7,
         "longitude": 100.7,
-        "source_file": "C:\\internal\\predict_20260701.xlsx",
-        "internal_path": "/mnt/data/C:/Users/internal/predict.xlsx",
-        "debug_traceback": "traceback",
-        "raw_record": {"secret": "x"},
+        "source_file": (
+            "C:\\internal\\predict.xlsx"
+        ),
+        "internal_path": (
+            "/mnt/data/internal/"
+            "predict.xlsx"
+        ),
+        "debug_traceback": (
+            "traceback"
+        ),
+        "raw_record": {
+            "secret": "x"
+        },
     }
 
     entity_record = {
         "object_type": "entity",
-        "source_type": "uploaded_entity",
+        "source_type": (
+            "uploaded_entity"
+        ),
         "entity_id": "E001",
         "entity_type": "shop",
-        "entity_name_th": "ร้านตัวอย่าง",
-        "entity_name_en": "Example Shop",
+        "entity_name_th": (
+            "ร้านตัวอย่าง"
+        ),
+        "entity_name_en": (
+            "Example Shop"
+        ),
         "province_name_th": "น่าน",
         "risk_group": "Watch",
         "is_displayable": True,
+        "has_location": True,
         "map_ready": True,
         "latitude": 18.7,
         "longitude": 100.7,
-        "saved_file": "C:\\internal\\upload.csv",
-        "error_report_file": "/mnt/data/internal/error.csv",
+        "saved_file": (
+            "C:\\internal\\upload.csv"
+        ),
+        "error_report_file": (
+            "/mnt/data/internal/"
+            "error.csv"
+        ),
     }
 
     masked = mask_record(
@@ -1943,75 +2670,164 @@ def run_security_self_test() -> Dict[str, Any]:
             "mask_director_name": True,
             "mask_address": True,
             "hide_financial_fields": True,
+            "public": True,
         },
     )
 
-    sanitized_prediction = sanitize_public_payload(prediction_record)
-    sanitized_entity = sanitize_public_payload(entity_record)
+    sanitized_prediction = (
+        sanitize_public_payload(
+            prediction_record
+        )
+    )
+
+    sanitized_entity = (
+        sanitize_public_payload(
+            entity_record
+        )
+    )
 
     package_payload = {
         "package_id": package_id,
         "package_meta": {
             "package_id": package_id,
-            "checksum": "",
+            "status": "active",
+            "enabled": True,
+            "allow_public_access": True,
+            "public": True,
+            "read_only": True,
+            "require_token": bool(
+                ENABLE_PACKAGE_ACCESS_TOKEN
+            ),
             "access_token": token,
-            "source_file": "/mnt/data/internal.xlsx",
+            "components": [
+                "summary",
+                "map",
+                "data_quality",
+                "prediction",
+                "entity",
+            ],
+            "security": (
+                normalize_security_policy()
+            ),
         },
         "data": {
-            "summary": {"total": 1},
-            "map": {"features": []},
-            "map_layers": {"layers": {}},
-            "charts": {},
-            "tables": {},
+            "summary": {
+                "total": 1
+            },
+            "map": {
+                "features": []
+            },
             "data_quality": {
                 "issues": [
                     {
-                        "field": "actual",
-                        "actual": "/mnt/data/C:/Users/internal/source.xlsx",
+                        "issue_id": (
+                            "DQ_TEST"
+                        ),
+                        "category": (
+                            "data_quality"
+                        ),
+                        "severity": "low",
+                        "actual": (
+                            "/mnt/data/internal/"
+                            "source.xlsx"
+                        ),
                     }
                 ]
             },
-            "prediction": [prediction_record],
-            "entity": [entity_record],
+            "prediction": [
+                prediction_record
+            ],
+            "entity": [
+                entity_record
+            ],
         },
     }
 
-    checksum = create_package_checksum(package_payload)
-    public_snapshot = build_public_package_snapshot(
-        {
-            **package_payload,
-            "package_meta": {
-                **package_payload["package_meta"],
-                "status": "active",
-                "allow_public_access": True,
-                "require_token": False,
-            },
-        }
+    package_payload = (
+        attach_package_checksum(
+            package_payload
+        )
+    )
+
+    checksum = clean_text(
+        package_payload.get(
+            "package_meta",
+            {},
+        ).get("checksum")
+    )
+
+    public_snapshot = (
+        build_public_package_snapshot(
+            package_payload,
+            token=token,
+        )
     )
 
     return {
-        "token_generated": bool(token),
-        "token_verify_valid": verify.get("valid"),
-        "token_verify_reason": verify.get("reason"),
-        "sample_record": sample_record,
+        "token_enabled": bool(
+            ENABLE_PACKAGE_ACCESS_TOKEN
+        ),
+        "token_generated": bool(
+            token
+        ),
+        "token_verify_valid": (
+            verify.get("valid")
+        ),
+        "token_verify_reason": (
+            verify.get("reason")
+        ),
+        "token_error": token_error,
         "masked_record": masked,
-        "sanitized_prediction": sanitized_prediction,
-        "sanitized_entity": sanitized_entity,
+        "sanitized_prediction": (
+            sanitized_prediction
+        ),
+        "sanitized_entity": (
+            sanitized_entity
+        ),
+        "tax_id_zero_visible_safe": (
+            mask_tax_id(
+                "0105560000000",
+                visible_last=0,
+            )
+            == "*************"
+        ),
         "prediction_internal_removed": (
-            "source_file" not in sanitized_prediction
-            and "internal_path" not in sanitized_prediction
-            and "debug_traceback" not in sanitized_prediction
-            and "raw_record" not in sanitized_prediction
+            "source_file"
+            not in sanitized_prediction
+            and "internal_path"
+            not in sanitized_prediction
+            and "debug_traceback"
+            not in sanitized_prediction
+            and "raw_record"
+            not in sanitized_prediction
         ),
         "entity_internal_removed": (
-            "saved_file" not in sanitized_entity
-            and "error_report_file" not in sanitized_entity
+            "saved_file"
+            not in sanitized_entity
+            and "error_report_file"
+            not in sanitized_entity
         ),
-        "local_path_removed_from_masked": "source_file" not in masked,
-        "checksum_generated": bool(checksum),
-        "checksum_components": PACKAGE_CHECKSUM_COMPONENTS,
-        "public_snapshot_allowed": public_snapshot.get("allowed"),
-        "summary": get_security_summary(),
+        "local_path_removed": (
+            "source_file"
+            not in masked
+        ),
+        "checksum_generated": bool(
+            checksum
+        ),
+        "checksum_verify_valid": (
+            verify_package_checksum(
+                package_payload,
+                checksum=checksum,
+            ).get("valid")
+        ),
+        "public_snapshot_allowed": (
+            public_snapshot.get(
+                "allowed"
+            )
+        ),
+        "summary": (
+            get_security_summary()
+        ),
     }
 
 # ============================================================
@@ -2026,6 +2842,7 @@ TAX_ID_FIELDS = {
     "source_tax_id",
     "target_tax_id",
 }
+
 DIRECTOR_PERSON_FIELDS = {
     "director_name",
     "director_name_raw",
@@ -2035,21 +2852,26 @@ DIRECTOR_PERSON_FIELDS = {
     "shared_directors",
     "boardlist",
 }
+
 ADDRESS_FIELDS = {
     "address",
     "full_address",
+    "company_address",
     "house_no",
     "street",
-    "subdistrict",
-    "district",
 }
+
 FINANCIAL_FIELDS = {
     "premium",
     "loss",
     "suminsure",
+    "noofpol",
     "total_premium",
     "total_loss",
     "total_suminsure",
+    "total_noofpol",
+    "loss_ratio",
+    "loss_ratio_band",
     "registered_capital",
     "most_recent_income_val",
     "most_recent_asset_val",
@@ -2057,7 +2879,13 @@ FINANCIAL_FIELDS = {
     "hist_premium_sum_all",
     "last_premium_active",
     "exp_premium",
+    "total_connected_income",
+    "total_connected_capital",
+    "total_connected_premium",
+    "total_connected_loss",
+    "total_connected_suminsure",
 }
+
 INTERNAL_PATH_FIELDS = {
     "_local_path",
     "absolute_path",
@@ -2086,6 +2914,7 @@ INTERNAL_PATH_FIELDS = {
     "raw_sheet",
     "raw_sheet_name",
 }
+
 DEBUG_PRIVATE_FIELDS = {
     "debug",
     "debug_info",
@@ -2093,6 +2922,7 @@ DEBUG_PRIVATE_FIELDS = {
     "traceback",
     "exception",
     "internal",
+    "password",
     "secret",
     "token",
     "access_token",
@@ -2113,6 +2943,7 @@ DEBUG_PRIVATE_FIELDS = {
     "invalid_records",
     "invalid_rows",
 }
+
 PACKAGE_ACCESS_SCOPES = {
     "meta",
     "summary",
@@ -2126,6 +2957,57 @@ PACKAGE_ACCESS_SCOPES = {
     "download",
     "admin",
 }
+
+PUBLIC_COMPONENT_ALIASES = {
+    "map_layers": "map",
+    "flood_prediction": "prediction",
+    "flood_prediction_latest": (
+        "prediction"
+    ),
+    "flood_prediction_map": (
+        "prediction"
+    ),
+    "uploaded_entity": "entity",
+    "uploaded_entity_latest": (
+        "entity"
+    ),
+}
+
+PUBLIC_COMPONENT_SCOPE_MAP = {
+    "meta": "meta",
+    "summary": "summary",
+    "data": "data",
+    "map": "map",
+    "charts": "charts",
+    "tables": "tables",
+    "data_quality": (
+        "data_quality"
+    ),
+    "prediction": "prediction",
+    "entity": "entity",
+    "companies": "data",
+    "policy_summary": "data",
+    "policy_table": "data",
+    "linkage_graph": "data",
+    "linkage_lines": "data",
+    "flood_summary": "data",
+    "filter_options": "data",
+    "download": "download",
+    "admin": "admin",
+}
+
+DATA_READ_SCOPES = {
+    "meta",
+    "summary",
+    "data",
+    "map",
+    "charts",
+    "tables",
+    "data_quality",
+    "prediction",
+    "entity",
+}
+
 DEFAULT_MASKING_POLICY = {
     "mask_tax_id": True,
     "mask_director_name": True,
@@ -2137,59 +3019,143 @@ DEFAULT_MASKING_POLICY = {
     "public": True,
 }
 
-
 def json_safe(value: Any) -> Any:
     return to_jsonable(value)
 
+def normalize_security_policy(
+    policy: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    base = dict(
+        DEFAULT_MASKING_POLICY
+    )
 
-def normalize_security_policy(policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    base = dict(DEFAULT_MASKING_POLICY)
-    if isinstance(PACKAGE_SECURITY_OPTIONS, dict):
+    if isinstance(
+        PACKAGE_SECURITY_OPTIONS,
+        dict,
+    ):
         for key in base:
-            if key in PACKAGE_SECURITY_OPTIONS:
-                base[key] = PACKAGE_SECURITY_OPTIONS[key]
+            if (
+                key
+                in PACKAGE_SECURITY_OPTIONS
+            ):
+                base[key] = to_bool(
+                    PACKAGE_SECURITY_OPTIONS[
+                        key
+                    ],
+                    default=bool(
+                        base[key]
+                    ),
+                )
+
     if isinstance(policy, dict):
-        for key, value in policy.items():
-            if key in base:
-                base[key] = to_bool(value, default=bool(base[key]))
-            else:
-                base[key] = json_safe(value)
-    if base.get("public", True):
-        base["mask_tax_id"] = to_bool(base.get("mask_tax_id"), True)
-        base["mask_director_name"] = to_bool(base.get("mask_director_name"), True)
-        base["mask_person_name"] = to_bool(base.get("mask_person_name"), True)
-        base["mask_address"] = to_bool(base.get("mask_address"), True)
-        base["remove_internal_paths"] = to_bool(base.get("remove_internal_paths"), True)
-        base["remove_debug_fields"] = to_bool(base.get("remove_debug_fields"), True)
+        for key in base:
+            if key in policy:
+                base[key] = to_bool(
+                    policy[key],
+                    default=bool(
+                        base[key]
+                    ),
+                )
+
+    base["public"] = to_bool(
+        base.get("public"),
+        default=True,
+    )
+
+    if base["public"]:
+        base["mask_tax_id"] = True
+        base[
+            "mask_director_name"
+        ] = True
+        base["mask_person_name"] = True
+        base["mask_address"] = True
+        base[
+            "remove_internal_paths"
+        ] = True
+        base[
+            "remove_debug_fields"
+        ] = True
+
     return base
 
+def _field_name(
+    value: Any,
+) -> str:
+    return (
+        clean_text_lower(value)
+        .replace(" ", "_")
+        .replace("-", "_")
+    )
 
-def _field_name(value: Any) -> str:
-    return clean_text_lower(value).replace(" ", "_")
-
-
-def _looks_like_local_path(value: Any) -> bool:
-    text = clean_text(value)
+def _looks_like_local_path(
+    value: Any,
+) -> bool:
+    text = clean_text(
+        value
+    )
 
     if not text:
         return False
 
-    normalized = text.replace("\\", "/")
+    decoded = unquote(
+        text
+    )
+
+    normalized = decoded.replace(
+        "\\",
+        "/",
+    )
+
     lower = normalized.lower()
 
-    if lower.startswith("file://"):
+    if lower.startswith(
+        (
+            "http://",
+            "https://",
+            "data:",
+            "blob:",
+        )
+    ):
+        embedded_local_markers = (
+            "c:/users/",
+            "/mnt/",
+            "/tmp/",
+            "/home/",
+            "/workspace/",
+            "/sandbox/",
+        )
+
+        return any(
+            marker in lower
+            for marker
+            in embedded_local_markers
+        )
+
+    if lower.startswith(
+        "file://"
+    ):
         return True
 
-    if len(normalized) > 2 and normalized[1:3] == ":/" and normalized[0].isalpha():
+    if lower.startswith(
+        (
+            "../",
+            "./",
+            "~/",
+            "//",
+        )
+    ):
         return True
 
-    if lower.startswith("//"):
+    if (
+        len(normalized) > 2
+        and normalized[0].isalpha()
+        and normalized[1:3] == ":/"
+    ):
         return True
 
-    if any(f"/{drive}:/" in lower for drive in "abcdefghijklmnopqrstuvwxyz"):
-        return True
-
-    local_prefixes = (
+    local_markers = (
         "/mnt/",
         "/tmp/",
         "/home/",
@@ -2201,55 +3167,177 @@ def _looks_like_local_path(value: Any) -> bool:
         "/workspace/",
         "/backend/",
         "/sandbox/",
+        "c:/users/",
     )
 
-    if lower.startswith(local_prefixes):
-        return True
+    return any(
+        marker in lower
+        for marker in local_markers
+    )
 
-    if "c:/users/" in lower or "c:\\users\\" in text.lower():
-        return True
+def mask_tax_id(
+    value: Any,
+    visible_last: int = 4,
+    visible_last_digits: Optional[
+        int
+    ] = None,
+) -> str:
+    digits = "".join(
+        character
+        for character
+        in clean_text(value)
+        if character.isdigit()
+    )
 
-    return False
-
-
-def mask_tax_id(value: Any, visible_last: int = 4) -> str:
-    digits = "".join(ch for ch in clean_text(value) if ch.isdigit())
     if not digits:
         return ""
-    visible = max(0, min(len(digits), int(visible_last or 0)))
+
+    requested_visible = (
+        visible_last_digits
+        if visible_last_digits
+        is not None
+        else visible_last
+    )
+
+    try:
+        visible = int(
+            requested_visible
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        visible = 4
+
+    visible = max(
+        0,
+        min(
+            len(digits),
+            visible,
+        ),
+    )
+
+    if visible == 0:
+        return "*" * len(digits)
+
     if len(digits) <= visible:
-        return "*" * len(digits) if len(digits) > 1 else "***"
-    return "*" * (len(digits) - visible) + digits[-visible:]
+        return "*" * len(digits)
+
+    return (
+        "*" * (
+            len(digits)
+            - visible
+        )
+        + digits[-visible:]
+    )
 
 
-def mask_person_name(value: Any) -> Any:
-    if isinstance(value, list):
-        return [mask_person_name(item) for item in value]
-    text = clean_text(value)
+def mask_person_name(
+    value: Any,
+    visible_first_chars: int = (
+        MASK_DIRECTOR_VISIBLE_FIRST_CHARS
+    ),
+) -> Any:
+    if isinstance(
+        value,
+        (list, tuple, set),
+    ):
+        return [
+            mask_person_name(
+                item,
+                visible_first_chars,
+            )
+            for item in value
+        ]
+
+    text = clean_text(
+        value
+    )
+
     if not text:
         return ""
-    if "," in text:
-        return [mask_person_name(part) for part in text.split(",") if clean_text(part)]
-    if ";" in text:
-        return [mask_person_name(part) for part in text.split(";") if clean_text(part)]
-    prefix = text[:1]
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:4]
-    return f"{prefix}***{digest}"
+
+    for separator in [
+        "\n",
+        ";",
+        ",",
+    ]:
+        if separator in text:
+            names = [
+                clean_text(item)
+                for item
+                in text.split(separator)
+                if clean_text(item)
+            ]
+
+            return ", ".join(
+                clean_text(
+                    mask_person_name(
+                        name,
+                        visible_first_chars,
+                    )
+                )
+                for name in names
+            )
+
+    try:
+        visible = int(
+            visible_first_chars
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        visible = 1
+
+    visible = max(
+        0,
+        min(
+            visible,
+            max(
+                0,
+                len(text) - 1,
+            ),
+        ),
+    )
+
+    if visible == 0:
+        return "*" * len(text)
+
+    return (
+        text[:visible]
+        + "*" * (
+            len(text)
+            - visible
+        )
+    )
 
 
-def mask_director_name(value: Any) -> Any:
-    return mask_person_name(value)
+def mask_director_name(
+    value: Any,
+    visible_first_chars: int = (
+        MASK_DIRECTOR_VISIBLE_FIRST_CHARS
+    ),
+) -> Any:
+    return mask_person_name(
+        value,
+        visible_first_chars=(
+            visible_first_chars
+        ),
+    )
 
 
-def mask_address(value: Any) -> str:
-    text = clean_text(value)
+def mask_address(
+    value: Any,
+) -> str:
+    text = clean_text(
+        value
+    )
+
     if not text:
         return ""
-    parts = [part for part in text.replace(",", " ").split() if part]
-    if len(parts) <= 1:
-        return "***"
-    return f"{parts[-1]} ***"
 
+    return "[masked address]"
 
 def mask_phone(value: Any) -> str:
     digits = "".join(ch for ch in clean_text(value) if ch.isdigit())
@@ -2426,31 +3514,84 @@ def is_public_entity_record(record: Dict[str, Any]) -> bool:
         or "entity_name_th" in record
     )
 
-def is_public_entity_displayable(record: Dict[str, Any]) -> bool:
-    if not isinstance(record, dict):
+def is_public_entity_displayable(
+    record: Dict[str, Any],
+) -> bool:
+    if not isinstance(
+        record,
+        dict,
+    ):
         return False
 
-    if "is_displayable" in record and to_bool(record.get("is_displayable"), default=False) is False:
+    if "is_displayable" in record:
+        displayable = to_bool(
+            record.get(
+                "is_displayable"
+            ),
+            default=False,
+        )
+
+    elif "displayable" in record:
+        displayable = to_bool(
+            record.get(
+                "displayable"
+            ),
+            default=False,
+        )
+
+    else:
         return False
 
-    if "displayable" in record and to_bool(record.get("displayable"), default=False) is False:
+    if not displayable:
         return False
 
-    if to_bool(record.get("not_displayable"), default=False):
+    if to_bool(
+        record.get(
+            "not_displayable"
+        ),
+        default=False,
+    ):
         return False
 
-    lat = record.get("latitude", record.get("lat"))
-    lon = record.get("longitude", record.get("lon"))
-
-    if is_empty_value(lat) or is_empty_value(lon):
-        return False
-
-    return bool(
-        to_bool(record.get("map_ready"), default=True)
-        or to_bool(record.get("has_location"), default=True)
-        or "latitude" in record
-        or "lat" in record
+    map_ready = to_bool(
+        record.get(
+            "map_ready"
+        ),
+        default=False,
     )
+
+    has_location = to_bool(
+        record.get(
+            "has_location"
+        ),
+        default=False,
+    )
+
+    if not (
+        map_ready
+        or has_location
+    ):
+        return False
+
+    latitude = (
+        record.get("latitude")
+        if record.get(
+            "latitude"
+        )
+        is not None
+        else record.get("lat")
+    )
+
+    longitude = (
+        record.get("longitude")
+        if record.get("longitude") is not None
+        else record.get("lon")
+    )
+
+    coordinate = (
+        validate_coordinate(latitude,longitude,)
+    )
+    return bool(coordinate.get("valid"))
 
 def sanitize_public_scalar(key: Any, value: Any, policy: Optional[Dict[str, Any]] = None) -> Any:
     active_policy = normalize_security_policy(policy)
@@ -2533,13 +3674,22 @@ def sanitize_entity_public_record(record: Dict[str, Any], policy: Optional[Dict[
     result.setdefault("map_ready", True)
 
     return json_safe(result)
-def normalize_package_checksum_payload(payload: Any) -> Any:
-    value = json_safe(payload)
+def normalize_package_checksum_payload(
+    payload: Any,
+) -> Any:
+    value = json_safe(
+        payload
+    )
 
-    if not isinstance(value, dict):
+    if not isinstance(
+        value,
+        dict,
+    ):
         return value
 
-    source = deepcopy(value)
+    source = deepcopy(
+        value
+    )
 
     for key in [
         "checksum",
@@ -2549,52 +3699,99 @@ def normalize_package_checksum_payload(payload: Any) -> Any:
         "access_token",
         "token",
     ]:
-        source.pop(key, None)
+        source.pop(
+            key,
+            None,
+        )
 
-    if isinstance(source.get("package_meta"), dict):
-        source["package_meta"] = {
-            key: item
-            for key, item in source["package_meta"].items()
-            if key not in {
-                "checksum",
-                "package_checksum",
-                "snapshot_checksum",
-                "checksum_raw",
-                "access_token",
-                "token",
-            }
+    package_meta = (
+        source.get(
+            "package_meta"
+        )
+        if isinstance(
+            source.get(
+                "package_meta"
+            ),
+            dict,
+        )
+        else {}
+    )
+
+    meta = (
+        source.get("meta")
+        if isinstance(
+            source.get("meta"),
+            dict,
+        )
+        else {}
+    )
+
+    package_meta = {
+        key: item
+        for key, item
+        in package_meta.items()
+        if key
+        not in {
+            "checksum",
+            "package_checksum",
+            "snapshot_checksum",
+            "checksum_raw",
+            "access_token",
+            "token",
+            "public_url",
+            "public_urls",
+            "public_api_urls",
         }
+    }
 
-    if isinstance(source.get("meta"), dict):
-        source["meta"] = {
-            key: item
-            for key, item in source["meta"].items()
-            if key not in {
-                "checksum",
-                "package_checksum",
-                "snapshot_checksum",
-                "checksum_raw",
-                "access_token",
-                "token",
-                "generated_at",
-                "access_checked_at",
-            }
+    meta = {
+        key: item
+        for key, item
+        in meta.items()
+        if key
+        not in {
+            "checksum",
+            "package_checksum",
+            "snapshot_checksum",
+            "checksum_raw",
+            "access_token",
+            "token",
+            "generated_at",
+            "access_checked_at",
         }
+    }
 
-    if isinstance(source.get("data"), dict):
-        data = source["data"]
-    else:
-        data = source
+    data = (
+        source.get("data")
+        if isinstance(
+            source.get("data"),
+            dict,
+        )
+        else source
+    )
 
     checksum_data = {
         key: data.get(key)
-        for key in PACKAGE_CHECKSUM_COMPONENTS
-        if isinstance(data, dict) and key in data
+        for key
+        in PACKAGE_CHECKSUM_COMPONENTS
+        if key in data
     }
+
+    package_id = clean_text(
+        source.get(
+            "package_id"
+        )
+        or package_meta.get(
+            "package_id"
+        )
+        or meta.get(
+            "package_id"
+        )
+    )
 
     return json_safe(
         {
-            "package_id": source.get("package_id") or source.get("package_meta", {}).get("package_id"),
+            "package_id": package_id,
             "data": checksum_data,
         }
     )
@@ -2670,17 +3867,42 @@ def sanitize_data_quality_issue_record(record: Dict[str, Any], policy: Optional[
     return json_safe(result)
 
 
-def sanitize_data_quality_public_value(value: Any, policy: Optional[Dict[str, Any]] = None) -> Any:
+def sanitize_data_quality_public_value(
+    value: Any,
+    policy: Optional[
+        Dict[str, Any]
+    ] = None,
+    field_name: str = "",
+) -> Any:
+    active_policy = (
+        normalize_security_policy(
+            policy
+        )
+    )
+
     if isinstance(value, dict):
         cleaned: Dict[str, Any] = {}
 
         for key, item in value.items():
-            if should_remove_public_key(key):
+            if should_remove_public_key(
+                key
+            ):
                 continue
 
-            sanitized = sanitize_data_quality_public_value(item, policy)
+            sanitized = (
+                sanitize_data_quality_public_value(
+                    item,
+                    active_policy,
+                    field_name=key,
+                )
+            )
 
-            if sanitized in ({}, [], "", None):
+            if sanitized in (
+                {},
+                [],
+                "",
+                None,
+            ):
                 continue
 
             cleaned[key] = sanitized
@@ -2688,19 +3910,45 @@ def sanitize_data_quality_public_value(value: Any, policy: Optional[Dict[str, An
         return json_safe(cleaned)
 
     if isinstance(value, list):
-        cleaned_items = []
+        cleaned_items: List[
+            Any
+        ] = []
 
         for item in value:
-            sanitized = sanitize_data_quality_public_value(item, policy)
+            sanitized = (
+                sanitize_data_quality_public_value(
+                    item,
+                    active_policy,
+                    field_name=field_name,
+                )
+            )
 
-            if sanitized in ({}, [], "", None):
+            if sanitized in (
+                {},
+                [],
+                "",
+                None,
+            ):
                 continue
 
-            cleaned_items.append(sanitized)
+            cleaned_items.append(
+                sanitized
+            )
 
-        return json_safe(cleaned_items)
+        return json_safe(
+            cleaned_items
+        )
 
-    if _looks_like_local_path(value):
+    if field_name:
+        return sanitize_public_scalar(
+            field_name,
+            value,
+            active_policy,
+        )
+
+    if _looks_like_local_path(
+        value
+    ):
         return ""
 
     return json_safe(value)
@@ -2867,137 +4115,951 @@ def verify_package_checksum(payload: Any, checksum: Optional[str] = None) -> Any
     }
 
 
-def generate_package_access_token(package_id: str, scope: Optional[Any] = None, expires_at: Optional[Any] = None, expire_days: Optional[int] = None) -> str:
-    normalized_scope = normalize_access_scope(scope or "data")
+def generate_package_access_token(
+    package_id: str,
+    scope: Optional[Any] = None,
+    expires_at: Optional[Any] = None,
+    expire_days: Optional[int] = None,
+) -> str:
+    clean_package_id = clean_text(
+        package_id
+    )
+
+    if (
+        not clean_package_id
+        or len(clean_package_id) > 128
+        or Path(
+            clean_package_id
+        ).name
+        != clean_package_id
+    ):
+        raise ValueError(
+            "Invalid package_id."
+        )
+
+    get_security_secret()
+
+    scopes = normalize_access_scopes(
+        scope
+        if scope is not None
+        else ["data"]
+    )
+
+    if not scopes:
+        raise ValueError(
+            "Invalid package access scope."
+        )
+
+    issued_at = datetime.now()
+
     if expires_at:
-        expiry = clean_text(expires_at)
+        expiry = (
+            parse_security_datetime(
+                expires_at
+            )
+        )
+
+        if expiry is None:
+            raise ValueError(
+                "Invalid token expiry."
+            )
+
+        current_time = (
+            datetime.now(
+                expiry.tzinfo
+            )
+            if expiry.tzinfo
+            is not None
+            else issued_at
+        )
+
+        if expiry <= current_time:
+            raise ValueError(
+                "Token expiry must be "
+                "in the future."
+            )
+
+        maximum_expiry = (
+            current_time
+            + timedelta(
+                days=(
+                    PACKAGE_MAX_EXPIRE_DAYS
+                )
+            )
+        )
+
+        if expiry > maximum_expiry:
+            raise ValueError(
+                "Token expiry exceeds "
+                "the configured limit."
+            )
+
     else:
-        days = max(1, min(int(expire_days or PACKAGE_DEFAULT_EXPIRE_DAYS or 30), int(PACKAGE_MAX_EXPIRE_DAYS or 365)))
-        expiry = (datetime.now() + timedelta(days=days)).isoformat(timespec="seconds")
+        days = to_int(
+            expire_days,
+            default=(
+                PACKAGE_DEFAULT_EXPIRE_DAYS
+            ),
+        )
+
+        if days <= 0:
+            days = (
+                PACKAGE_DEFAULT_EXPIRE_DAYS
+            )
+
+        days = max(
+            1,
+            min(
+                days,
+                PACKAGE_MAX_EXPIRE_DAYS,
+            ),
+        )
+
+        expiry = (
+            issued_at
+            + timedelta(days=days)
+        )
+
     payload = {
-        "v": TOKEN_VERSION,
-        "package_id": clean_text(package_id),
-        "scope": normalized_scope,
-        "expires_at": expiry,
+        "version": TOKEN_VERSION,
+        "package_id": (
+            clean_package_id
+        ),
+        "scope": scopes,
+        "read_only": True,
+        "issued_at": (
+            issued_at.isoformat(
+                timespec="seconds"
+            )
+        ),
+        "expires_at": (
+            expiry.isoformat(
+                timespec="seconds"
+            )
+        ),
+        "nonce": random_token(16),
     }
-    body = b64url_encode(payload)
-    signature = hmac_signature(body)
-    return f"{body}.{signature}"
+
+    body = b64url_encode(
+        payload
+    )
+
+    signature = hmac_signature(
+        body
+    )
+
+    token = (
+        f"{body}.{signature}"
+    )
+
+    if (
+        len(token)
+        > MAX_PACKAGE_TOKEN_LENGTH
+    ):
+        raise ValueError(
+            "Generated token is too large."
+        )
+
+    return token
 
 
-def verify_package_access_token(token: str, package_id: Optional[str] = None, scope: Optional[Any] = None) -> Dict[str, Any]:
+def verify_package_access_token(
+    token: str,
+    package_id: Optional[str] = None,
+    scope: Optional[Any] = None,
+) -> Dict[str, Any]:
+    token_text = clean_text(
+        token
+    )
+
+    if not token_text:
+        return {
+            "valid": False,
+            "reason": "missing_token",
+        }
+
+    if (
+        len(token_text)
+        > MAX_PACKAGE_TOKEN_LENGTH
+    ):
+        return {
+            "valid": False,
+            "reason": "token_too_large",
+        }
+
+    if token_text.count(".") != 1:
+        return {
+            "valid": False,
+            "reason": (
+                "invalid_token_format"
+            ),
+        }
+
+    body, signature = (
+        token_text.rsplit(
+            ".",
+            1,
+        )
+    )
+
+    if (
+        not body
+        or not signature
+        or len(signature) != 64
+        or any(
+            character
+            not in "0123456789abcdefABCDEF"
+            for character in signature
+        )
+    ):
+        return {
+            "valid": False,
+            "reason": (
+                "invalid_token_format"
+            ),
+        }
+
     try:
-        token_text = clean_text(token)
-        if not token_text or "." not in token_text:
-            return {"valid": False, "reason": "missing_or_malformed_token"}
-        body, signature = token_text.rsplit(".", 1)
-        if not constant_time_equal(hmac_signature(body), signature):
-            return {"valid": False, "reason": "invalid_signature"}
-        payload = b64url_decode_json(body)
-        if package_id and clean_text(payload.get("package_id")) != clean_text(package_id):
-            return {"valid": False, "reason": "package_mismatch", "payload": payload}
-        expected_scope = normalize_access_scope(scope) if scope else ""
-        token_scope = normalize_access_scope(payload.get("scope"))
-        if expected_scope and token_scope not in {expected_scope, "admin", "data"}:
-            return {"valid": False, "reason": "scope_denied", "payload": payload}
-        expires_at = clean_text(payload.get("expires_at"))
-        if expires_at:
-            try:
-                if datetime.fromisoformat(expires_at) < datetime.now():
-                    return {"valid": False, "reason": "token_expired", "payload": payload}
-            except Exception:
-                return {"valid": False, "reason": "invalid_expiry", "payload": payload}
-        return {"valid": True, "reason": "ok", "payload": payload}
-    except Exception as exc:
-        return {"valid": False, "reason": "token_error", "error": clean_text(exc)}
+        expected_signature = (
+            hmac_signature(body)
+        )
 
+    except RuntimeError:
+        return {
+            "valid": False,
+            "reason": (
+                "token_secret_not_configured"
+            ),
+        }
 
-def verify_access_token(token: str, expected_package_id: str = "", expected_scope: str = "") -> Dict[str, Any]:
-    return verify_package_access_token(token, package_id=expected_package_id, scope=expected_scope)
+    if not constant_time_equal(
+        expected_signature,
+        signature,
+    ):
+        return {
+            "valid": False,
+            "reason": (
+                "invalid_signature"
+            ),
+        }
 
+    payload = b64url_decode_json(
+        body
+    )
 
-def normalize_access_scope(scope: Optional[Any]) -> str:
-    if isinstance(scope, (list, tuple, set)):
-        first = next(iter(scope), "data")
-        return normalize_access_scope(first)
-    value = clean_text_lower(scope, default="data")
-    return value if value in PACKAGE_ACCESS_SCOPES else "data"
+    if not payload:
+        return {
+            "valid": False,
+            "reason": (
+                "invalid_payload"
+            ),
+        }
 
+    version = clean_text(
+        payload.get("version")
+        or payload.get("v")
+    )
 
-def validate_package_access_scope(scope: Any, allowed_scopes: Optional[Iterable[str]] = None) -> Dict[str, Any]:
-    normalized = normalize_access_scope(scope)
-    allowed = {normalize_access_scope(item) for item in (allowed_scopes or PACKAGE_ACCESS_SCOPES)}
-    allowed.add("admin")
+    if version != TOKEN_VERSION:
+        return {
+            "valid": False,
+            "reason": (
+                "unsupported_token_version"
+            ),
+        }
+
+    payload_package_id = clean_text(
+        payload.get("package_id")
+    )
+
+    if not payload_package_id:
+        return {
+            "valid": False,
+            "reason": (
+                "package_id_missing"
+            ),
+        }
+
+    if (
+        package_id
+        and payload_package_id
+        != clean_text(package_id)
+    ):
+        return {
+            "valid": False,
+            "reason": (
+                "package_mismatch"
+            ),
+        }
+
+    issued_at = (
+        parse_security_datetime(
+            payload.get("issued_at")
+        )
+    )
+
+    expires_at = (
+        parse_security_datetime(
+            payload.get("expires_at")
+            or payload.get(
+                "expire_at"
+            )
+        )
+    )
+
+    if (
+        issued_at is None
+        or expires_at is None
+    ):
+        return {
+            "valid": False,
+            "reason": (
+                "invalid_token_time"
+            ),
+        }
+
+    if (
+        issued_at.tzinfo
+        != expires_at.tzinfo
+    ):
+        return {
+            "valid": False,
+            "reason": (
+                "inconsistent_token_timezone"
+            ),
+        }
+
+    current_time = (
+        datetime.now(
+            expires_at.tzinfo
+        )
+        if expires_at.tzinfo
+        is not None
+        else datetime.now()
+    )
+
+    clock_skew = timedelta(
+        seconds=(
+            TOKEN_CLOCK_SKEW_SECONDS
+        )
+    )
+
+    if issued_at > (
+        current_time
+        + clock_skew
+    ):
+        return {
+            "valid": False,
+            "reason": (
+                "token_issued_in_future"
+            ),
+        }
+
+    if expires_at <= current_time:
+        return {
+            "valid": False,
+            "reason": (
+                "token_expired"
+            ),
+        }
+
+    if expires_at <= issued_at:
+        return {
+            "valid": False,
+            "reason": (
+                "invalid_token_lifetime"
+            ),
+        }
+
+    if (
+        expires_at
+        - issued_at
+        > timedelta(
+            days=(
+                PACKAGE_MAX_EXPIRE_DAYS
+            ),
+            seconds=(
+                TOKEN_CLOCK_SKEW_SECONDS
+            ),
+        )
+    ):
+        return {
+            "valid": False,
+            "reason": (
+                "token_lifetime_exceeded"
+            ),
+        }
+
+    token_scopes = (
+        normalize_access_scopes(
+            payload.get("scope")
+        )
+    )
+
+    if not token_scopes:
+        return {
+            "valid": False,
+            "reason": (
+                "token_scope_missing"
+            ),
+        }
+
+    required_scope = (
+        normalize_access_scope(scope)
+        if scope is not None
+        else ""
+    )
+
+    if (
+        scope is not None
+        and not required_scope
+    ):
+        return {
+            "valid": False,
+            "reason": (
+                "invalid_required_scope"
+            ),
+        }
+
+    if required_scope:
+        allowed = bool(
+            "admin" in token_scopes
+            or required_scope
+            in token_scopes
+            or (
+                "data"
+                in token_scopes
+                and required_scope
+                in DATA_READ_SCOPES
+            )
+        )
+
+        if not allowed:
+            return {
+                "valid": False,
+                "reason": (
+                    "scope_denied"
+                ),
+            }
+
     return {
-        "valid": normalized in allowed,
-        "scope": normalized,
-        "allowed_scopes": sorted(allowed),
-        "reason": "ok" if normalized in allowed else "scope_not_allowed",
+        "valid": True,
+        "reason": "ok",
+        "payload": {
+            "version": version,
+            "package_id": (
+                payload_package_id
+            ),
+            "scope": token_scopes,
+            "read_only": bool(
+                to_bool(
+                    payload.get(
+                        "read_only"
+                    ),
+                    default=True,
+                )
+            ),
+            "issued_at": (
+                issued_at.isoformat()
+            ),
+            "expires_at": (
+                expires_at.isoformat()
+            ),
+        },
     }
 
 
-def public_access_allowed(package_meta: Dict[str, Any], component: Optional[str] = None, token: Optional[str] = None) -> Dict[str, Any]:
-    meta = package_meta if isinstance(package_meta, dict) else {}
-    if not meta:
-        return {"allowed": False, "reason": "package_not_found"}
-    if meta.get("enabled") is False or clean_text_lower(meta.get("status")) in {"disabled", "deleted"}:
-        return {"allowed": False, "reason": "package_disabled"}
-    expires_at = clean_text(meta.get("expires_at"))
-    if expires_at:
-        try:
-            if datetime.fromisoformat(expires_at) < datetime.now():
-                return {"allowed": False, "reason": "package_expired"}
-        except Exception:
-            return {"allowed": False, "reason": "invalid_expiry"}
-    requested_component = normalize_access_scope(component or "data")
-    components = meta.get("components") or meta.get("public_components") or list(PACKAGE_ACCESS_SCOPES)
-    scope_result = validate_package_access_scope(requested_component, components)
-    if not scope_result.get("valid"):
-        return {"allowed": False, "reason": scope_result.get("reason"), "component": requested_component}
-    if meta.get("require_token") or (ENABLE_PACKAGE_ACCESS_TOKEN and token):
-        token_result = verify_package_access_token(token or "", package_id=clean_text(meta.get("package_id")), scope=requested_component)
-        if not token_result.get("valid"):
-            return {"allowed": False, "reason": token_result.get("reason", "token_denied"), "component": requested_component}
-    return {"allowed": True, "reason": "ok", "component": requested_component}
+def verify_access_token(
+    token: str,
+    expected_package_id: str = "",
+    expected_scope: str = "",
+) -> Dict[str, Any]:
+    return verify_package_access_token(
+        token,
+        package_id=(
+            expected_package_id
+            or None
+        ),
+        scope=(
+            expected_scope
+            or None
+        ),
+    )
 
 
-def build_public_package_url_meta(package_id: str, base_url: Optional[str] = None, token: Optional[str] = None) -> Dict[str, Any]:
-    clean_id = quote(clean_text(package_id), safe="")
-    prefix = clean_text(base_url).rstrip("/")
-    api_base = f"{prefix}/api/public/packages/{clean_id}" if prefix else f"/api/public/packages/{clean_id}"
-    suffix = f"?token={quote(clean_text(token), safe='')}" if token else ""
+def normalize_access_scope(
+    scope: Optional[Any],
+) -> str:
+    if isinstance(
+        scope,
+        (list, tuple, set),
+    ):
+        values = list(scope)
+
+        if not values:
+            return ""
+
+        return normalize_access_scope(
+            values[0]
+        )
+
+    value = (
+        clean_text_lower(
+            scope
+        )
+        .replace(
+            "-",
+            "_",
+        )
+    )
+
+    if not value:
+        return "data"
+
+    canonical = (
+        PUBLIC_COMPONENT_ALIASES.get(
+            value,
+            value,
+        )
+    )
+
+    if canonical in (
+        PACKAGE_ACCESS_SCOPES
+    ):
+        return canonical
+
+    return (
+        PUBLIC_COMPONENT_SCOPE_MAP.get(
+            canonical,
+            "",
+        )
+    )
+
+
+def normalize_access_scopes(
+    scopes: Optional[Any],
+) -> List[str]:
+    if isinstance(
+        scopes,
+        (list, tuple, set),
+    ):
+        raw_scopes = list(scopes)
+    else:
+        raw_scopes = [scopes]
+
+    result: List[str] = []
+
+    for raw_scope in raw_scopes:
+        normalized = (
+            normalize_access_scope(
+                raw_scope
+            )
+        )
+
+        if (
+            not normalized
+            or normalized in result
+        ):
+            continue
+
+        result.append(normalized)
+
+    return result
+
+
+def validate_package_access_scope(
+    scope: Any,
+    allowed_scopes: Optional[
+        Iterable[str]
+    ] = None,
+) -> Dict[str, Any]:
+    normalized = (
+        normalize_access_scope(
+            scope
+        )
+    )
+
+    if allowed_scopes is None:
+        allowed = set(
+            PACKAGE_ACCESS_SCOPES
+        )
+    else:
+        allowed = set(
+            normalize_access_scopes(
+                list(allowed_scopes)
+            )
+        )
+
+    valid = bool(
+        normalized
+        and normalized in allowed
+    )
 
     return {
-        "package_id": clean_text(package_id),
-        "public_url": f"{api_base}/data{suffix}",
-        "meta_url": f"{api_base}/meta{suffix}",
-        "data_url": f"{api_base}/data{suffix}",
-        "summary_url": f"{api_base}/summary{suffix}",
-        "map_url": f"{api_base}/map{suffix}",
-        "charts_url": f"{api_base}/charts{suffix}",
-        "tables_url": f"{api_base}/tables{suffix}",
-        "data_quality_url": f"{api_base}/data-quality{suffix}",
-        "prediction_url": f"{api_base}/prediction{suffix}",
-        "entity_url": f"{api_base}/entity{suffix}",
+        "valid": valid,
+        "scope": normalized,
+        "allowed_scopes": sorted(
+            allowed
+        ),
+        "reason": (
+            "ok"
+            if valid
+            else "scope_not_allowed"
+        ),
+    }
+
+
+def public_access_allowed(
+    package_meta: Dict[str, Any],
+    component: Optional[str] = None,
+    token: Optional[str] = None,
+) -> Dict[str, Any]:
+    meta = (
+        package_meta
+        if isinstance(
+            package_meta,
+            dict,
+        )
+        else {}
+    )
+
+    accessibility = (
+        is_package_publicly_accessible(
+            meta
+        )
+    )
+
+    if not accessibility.get(
+        "allowed"
+    ):
+        return {
+            "allowed": False,
+            "reason": (
+                accessibility.get(
+                    "reason",
+                    "access_denied",
+                )
+            ),
+        }
+
+    requested_component = (
+        clean_text_lower(
+            component,
+            default="data",
+        )
+        .replace(
+            "-",
+            "_",
+        )
+    )
+
+    canonical_component = (
+        PUBLIC_COMPONENT_ALIASES.get(
+            requested_component,
+            requested_component,
+        )
+    )
+
+    required_scope = (
+        normalize_access_scope(
+            canonical_component
+        )
+    )
+
+    if not required_scope:
+        return {
+            "allowed": False,
+            "reason": (
+                "invalid_component"
+            ),
+            "component": (
+                canonical_component
+            ),
+        }
+
+    selected_components = (
+        meta.get("components")
+        or meta.get(
+            "public_components"
+        )
+        or []
+    )
+
+    selected_canonical = {
+        PUBLIC_COMPONENT_ALIASES.get(
+            (
+                clean_text_lower(item)
+                .replace(
+                    "-",
+                    "_",
+                )
+            ),
+            (
+                clean_text_lower(item)
+                .replace(
+                    "-",
+                    "_",
+                )
+            ),
+        )
+        for item
+        in selected_components
+        if clean_text(item)
+    }
+
+    if (
+        canonical_component
+        not in {
+            "meta",
+            "data",
+            "admin",
+            "download",
+        }
+        and canonical_component
+        not in selected_canonical
+    ):
+        return {
+            "allowed": False,
+            "reason": (
+                "component_not_allowed"
+            ),
+            "component": (
+                canonical_component
+            ),
+        }
+
+    token_required = bool(
+        to_bool(
+            meta.get(
+                "require_token"
+            ),
+            default=(
+                ENABLE_PACKAGE_ACCESS_TOKEN
+            ),
+        )
+        or required_scope
+        in {
+            "admin",
+            "download",
+        }
+    )
+
+    token_text = clean_text(
+        token
+    )
+
+    if (
+        token_required
+        and not token_text
+    ):
+        return {
+            "allowed": False,
+            "reason": "missing_token",
+            "component": (
+                canonical_component
+            ),
+            "token_valid": False,
+        }
+
+    if token_text:
+        token_result = (
+            verify_package_access_token(
+                token_text,
+                package_id=clean_text(
+                    meta.get(
+                        "package_id"
+                    )
+                ),
+                scope=required_scope,
+            )
+        )
+
+        if not token_result.get(
+            "valid"
+        ):
+            return {
+                "allowed": False,
+                "reason": (
+                    token_result.get(
+                        "reason",
+                        "token_denied",
+                    )
+                ),
+                "component": (
+                    canonical_component
+                ),
+                "token_valid": False,
+            }
+
+        return {
+            "allowed": True,
+            "reason": (
+                "token_verified"
+            ),
+            "component": (
+                canonical_component
+            ),
+            "token_valid": True,
+        }
+
+    return {
+        "allowed": True,
+        "reason": "ok",
+        "component": (
+            canonical_component
+        ),
+        "token_valid": (
+            not token_required
+        ),
+    }
+
+def build_public_package_url_meta(
+    package_id: str,
+    base_url: Optional[str] = None,
+    token: Optional[str] = None,
+) -> Dict[str, Any]:
+    clean_package_id = clean_text(
+        package_id
+    )
+
+    clean_id = quote(
+        clean_package_id,
+        safe="",
+    )
+
+    prefix = clean_text(
+        base_url
+    ).rstrip("/")
+
+    api_prefix = (
+        PUBLIC_API_PREFIX.rstrip("/")
+    )
+
+    api_base = (
+        f"{prefix}{api_prefix}"
+        f"/packages/{clean_id}"
+        if prefix
+        else (
+            f"{api_prefix}"
+            f"/packages/{clean_id}"
+        )
+    )
+
+    return {
+        "package_id": (
+            clean_package_id
+        ),
+        "public_url": (
+            f"{api_base}/data"
+        ),
+        "meta_url": (
+            f"{api_base}/meta"
+        ),
+        "data_url": (
+            f"{api_base}/data"
+        ),
+        "summary_url": (
+            f"{api_base}/summary"
+        ),
+        "map_url": (
+            f"{api_base}/map"
+        ),
+        "charts_url": (
+            f"{api_base}/charts"
+        ),
+        "tables_url": (
+            f"{api_base}/tables"
+        ),
+        "data_quality_url": (
+            f"{api_base}/data-quality"
+        ),
+        "prediction_url": (
+            f"{api_base}/prediction"
+        ),
+        "entity_url": (
+            f"{api_base}/entity"
+        ),
+        "access_log_url": (
+            f"{api_base}/access-log"
+        ),
         "expires_at": "",
     }
 
-def build_public_viewer_metadata(package_id: str, package_meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    meta = sanitize_public_record(package_meta or {})
-    url_meta = build_public_package_url_meta(package_id, token=meta.get("access_token") if meta.get("include_token_in_url") else None)
-    return {
-        "package_id": clean_text(package_id),
-        "name": meta.get("name") or meta.get("package_name") or clean_text(package_id),
-        "description": meta.get("description", ""),
-        "created_at": meta.get("created_at", ""),
-        "updated_at": meta.get("updated_at", meta.get("created_at", "")),
-        "status": meta.get("status", "active"),
-        "enabled": meta.get("enabled", True),
-        "public": meta.get("public", True),
-        "expires_at": meta.get("expires_at", ""),
-        "public_url_meta": url_meta,
-    }
 
+def build_public_viewer_metadata(
+    package_id: str,
+    package_meta: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    meta = build_safe_public_meta(
+        package_meta or {}
+    )
+
+    return {
+        "package_id": clean_text(
+            package_id
+        ),
+        "name": (
+            meta.get("name")
+            or meta.get(
+                "package_name"
+            )
+            or clean_text(
+                package_id
+            )
+        ),
+        "description": meta.get(
+            "description",
+            "",
+        ),
+        "created_at": meta.get(
+            "created_at",
+            "",
+        ),
+        "updated_at": meta.get(
+            "updated_at",
+            meta.get(
+                "created_at",
+                "",
+            ),
+        ),
+        "status": meta.get(
+            "status",
+            "active",
+        ),
+        "enabled": bool(
+            to_bool(
+                meta.get(
+                    "enabled",
+                    True,
+                ),
+                default=True,
+            )
+        ),
+        "public": bool(
+            to_bool(
+                meta.get(
+                    "public",
+                    False,
+                ),
+                default=False,
+            )
+        ),
+        "read_only": (
+            PUBLIC_PACKAGE_READ_ONLY
+        ),
+        "snapshot_only": True,
+        "expires_at": meta.get(
+            "expires_at",
+            "",
+        ),
+        "public_url_meta": (
+            build_public_package_url_meta(
+                package_id,
+            )
+        ),
+    }
 
 mask_company_tax_id = mask_tax_id
 mask_director = mask_director_name

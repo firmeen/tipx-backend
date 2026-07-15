@@ -52,13 +52,7 @@ Data Source:
 """
 
 from __future__ import annotations
-try:
-    import bootstrap
-    BOOTSTRAP_LOADED = True
-except Exception as e:
-    bootstrap = None
-    BOOTSTRAP_LOADED = False
-    BOOTSTRAP_ERROR = str(e)
+
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -209,23 +203,73 @@ def now_iso() -> str:
 
     return datetime.now().isoformat(timespec="seconds")
 
-
-def normalize_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def normalize_context(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     normalize context จาก api_routes.py
     """
 
     result = dict(DEFAULT_CONTEXT)
-    result.update(context or {})
 
-    result["force_refresh"] = bool(result.get("force_refresh", False))
-    result["page"] = int(result.get("page", 1) or 1)
-    result["page_size"] = int(result.get("page_size", 50) or 50)
-    result["search"] = clean_text(result.get("search", ""))
-    result["sort_by"] = clean_text(result.get("sort_by", ""))
-    result["sort_dir"] = clean_text_lower(result.get("sort_dir", "asc")) or "asc"
+    if isinstance(context, dict):
+        result.update(context)
 
-    if not isinstance(result.get("filters"), dict):
+    result["force_refresh"] = bool(
+        to_bool(
+            result.get("force_refresh"),
+            default=False,
+        )
+    )
+
+    try:
+        result["page"] = max(
+            1,
+            int(
+                result.get("page", 1)
+                or 1
+            ),
+        )
+    except (TypeError, ValueError):
+        result["page"] = 1
+
+    try:
+        result["page_size"] = max(
+            1,
+            min(
+                5000,
+                int(
+                    result.get("page_size", 50)
+                    or 50
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        result["page_size"] = 50
+
+    result["search"] = clean_text(
+        result.get("search", "")
+    )
+    result["sort_by"] = clean_text(
+        result.get("sort_by", "")
+    )
+    result["sort_dir"] = (
+        clean_text_lower(
+            result.get("sort_dir", "asc")
+        )
+        or "asc"
+    )
+
+    if result["sort_dir"] not in {
+        "asc",
+        "desc",
+    }:
+        result["sort_dir"] = "asc"
+
+    if not isinstance(
+        result.get("filters"),
+        dict,
+    ):
         result["filters"] = {}
 
     return result
@@ -238,6 +282,139 @@ def get_policy_ttl() -> int:
 
     return int(CACHE_TTL_SECONDS.get("policy", 3600))
 
+def get_valid_tax_id(value: Any) -> str:
+    validation = validate_tax_id(
+        value
+    )
+
+    if not validation.get(
+        "tax_id_valid",
+        False,
+    ):
+        return ""
+
+    return clean_text(
+        validation.get("tax_id_norm")
+    )
+
+
+def get_company_group_key(
+    record: Dict[str, Any],
+) -> str:
+    tax_id_norm = get_valid_tax_id(
+        record.get("tax_id_norm")
+        or record.get("tax_id")
+        or record.get("tax_id_raw")
+    )
+
+    if tax_id_norm:
+        return tax_id_norm
+
+    company_key = clean_text(
+        record.get("company_key")
+    )
+
+    if company_key:
+        return company_key
+
+    company_name = first_non_empty(
+        record.get("company_name"),
+        record.get("company_name_policy"),
+        record.get("company_name_linkage"),
+        record.get("company_name_location"),
+        record.get("name_th"),
+        default="",
+    )
+
+    province = normalize_province_name(
+        first_non_empty(
+            record.get("province"),
+            record.get("company_province"),
+            default="",
+        )
+    )
+
+    business_type = first_non_empty(
+        record.get("business_type"),
+        record.get("business_type_objective"),
+        record.get("business_type_tsic"),
+        default="",
+    )
+
+    return make_hash_id(
+        (
+            f"{clean_text(company_name)}|"
+            f"{province}|"
+            f"{clean_text(business_type)}"
+        ),
+        prefix="no_tax_company",
+        length=16,
+    )
+
+
+def count_distinct_companies(
+    records: List[Dict[str, Any]],
+) -> int:
+    return len(
+        {
+            get_company_group_key(record)
+            for record in records
+            if get_company_group_key(record)
+        }
+    )
+
+
+def filter_records_without_pagination(
+    records: List[Dict[str, Any]],
+    context: Optional[Dict[str, Any]] = None,
+    searchable_fields: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    ctx = normalize_context(context)
+
+    try:
+        from filter_engine import apply_simple_filters
+
+        filtered = apply_simple_filters(
+            records,
+            ctx.get("filters", {}),
+        )
+    except Exception:
+        filtered = list(records)
+
+    search_text = clean_text_lower(
+        ctx.get("search")
+    )
+
+    if not search_text:
+        return list(filtered)
+
+    fields = list(
+        searchable_fields
+        or []
+    )
+
+    if not fields:
+        return [
+            record
+            for record in filtered
+            if search_text
+            in " ".join(
+                clean_text(value)
+                for value in record.values()
+            ).lower()
+        ]
+
+    return [
+        record
+        for record in filtered
+        if search_text
+        in " ".join(
+            clean_text(
+                record.get(field_name)
+            )
+            for field_name in fields
+        ).lower()
+    ]
 
 def filter_records_for_api(
     records: List[Dict[str, Any]],
@@ -250,19 +427,17 @@ def filter_records_for_api(
 
     ctx = normalize_context(context)
 
-    try:
-        from filter_engine import apply_simple_filters
-
-        filtered = apply_simple_filters(records, ctx.get("filters", {}))
-    except Exception:
-        filtered = list(records)
-
-    return apply_search_sort_pagination(
-        records=filtered,
+    filtered = filter_records_without_pagination(
+        records=records,
         context=ctx,
         searchable_fields=searchable_fields,
     )
 
+    return apply_search_sort_pagination(
+        records=filtered,
+        context=ctx,
+        searchable_fields=None,
+    )
 
 # ============================================================
 # 3) INPUT LOADERS
@@ -277,10 +452,7 @@ def load_policy_input() -> Dict[str, pd.DataFrame]:
     - latlong
     - latlong(branch)
 
-    และ fallback:
-    - sheet index 0 = policy_fact
-    - sheet index 1 = company_location
-    - sheet index 2 = province_branch_coordinate
+    และ fallback จาก config.POLICY_SHEET_INDEX_FALLBACK
     """
 
     empty_result = {
@@ -289,87 +461,147 @@ def load_policy_input() -> Dict[str, pd.DataFrame]:
         "province_branch_coordinate": pd.DataFrame(),
     }
 
-    if not POLICY_INPUT_PATH.exists():
+    if (
+        not POLICY_INPUT_PATH.exists()
+        or not POLICY_INPUT_PATH.is_file()
+    ):
         return empty_result
 
     try:
-        xls = pd.ExcelFile(POLICY_INPUT_PATH)
-        sheet_names = list(xls.sheet_names)
+        with pd.ExcelFile(
+            POLICY_INPUT_PATH
+        ) as excel_file:
+            sheet_names = list(
+                excel_file.sheet_names
+            )
+
+            sheet_name_index = {
+                clean_text_lower(
+                    sheet_name
+                ): sheet_name
+                for sheet_name in sheet_names
+            }
+
+            def pick_sheet(
+                logical_key: str,
+                aliases: List[str],
+            ) -> Any:
+                preferred_names = [
+                    POLICY_SHEETS.get(
+                        logical_key,
+                        "",
+                    ),
+                    *aliases,
+                ]
+
+                for preferred_name in preferred_names:
+                    normalized_name = (
+                        clean_text_lower(
+                            preferred_name
+                        )
+                    )
+
+                    if (
+                        normalized_name
+                        and normalized_name
+                        in sheet_name_index
+                    ):
+                        return sheet_name_index[
+                            normalized_name
+                        ]
+
+                fallback_index = int(
+                    POLICY_SHEET_INDEX_FALLBACK.get(
+                        logical_key,
+                        -1,
+                    )
+                )
+
+                if (
+                    0
+                    <= fallback_index
+                    < len(sheet_names)
+                ):
+                    return sheet_names[
+                        fallback_index
+                    ]
+
+                return None
+
+            def read_sheet(
+                sheet_name: Any,
+            ) -> pd.DataFrame:
+                if sheet_name is None:
+                    return pd.DataFrame()
+
+                try:
+                    return pd.read_excel(
+                        excel_file,
+                        sheet_name=sheet_name,
+                        dtype=str,
+                    )
+                except Exception:
+                    return pd.DataFrame()
+
+            policy_fact = read_sheet(
+                pick_sheet(
+                    "policy_fact",
+                    [
+                        "Policy Depth",
+                        "policy depth",
+                        "Policy_Depth",
+                        "policy_fact",
+                    ],
+                )
+            )
+
+            company_location = read_sheet(
+                pick_sheet(
+                    "company_location",
+                    [
+                        "latlong",
+                        "Latlong",
+                        "LatLong",
+                        "company_location",
+                    ],
+                )
+            )
+
+            province_branch = read_sheet(
+                pick_sheet(
+                    "province_branch_coordinate",
+                    [
+                        "latlong(branch)",
+                        "latlong (branch)",
+                        "Latlong(branch)",
+                        "province_branch_coordinate",
+                    ],
+                )
+            )
+
     except Exception:
         return empty_result
 
-    def pick_sheet(preferred_names: List[str], fallback_index: int) -> Any:
-        for name in preferred_names:
-            if name in sheet_names:
-                return name
-
-        if 0 <= fallback_index < len(sheet_names):
-            return fallback_index
-
-        return None
-
-    policy_sheet = pick_sheet(
-        preferred_names=[
-            "Policy Depth",
-            "policy depth",
-            "Policy_Depth",
-            "policy_fact",
-        ],
-        fallback_index=0,
-    )
-
-    location_sheet = pick_sheet(
-        preferred_names=[
-            "latlong",
-            "Latlong",
-            "LatLong",
-            "company_location",
-        ],
-        fallback_index=1,
-    )
-
-    branch_sheet = pick_sheet(
-        preferred_names=[
-            "latlong(branch)",
-            "latlong (branch)",
-            "Latlong(branch)",
-            "province_branch_coordinate",
-        ],
-        fallback_index=2,
-    )
-
-    policy_fact = pd.read_excel(
-        POLICY_INPUT_PATH,
-        sheet_name=policy_sheet,
-        dtype=str,
-    ) if policy_sheet is not None else pd.DataFrame()
-
-    company_location = pd.read_excel(
-        POLICY_INPUT_PATH,
-        sheet_name=location_sheet,
-        dtype=str,
-    ) if location_sheet is not None else pd.DataFrame()
-
-    province_branch = pd.read_excel(
-        POLICY_INPUT_PATH,
-        sheet_name=branch_sheet,
-        dtype=str,
-    ) if branch_sheet is not None else pd.DataFrame()
-
     policy_fact = rename_columns_by_candidates(
-        clean_dataframe_common(policy_fact),
+        clean_dataframe_common(
+            policy_fact
+        ),
         POLICY_FACT_COLUMNS,
         keep_original=True,
     )
 
     company_location = rename_columns_by_candidates(
-        clean_dataframe_common(company_location),
+        clean_dataframe_common(
+            company_location
+        ),
         POLICY_LOCATION_COLUMNS,
         keep_original=True,
     )
 
     province_branch = rename_columns_by_candidates(
-        clean_dataframe_common(province_branch),
+        clean_dataframe_common(
+            province_branch
+        ),
         PROVINCE_BRANCH_COLUMNS,
         keep_original=True,
     )
@@ -379,7 +611,6 @@ def load_policy_input() -> Dict[str, pd.DataFrame]:
         "company_location": company_location,
         "province_branch_coordinate": province_branch,
     }
-
 
 def load_linkage_company_input() -> pd.DataFrame:
     """
@@ -420,7 +651,9 @@ def load_linkage_company_input() -> pd.DataFrame:
 # 4) POLICY FACT BUILDER
 # ============================================================
 
-def build_policy_fact(force_refresh: bool = False) -> Dict[str, Any]:
+def build_policy_fact(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
     สร้าง policy_fact จาก Policy Sheet 1
 
@@ -434,15 +667,22 @@ def build_policy_fact(force_refresh: bool = False) -> Dict[str, Any]:
 
     def builder() -> Dict[str, Any]:
         policy_sheets = load_policy_input()
-        df = policy_sheets.get("policy_fact", pd.DataFrame())
+        df = policy_sheets.get(
+            "policy_fact",
+            pd.DataFrame(),
+        )
 
         if df is None or df.empty:
             return {
                 "records": [],
                 "total": 0,
                 "created_at": now_iso(),
-                "source_path": str(POLICY_INPUT_PATH),
-                "warnings": ["policy_fact_empty_or_file_missing"],
+                "source_path": str(
+                    POLICY_INPUT_PATH
+                ),
+                "warnings": [
+                    "policy_fact_empty_or_file_missing"
+                ],
             }
 
         df = df.copy()
@@ -450,117 +690,271 @@ def build_policy_fact(force_refresh: bool = False) -> Dict[str, Any]:
         if "tax_id" not in df.columns:
             df["tax_id"] = ""
 
-        df = add_tax_id_columns(df, source_column="tax_id")
+        df = add_tax_id_columns(
+            df,
+            source_column="tax_id",
+        )
 
-        records: List[Dict[str, Any]] = []
+        records: List[
+            Dict[str, Any]
+        ] = []
 
         for idx, row in df.iterrows():
-            premium = to_number(row.get("premium"), 0.0) or 0.0
-            loss = to_number(row.get("loss"), 0.0) or 0.0
-            suminsure = to_number(row.get("suminsure"), 0.0) or 0.0
-            noofpol = to_number(row.get("noofpol"), 0.0) or 0.0
+            premium = (
+                to_number(
+                    row.get("premium"),
+                    0.0,
+                )
+                or 0.0
+            )
 
-            loss_ratio = calculate_loss_ratio(loss, premium, zero_policy="zero")
+            loss = (
+                to_number(
+                    row.get("loss"),
+                    0.0,
+                )
+                or 0.0
+            )
 
-            policy_year = to_int(row.get("yearmonth_year_first"), default=None)
+            suminsure = (
+                to_number(
+                    row.get("suminsure"),
+                    0.0,
+                )
+                or 0.0
+            )
+
+            noofpol = (
+                to_number(
+                    row.get("noofpol"),
+                    0.0,
+                )
+                or 0.0
+            )
+
+            loss_ratio = calculate_loss_ratio(
+                loss,
+                premium,
+                zero_policy="zero",
+            )
+
+            policy_year = to_int(
+                row.get(
+                    "yearmonth_year_first"
+                ),
+                default=None,
+            )
 
             policy_status = normalize_policy_status(
                 first_non_empty(
-                    row.get("status_now_new"),
+                    row.get(
+                        "status_now_new"
+                    ),
                     row.get("status_now"),
-                    row.get("inforced_flag"),
+                    row.get(
+                        "inforced_flag"
+                    ),
                     default="",
                 )
             )
 
-            company_name = clean_text(row.get("company_name"))
+            company_name = clean_text(
+                row.get("company_name")
+            )
 
-            company_key = normalize_tax_id(row.get("tax_id_norm"))
-            
-            if not company_key:
-                company_key = make_hash_id(
-                    f"{company_name}|{row.get('province')}|{row.get('business_type')}",
+            province = normalize_province_name(
+                row.get("province")
+            )
+
+            business_type = clean_text(
+                row.get("business_type")
+            )
+
+            tax_id_raw = clean_text(
+                row.get("tax_id_raw")
+            )
+
+            tax_id_norm = clean_text(
+                row.get("tax_id_norm")
+            )
+
+            tax_id_valid = bool(
+                to_bool(
+                    row.get("tax_id_valid"),
+                    default=False,
+                )
+            )
+
+            company_key = (
+                tax_id_norm
+                if tax_id_valid
+                else make_hash_id(
+                    (
+                        f"{company_name}|"
+                        f"{province}|"
+                        f"{business_type}"
+                    ),
                     prefix="no_tax_company",
                     length=16,
                 )
-            
+            )
+
             record = {
-                "source_file": str(POLICY_INPUT_PATH.name),
+                "source_file": str(
+                    POLICY_INPUT_PATH.name
+                ),
                 "source_sheet": "policy_fact",
                 "source_row": int(idx) + 2,
-            
                 "company_key": company_key,
-            
-                "tax_id_raw": row.get("tax_id_raw", ""),
-                "tax_id_norm": row.get("tax_id_norm", ""),
-                "tax_id_valid": bool(row.get("tax_id_valid", False)),
-                "tax_id_issue": row.get("tax_id_issue", ""),
-            
+                "tax_id_raw": tax_id_raw,
+                "tax_id_norm": tax_id_norm,
+                "tax_id_valid": tax_id_valid,
+                "tax_id_issue": clean_text(
+                    row.get("tax_id_issue")
+                ),
                 "company_name": company_name,
-                "business_type": clean_text(row.get("business_type")),
-                "income_range": clean_text(row.get("income_range")),
-                "province": normalize_province_name(row.get("province")),
-            
-                "product": clean_text(row.get("product")),
-                "product_holding_text": clean_text(row.get("product_holding_text")),
-                "subclass": clean_text(row.get("subclass")),
-            
-                "inforced_flag": clean_text(row.get("inforced_flag")),
-                "status_now": clean_text(row.get("status_now")),
-                "status_now_new": clean_text(row.get("status_now_new")),
+                "business_type": business_type,
+                "income_range": clean_text(
+                    row.get("income_range")
+                ),
+                "province": province,
+                "product": clean_text(
+                    row.get("product")
+                ),
+                "product_holding_text": clean_text(
+                    row.get(
+                        "product_holding_text"
+                    )
+                ),
+                "subclass": clean_text(
+                    row.get("subclass")
+                ),
+                "inforced_flag": clean_text(
+                    row.get("inforced_flag")
+                ),
+                "status_now": clean_text(
+                    row.get("status_now")
+                ),
+                "status_now_new": clean_text(
+                    row.get("status_now_new")
+                ),
                 "policy_status": policy_status,
-                "is_active_policy": bool(is_active_policy_row(row)),
-                "is_expired_policy": policy_status == "Expired",
-                "status_conflict_flag": bool(detect_policy_status_conflict(row)),
-            
-                "yearmonth_year_first": clean_text(row.get("yearmonth_year_first")),
+                "is_active_policy": bool(
+                    is_active_policy_row(row)
+                ),
+                "is_expired_policy": (
+                    policy_status == "Expired"
+                ),
+                "status_conflict_flag": bool(
+                    detect_policy_status_conflict(
+                        row
+                    )
+                ),
+                "yearmonth_year_first": clean_text(
+                    row.get(
+                        "yearmonth_year_first"
+                    )
+                ),
                 "policy_year": policy_year,
-            
                 "premium": premium,
                 "loss": loss,
                 "suminsure": suminsure,
                 "noofpol": noofpol,
-            
-                "active_subs": to_number(row.get("active_subs"), 0.0) or 0.0,
-                "expired_subs": to_number(row.get("expired_subs"), 0.0) or 0.0,
-                "product_holding": to_number(row.get("product_holding"), 0.0) or 0.0,
-                "subclass_holding": to_number(row.get("subclass_holding"), 0.0) or 0.0,
-            
-                "most_recent_asset_val": to_number(row.get("most_recent_asset_val"), None),
-                "most_recent_income_val": to_number(row.get("most_recent_income_val"), None),
-                "registered_capital": to_number(row.get("registered_capital"), None),
-            
+                "active_subs": (
+                    to_number(
+                        row.get("active_subs"),
+                        0.0,
+                    )
+                    or 0.0
+                ),
+                "expired_subs": (
+                    to_number(
+                        row.get(
+                            "expired_subs"
+                        ),
+                        0.0,
+                    )
+                    or 0.0
+                ),
+                "product_holding": (
+                    to_number(
+                        row.get(
+                            "product_holding"
+                        ),
+                        0.0,
+                    )
+                    or 0.0
+                ),
+                "subclass_holding": (
+                    to_number(
+                        row.get(
+                            "subclass_holding"
+                        ),
+                        0.0,
+                    )
+                    or 0.0
+                ),
+                "most_recent_asset_val": to_number(
+                    row.get(
+                        "most_recent_asset_val"
+                    ),
+                    None,
+                ),
+                "most_recent_income_val": to_number(
+                    row.get(
+                        "most_recent_income_val"
+                    ),
+                    None,
+                ),
+                "registered_capital": to_number(
+                    row.get(
+                        "registered_capital"
+                    ),
+                    None,
+                ),
                 "loss_ratio": loss_ratio,
                 "loss_ratio_row": loss_ratio,
-                "loss_ratio_band": get_loss_ratio_band(loss_ratio, premium=premium, loss=loss),
-            
-                "premium_zero_with_loss": bool(premium == 0 and loss > 0),
+                "loss_ratio_band": get_loss_ratio_band(
+                    loss_ratio,
+                    premium=premium,
+                    loss=loss,
+                ),
+                "premium_zero_with_loss": bool(
+                    premium == 0
+                    and loss > 0
+                ),
             }
 
             records.append(record)
 
-        result = {
+        return {
             "records": records,
             "total": len(records),
             "created_at": now_iso(),
-            "source_path": str(POLICY_INPUT_PATH),
+            "source_path": str(
+                POLICY_INPUT_PATH
+            ),
         }
 
-        return result
-
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["policy_fact"],
+        cache_key=CACHE_KEYS[
+            "policy_fact"
+        ],
         builder=builder,
         ttl_seconds=get_policy_ttl(),
         force_refresh=force_refresh,
-        source="company_policy_service.build_policy_fact",
+        source=(
+            "company_policy_service."
+            "build_policy_fact"
+        ),
     )
 
     return {
         **cache_result["data"],
-        "cache_used": cache_result["cache_used"],
+        "cache_used": cache_result[
+            "cache_used"
+        ],
     }
-
 
 def get_policy_fact_records(force_refresh: bool = False) -> List[Dict[str, Any]]:
     """
@@ -840,175 +1234,411 @@ def get_linkage_company_records(force_refresh: bool = False) -> List[Dict[str, A
 # 7) POLICY SUMMARY BUILDERS
 # ============================================================
 
-def build_policy_company_summary(force_refresh: bool = False) -> Dict[str, Any]:
+def build_policy_company_summary(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
     สร้าง policy_company_summary
 
     หลักการ:
-    - group by tax_id_norm
+    - group by valid tax_id_norm
+    - ถ้า Tax ID ใช้ไม่ได้ ให้ใช้ company_key
     - sum เฉพาะ premium/loss/suminsure/noofpol
     - most_recent_asset_val / income / registered_capital ไม่ sum
     - loss_ratio = sum(loss) / sum(premium) * 100
     """
 
     def builder() -> Dict[str, Any]:
-        policy_records = get_policy_fact_records(force_refresh=force_refresh)
+        policy_records = get_policy_fact_records(
+            force_refresh=force_refresh
+        )
 
-        groups = defaultdict(list)
+        groups: Dict[
+            str,
+            List[Dict[str, Any]],
+        ] = defaultdict(list)
 
-        for record in policy_records:
-            key = clean_text(record.get("tax_id_norm"))
-        
-            if not key:
-                key = clean_text(record.get("company_key"))
-        
-            if not key:
-                key = make_hash_id(
-                    f"{record.get('company_name')}|{record.get('province')}",
-                    prefix="no_tax_company",
-                    length=16,
-                )
-        
-            groups[key].append(record)
-
-        summary_records: List[Dict[str, Any]] = []
-
-        for company_key, records in groups.items():
-            if not company_key or company_key == "__EMPTY__":
-                continue
-        
-            tax_id_norm = clean_text(
-                first_non_empty(
-                    records[0].get("tax_id_norm"),
-                    default="",
-                )
+        for policy_record in policy_records:
+            company_key = get_company_group_key(
+                policy_record
             )
 
-            total_premium = sum_field(records, "premium")
-            total_loss = sum_field(records, "loss")
-            total_suminsure = sum_field(records, "suminsure")
-            total_noofpol = sum_field(records, "noofpol")
+            if company_key:
+                groups[company_key].append(
+                    policy_record
+                )
 
-            loss_ratio = calculate_loss_ratio(total_loss, total_premium, zero_policy="zero")
+        summary_records: List[
+            Dict[str, Any]
+        ] = []
 
-            policy_years = [
-                to_int(record.get("policy_year"), default=None)
-                for record in records
-                if to_int(record.get("policy_year"), default=None) is not None
-            ]
+        for company_key, records in groups.items():
+            if (
+                not company_key
+                or company_key == "__EMPTY__"
+            ):
+                continue
+
+            tax_id_norm = ""
+
+            for item in records:
+                tax_id_norm = get_valid_tax_id(
+                    item.get("tax_id_norm")
+                )
+
+                if tax_id_norm:
+                    break
+
+            total_premium = sum_field(
+                records,
+                "premium",
+            )
+            total_loss = sum_field(
+                records,
+                "loss",
+            )
+            total_suminsure = sum_field(
+                records,
+                "suminsure",
+            )
+            total_noofpol = sum_field(
+                records,
+                "noofpol",
+            )
+
+            loss_ratio = calculate_loss_ratio(
+                total_loss,
+                total_premium,
+                zero_policy="zero",
+            )
+
+            policy_years: List[int] = []
+
+            for item in records:
+                policy_year = to_int(
+                    item.get("policy_year"),
+                    default=None,
+                )
+
+                if policy_year is not None:
+                    policy_years.append(
+                        policy_year
+                    )
 
             active_records = [
-                record
-                for record in records
-                if bool(record.get("is_active_policy"))
+                item
+                for item in records
+                if bool(
+                    to_bool(
+                        item.get(
+                            "is_active_policy"
+                        ),
+                        default=False,
+                    )
+                )
             ]
 
             expired_records = [
-                record
-                for record in records
-                if bool(record.get("is_expired_policy"))
+                item
+                for item in records
+                if bool(
+                    to_bool(
+                        item.get(
+                            "is_expired_policy"
+                        ),
+                        default=False,
+                    )
+                )
             ]
 
-            premium_zero_with_loss_count = sum(
-                1
-                for record in records
-                if bool(record.get("premium_zero_with_loss"))
-            )
-
-            status_conflict_count = sum(
-                1
-                for record in records
-                if bool(record.get("status_conflict_flag"))
-            )
-
             company_name = most_common_value(
-                [record.get("company_name") for record in records],
+                [
+                    item.get("company_name")
+                    for item in records
+                ],
                 default="",
             )
 
-            record = {
-                "company_key": company_key,
-                "tax_id_norm": tax_id_norm,
-                "company_name_policy": company_name,
-                "company_name": company_name,
-            
-                "province": most_common_value(
-                    [record.get("province") for record in records],
-                    default="",
-                ),
-            
-                "business_type": most_common_value(
-                    [record.get("business_type") for record in records],
-                    default="",
-                ),
-            
-                "income_range": most_common_value(
-                    [record.get("income_range") for record in records],
-                    default="",
-                ),
-            
-                "total_premium": total_premium,
-                "total_loss": total_loss,
-                "total_suminsure": total_suminsure,
-                "total_noofpol": total_noofpol,
-            
-                "active_policy_count": len(active_records),
-                "expired_policy_count": len(expired_records),
-                "policy_record_count": len(records),
-            
-                "product_count": count_distinct(records, "product"),
-                "subclass_count": count_distinct(records, "subclass"),
-            
-                "loss_ratio": loss_ratio,
-                "loss_ratio_band": get_loss_ratio_band(
-                    loss_ratio,
-                    premium=total_premium,
-                    loss=total_loss,
-                ),
-            
-                "premium_zero_with_loss_count": premium_zero_with_loss_count,
-                "status_conflict_count": status_conflict_count,
-            
-                "first_policy_year": min(policy_years) if policy_years else None,
-                "latest_policy_year": max(policy_years) if policy_years else None,
-            }
+            province = most_common_value(
+                [
+                    item.get("province")
+                    for item in records
+                ],
+                default="",
+            )
 
-            summary_records.append(record)
+            business_type = most_common_value(
+                [
+                    item.get("business_type")
+                    for item in records
+                ],
+                default="",
+            )
+
+            income_range = most_common_value(
+                [
+                    item.get("income_range")
+                    for item in records
+                ],
+                default="",
+            )
+
+            most_recent_asset_val = first_non_empty(
+                *[
+                    item.get(
+                        "most_recent_asset_val"
+                    )
+                    for item in records
+                ],
+                default=None,
+            )
+
+            most_recent_income_val = first_non_empty(
+                *[
+                    item.get(
+                        "most_recent_income_val"
+                    )
+                    for item in records
+                ],
+                default=None,
+            )
+
+            registered_capital = first_non_empty(
+                *[
+                    item.get(
+                        "registered_capital"
+                    )
+                    for item in records
+                ],
+                default=None,
+            )
+
+            active_subs = max(
+                [
+                    (
+                        to_number(
+                            item.get("active_subs"),
+                            0,
+                        )
+                        or 0
+                    )
+                    for item in records
+                ],
+                default=0,
+            )
+
+            expired_subs = max(
+                [
+                    (
+                        to_number(
+                            item.get(
+                                "expired_subs"
+                            ),
+                            0,
+                        )
+                        or 0
+                    )
+                    for item in records
+                ],
+                default=0,
+            )
+
+            product_holding = max(
+                [
+                    (
+                        to_number(
+                            item.get(
+                                "product_holding"
+                            ),
+                            0,
+                        )
+                        or 0
+                    )
+                    for item in records
+                ],
+                default=0,
+            )
+
+            subclass_holding = max(
+                [
+                    (
+                        to_number(
+                            item.get(
+                                "subclass_holding"
+                            ),
+                            0,
+                        )
+                        or 0
+                    )
+                    for item in records
+                ],
+                default=0,
+            )
+
+            tax_validation = validate_tax_id(
+                tax_id_norm
+            )
+
+            summary_records.append(
+                {
+                    "company_key": company_key,
+                    "tax_id_raw": first_non_empty(
+                        *[
+                            item.get(
+                                "tax_id_raw"
+                            )
+                            for item in records
+                        ],
+                        default="",
+                    ),
+                    "tax_id_norm": tax_id_norm,
+                    "tax_id_valid": bool(
+                        tax_validation.get(
+                            "tax_id_valid",
+                            False,
+                        )
+                    ),
+                    "tax_id_issue": tax_validation.get(
+                        "tax_id_issue",
+                        "",
+                    ),
+                    "company_name_policy": company_name,
+                    "company_name": company_name,
+                    "province": province,
+                    "business_type": business_type,
+                    "income_range": income_range,
+                    "total_premium": total_premium,
+                    "total_loss": total_loss,
+                    "total_suminsure": total_suminsure,
+                    "total_noofpol": total_noofpol,
+                    "active_policy_count": len(
+                        active_records
+                    ),
+                    "expired_policy_count": len(
+                        expired_records
+                    ),
+                    "policy_record_count": len(
+                        records
+                    ),
+                    "product_count": count_distinct(
+                        records,
+                        "product",
+                    ),
+                    "subclass_count": count_distinct(
+                        records,
+                        "subclass",
+                    ),
+                    "active_subs": active_subs,
+                    "expired_subs": expired_subs,
+                    "product_holding": product_holding,
+                    "subclass_holding": subclass_holding,
+                    "most_recent_asset_val": (
+                        most_recent_asset_val
+                    ),
+                    "most_recent_income_val": (
+                        most_recent_income_val
+                    ),
+                    "registered_capital": registered_capital,
+                    "loss_ratio": loss_ratio,
+                    "loss_ratio_band": get_loss_ratio_band(
+                        loss_ratio,
+                        premium=total_premium,
+                        loss=total_loss,
+                    ),
+                    "premium_zero_with_loss_count": sum(
+                        1
+                        for item in records
+                        if bool(
+                            to_bool(
+                                item.get(
+                                    "premium_zero_with_loss"
+                                ),
+                                default=False,
+                            )
+                        )
+                    ),
+                    "status_conflict_count": sum(
+                        1
+                        for item in records
+                        if bool(
+                            to_bool(
+                                item.get(
+                                    "status_conflict_flag"
+                                ),
+                                default=False,
+                            )
+                        )
+                    ),
+                    "first_policy_year": (
+                        min(policy_years)
+                        if policy_years
+                        else None
+                    ),
+                    "latest_policy_year": (
+                        max(policy_years)
+                        if policy_years
+                        else None
+                    ),
+                }
+            )
 
         summary_records = sorted(
             summary_records,
-            key=lambda item: to_number(item.get("total_suminsure"), 0) or 0,
+            key=lambda item: (
+                to_number(
+                    item.get(
+                        "total_suminsure"
+                    ),
+                    0,
+                )
+                or 0
+            ),
             reverse=True,
         )
 
         return {
             "records": summary_records,
-            "total": len(summary_records),
+            "total": len(
+                summary_records
+            ),
             "created_at": now_iso(),
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["policy_company_summary"],
+        cache_key=CACHE_KEYS[
+            "policy_company_summary"
+        ],
         builder=builder,
         ttl_seconds=get_policy_ttl(),
         force_refresh=force_refresh,
-        source="company_policy_service.build_policy_company_summary",
+        source=(
+            "company_policy_service."
+            "build_policy_company_summary"
+        ),
     )
 
     return {
         **cache_result["data"],
-        "cache_used": cache_result["cache_used"],
+        "cache_used": cache_result[
+            "cache_used"
+        ],
     }
 
-
-def build_policy_product_summary(force_refresh: bool = False) -> Dict[str, Any]:
+def build_policy_product_summary(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
     สร้าง policy_product_summary
     """
 
     def builder() -> Dict[str, Any]:
-        policy_records = get_policy_fact_records(force_refresh=force_refresh)
-        groups = group_records_by(policy_records, "product")
+        policy_records = get_policy_fact_records(
+            force_refresh=force_refresh
+        )
+        groups = group_records_by(
+            policy_records,
+            "product",
+        )
 
         records: List[Dict[str, Any]] = []
 
@@ -1016,20 +1646,33 @@ def build_policy_product_summary(force_refresh: bool = False) -> Dict[str, Any]:
             if product == "__EMPTY__":
                 product = "Unknown"
 
-            summary = build_policy_summary_from_records(group)
+            summary = build_policy_summary_from_records(
+                group
+            )
 
             records.append(
                 {
                     "product": product,
-                    "company_count": count_distinct(group, "tax_id_norm"),
-                    "subclass_count": count_distinct(group, "subclass"),
+                    "company_count": count_distinct_companies(
+                        group
+                    ),
+                    "subclass_count": count_distinct(
+                        group,
+                        "subclass",
+                    ),
                     **summary,
                 }
             )
 
         records = sorted(
             records,
-            key=lambda item: to_number(item.get("total_premium"), 0) or 0,
+            key=lambda item: (
+                to_number(
+                    item.get("total_premium"),
+                    0,
+                )
+                or 0
+            ),
             reverse=True,
         )
 
@@ -1040,27 +1683,41 @@ def build_policy_product_summary(force_refresh: bool = False) -> Dict[str, Any]:
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["policy_product_summary"],
+        cache_key=CACHE_KEYS[
+            "policy_product_summary"
+        ],
         builder=builder,
         ttl_seconds=get_policy_ttl(),
         force_refresh=force_refresh,
-        source="company_policy_service.build_policy_product_summary",
+        source=(
+            "company_policy_service."
+            "build_policy_product_summary"
+        ),
     )
 
     return {
         **cache_result["data"],
-        "cache_used": cache_result["cache_used"],
+        "cache_used": cache_result[
+            "cache_used"
+        ],
     }
 
 
-def build_policy_subclass_summary(force_refresh: bool = False) -> Dict[str, Any]:
+def build_policy_subclass_summary(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
     สร้าง policy_subclass_summary
     """
 
     def builder() -> Dict[str, Any]:
-        policy_records = get_policy_fact_records(force_refresh=force_refresh)
-        groups = group_records_by(policy_records, "subclass")
+        policy_records = get_policy_fact_records(
+            force_refresh=force_refresh
+        )
+        groups = group_records_by(
+            policy_records,
+            "subclass",
+        )
 
         records: List[Dict[str, Any]] = []
 
@@ -1068,20 +1725,33 @@ def build_policy_subclass_summary(force_refresh: bool = False) -> Dict[str, Any]
             if subclass == "__EMPTY__":
                 subclass = "Unknown"
 
-            summary = build_policy_summary_from_records(group)
+            summary = build_policy_summary_from_records(
+                group
+            )
 
             records.append(
                 {
                     "subclass": subclass,
-                    "company_count": count_distinct(group, "tax_id_norm"),
-                    "product_count": count_distinct(group, "product"),
+                    "company_count": count_distinct_companies(
+                        group
+                    ),
+                    "product_count": count_distinct(
+                        group,
+                        "product",
+                    ),
                     **summary,
                 }
             )
 
         records = sorted(
             records,
-            key=lambda item: to_number(item.get("total_premium"), 0) or 0,
+            key=lambda item: (
+                to_number(
+                    item.get("total_premium"),
+                    0,
+                )
+                or 0
+            ),
             reverse=True,
         )
 
@@ -1092,34 +1762,49 @@ def build_policy_subclass_summary(force_refresh: bool = False) -> Dict[str, Any]
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["policy_subclass_summary"],
+        cache_key=CACHE_KEYS[
+            "policy_subclass_summary"
+        ],
         builder=builder,
         ttl_seconds=get_policy_ttl(),
         force_refresh=force_refresh,
-        source="company_policy_service.build_policy_subclass_summary",
+        source=(
+            "company_policy_service."
+            "build_policy_subclass_summary"
+        ),
     )
 
     return {
         **cache_result["data"],
-        "cache_used": cache_result["cache_used"],
+        "cache_used": cache_result[
+            "cache_used"
+        ],
     }
 
 
-def build_policy_yearly_summary(force_refresh: bool = False) -> Dict[str, Any]:
+def build_policy_yearly_summary(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
     สร้าง policy_yearly_summary
     """
 
     def builder() -> Dict[str, Any]:
-        policy_records = get_policy_fact_records(force_refresh=force_refresh)
+        policy_records = get_policy_fact_records(
+            force_refresh=force_refresh
+        )
 
         records_with_year = [
             record
             for record in policy_records
-            if record.get("policy_year") is not None
+            if record.get("policy_year")
+            is not None
         ]
 
-        groups = group_records_by(records_with_year, "policy_year")
+        groups = group_records_by(
+            records_with_year,
+            "policy_year",
+        )
 
         records: List[Dict[str, Any]] = []
 
@@ -1127,21 +1812,37 @@ def build_policy_yearly_summary(force_refresh: bool = False) -> Dict[str, Any]:
             if year == "__EMPTY__":
                 continue
 
-            summary = build_policy_summary_from_records(group)
+            summary = build_policy_summary_from_records(
+                group
+            )
 
             records.append(
                 {
-                    "policy_year": to_int(year, default=None),
-                    "company_count": count_distinct(group, "tax_id_norm"),
-                    "product_count": count_distinct(group, "product"),
-                    "subclass_count": count_distinct(group, "subclass"),
+                    "policy_year": to_int(
+                        year,
+                        default=None,
+                    ),
+                    "company_count": count_distinct_companies(
+                        group
+                    ),
+                    "product_count": count_distinct(
+                        group,
+                        "product",
+                    ),
+                    "subclass_count": count_distinct(
+                        group,
+                        "subclass",
+                    ),
                     **summary,
                 }
             )
 
         records = sorted(
             records,
-            key=lambda item: item.get("policy_year") or 0,
+            key=lambda item: (
+                item.get("policy_year")
+                or 0
+            ),
         )
 
         return {
@@ -1151,18 +1852,24 @@ def build_policy_yearly_summary(force_refresh: bool = False) -> Dict[str, Any]:
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["policy_yearly_summary"],
+        cache_key=CACHE_KEYS[
+            "policy_yearly_summary"
+        ],
         builder=builder,
         ttl_seconds=get_policy_ttl(),
         force_refresh=force_refresh,
-        source="company_policy_service.build_policy_yearly_summary",
+        source=(
+            "company_policy_service."
+            "build_policy_yearly_summary"
+        ),
     )
 
     return {
         **cache_result["data"],
-        "cache_used": cache_result["cache_used"],
+        "cache_used": cache_result[
+            "cache_used"
+        ],
     }
-
 
 def build_policy_loss_ratio_summary(force_refresh: bool = False) -> Dict[str, Any]:
     """
@@ -1218,17 +1925,77 @@ def build_policy_loss_ratio_summary(force_refresh: bool = False) -> Dict[str, An
 # 8) COMPANY UNIFIED MASTER BUILDER
 # ============================================================
 
-def index_records_by_tax_id(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def index_records_by_tax_id(
+    records: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
     """
-    index records ด้วย tax_id_norm
+    index records ด้วย valid tax_id_norm
 
-    ถ้ามีซ้ำ จะเลือก record แรกที่มีข้อมูลเยอะกว่าแบบง่าย
+    ถ้ามีซ้ำ:
+    - ให้ record ที่มี coordinate valid ก่อน
+    - จากนั้นเลือก record ที่มีข้อมูลครบกว่า
     """
 
-    result: Dict[str, Dict[str, Any]] = {}
+    result: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
+
+    def record_score(
+        record: Dict[str, Any],
+    ) -> int:
+        coordinate = validate_coordinate(
+            first_non_empty(
+                record.get("lat"),
+                record.get("latitude"),
+                record.get("company_lat"),
+                default=None,
+            ),
+            first_non_empty(
+                record.get("lon"),
+                record.get("longitude"),
+                record.get("company_lon"),
+                default=None,
+            ),
+        )
+
+        coordinate_score = (
+            10000
+            if coordinate.get("valid")
+            else 0
+        )
+
+        explicit_coordinate_score = (
+            1000
+            if bool(
+                to_bool(
+                    record.get(
+                        "coordinate_valid"
+                    ),
+                    default=False,
+                )
+            )
+            else 0
+        )
+
+        completeness_score = sum(
+            1
+            for value in record.values()
+            if not is_empty_value(value)
+        )
+
+        return (
+            coordinate_score
+            + explicit_coordinate_score
+            + completeness_score
+        )
 
     for record in records:
-        tax_id_norm = normalize_tax_id(record.get("tax_id_norm") or record.get("tax_id"))
+        tax_id_norm = get_valid_tax_id(
+            record.get("tax_id_norm")
+            or record.get("tax_id")
+            or record.get("tax_id_raw")
+        )
 
         if not tax_id_norm:
             continue
@@ -1237,14 +2004,15 @@ def index_records_by_tax_id(records: List[Dict[str, Any]]) -> Dict[str, Dict[str
             result[tax_id_norm] = record
             continue
 
-        old_score = sum(1 for v in result[tax_id_norm].values() if not is_empty_value(v))
-        new_score = sum(1 for v in record.values() if not is_empty_value(v))
-
-        if new_score > old_score:
+        if (
+            record_score(record)
+            > record_score(
+                result[tax_id_norm]
+            )
+        ):
             result[tax_id_norm] = record
 
     return result
-
 
 def build_branch_index_by_province(branch_records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """
@@ -1272,6 +2040,47 @@ def build_branch_index_by_province(branch_records: List[Dict[str, Any]]) -> Dict
     return result
 
 
+def extract_cached_records(
+    payload: Any,
+) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [
+            record
+            for record in payload
+            if isinstance(record, dict)
+        ]
+
+    if not isinstance(payload, dict):
+        return []
+
+    for key in [
+        "records",
+        "items",
+    ]:
+        value = payload.get(key)
+
+        if isinstance(value, list):
+            return [
+                record
+                for record in value
+                if isinstance(record, dict)
+            ]
+
+    data = payload.get("data")
+
+    if isinstance(data, list):
+        return [
+            record
+            for record in data
+            if isinstance(record, dict)
+        ]
+
+    if isinstance(data, dict):
+        return extract_cached_records(data)
+
+    return []
+
+
 def load_spatial_context_index() -> Dict[str, Dict[str, Any]]:
     """
     โหลด spatial_join_result จาก cache ถ้ามี
@@ -1284,23 +2093,21 @@ def load_spatial_context_index() -> Dict[str, Dict[str, Any]]:
     - nearest station
     """
 
-    data = read_cache("spatial_join_result", default={})
+    records = extract_cached_records(
+        read_cache(
+            "spatial_join_result",
+            default={},
+        )
+    )
 
-    if isinstance(data, dict):
-        records = data.get("records") or data.get("data") or []
-    elif isinstance(data, list):
-        records = data
-    else:
-        records = []
+    return index_records_by_tax_id(
+        records
+    )
 
-    if not isinstance(records, list):
-        return {}
-
-    return index_records_by_tax_id(records)
 
 def load_linkage_summary_index() -> Dict[str, Dict[str, Any]]:
     """
-    โหลด linkage summary จาก cache หลัง PHASE linkage
+    โหลด linkage company summary จาก cache
 
     ใช้เติม:
     - director_count
@@ -1309,152 +2116,309 @@ def load_linkage_summary_index() -> Dict[str, Dict[str, Any]]:
     - linkage_risk_level
     """
 
-    result: Dict[str, Dict[str, Any]] = {}
+    result: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
 
-    pairs_data = read_cache("director_company_pairs", default={})
-    pairs = []
+    summary_records = extract_cached_records(
+        read_cache(
+            "linkage_company_summary",
+            default={},
+        )
+    )
 
-    if isinstance(pairs_data, dict):
-        pairs = pairs_data.get("records", []) or pairs_data.get("data", [])
-    elif isinstance(pairs_data, list):
-        pairs = pairs_data
-
-    if isinstance(pairs, list) and pairs:
-        grouped = defaultdict(list)
-
-        for pair in pairs:
-            tax_id_norm = normalize_tax_id(pair.get("tax_id_norm") or pair.get("tax_id"))
-            if tax_id_norm:
-                grouped[tax_id_norm].append(pair)
-
-        for tax_id_norm, group in grouped.items():
-            director_ids = {
-                clean_text(item.get("director_id") or item.get("person_id"))
-                for item in group
-                if clean_text(item.get("director_id") or item.get("person_id"))
-            }
-
-            result[tax_id_norm] = {
-                "director_count": len(director_ids),
-                "shared_company_count": 0,
-                "key_connector_count": 0,
-                "linkage_risk_level": "Watch" if len(director_ids) > 1 else "Normal",
-                "has_linkage": len(director_ids) > 0,
-            }
-
-    graph_payload = read_cache("linkage_graph_payload", default={}) or read_cache("linkage_graph", default={})
-
-    if isinstance(graph_payload, dict):
-        graph_data = graph_payload.get("data") if isinstance(graph_payload.get("data"), dict) else graph_payload
-        nodes = graph_data.get("nodes", []) if isinstance(graph_data, dict) else []
-        edges = graph_data.get("edges", []) if isinstance(graph_data, dict) else []
-    else:
-        nodes = []
-        edges = []
-
-    company_node_ids: Dict[str, str] = {}
-
-    for node in nodes if isinstance(nodes, list) else []:
-        if not isinstance(node, dict):
-            continue
-
-        tax_id_norm = normalize_tax_id(
-            node.get("tax_id_norm")
-            or node.get("tax_id")
-            or node.get("id")
-            or node.get("node_id")
+    for record in summary_records:
+        tax_id_norm = get_valid_tax_id(
+            record.get("tax_id_norm")
+            or record.get("tax_id")
         )
 
-        node_id = clean_text(node.get("id") or node.get("node_id"))
-
-        if tax_id_norm and node_id:
-            company_node_ids[node_id] = tax_id_norm
-
-        if tax_id_norm:
-            item = result.setdefault(
-                tax_id_norm,
-                {
-                    "director_count": 0,
-                    "shared_company_count": 0,
-                    "key_connector_count": 0,
-                    "linkage_risk_level": "Normal",
-                    "has_linkage": False,
-                },
-            )
-
-            item["director_count"] = max(
-                to_int(item.get("director_count"), 0),
-                to_int(node.get("director_count"), 0),
-            )
-            item["shared_company_count"] = max(
-                to_int(item.get("shared_company_count"), 0),
-                to_int(node.get("shared_company_count"), 0),
-            )
-            item["key_connector_count"] = max(
-                to_int(item.get("key_connector_count"), 0),
-                to_int(node.get("key_connector_count"), 0),
-            )
-            item["has_linkage"] = bool(
-                item.get("director_count")
-                or item.get("shared_company_count")
-                or item.get("key_connector_count")
-            )
-
-    shared_count_by_tax_id: Dict[str, int] = defaultdict(int)
-
-    for edge in edges if isinstance(edges, list) else []:
-        if not isinstance(edge, dict):
+        if not tax_id_norm:
             continue
 
-        source = clean_text(edge.get("source") or edge.get("source_id") or edge.get("from"))
-        target = clean_text(edge.get("target") or edge.get("target_id") or edge.get("to"))
+        result[tax_id_norm] = {
+            "director_count": (
+                to_int(
+                    record.get(
+                        "director_count"
+                    ),
+                    0,
+                )
+                or 0
+            ),
+            "shared_company_count": (
+                to_int(
+                    record.get(
+                        "shared_company_count"
+                    ),
+                    0,
+                )
+                or 0
+            ),
+            "key_connector_count": (
+                to_int(
+                    record.get(
+                        "key_connector_count"
+                    ),
+                    0,
+                )
+                or 0
+            ),
+            "has_linkage": bool(
+                to_bool(
+                    record.get(
+                        "has_linkage"
+                    ),
+                    default=False,
+                )
+            ),
+            "linkage_risk_level": clean_text(
+                record.get(
+                    "linkage_risk_level"
+                )
+            ),
+        }
 
-        for node_id in [source, target]:
-            tax_id_norm = company_node_ids.get(node_id) or normalize_tax_id(node_id)
-            if tax_id_norm:
-                shared_count_by_tax_id[tax_id_norm] += 1
+    pair_records = extract_cached_records(
+        read_cache(
+            "director_company_pairs",
+            default={},
+        )
+    )
 
-    for tax_id_norm, shared_count in shared_count_by_tax_id.items():
+    director_records = extract_cached_records(
+        read_cache(
+            "director_master",
+            default={},
+        )
+    )
+
+    key_connector_director_ids = {
+        clean_text(
+            record.get("director_id")
+            or record.get("person_id")
+        )
+        for record in director_records
+        if bool(
+            to_bool(
+                record.get(
+                    "is_key_connector"
+                ),
+                default=False,
+            )
+        )
+        and clean_text(
+            record.get("director_id")
+            or record.get("person_id")
+        )
+    }
+
+    directors_by_tax_id: Dict[
+        str,
+        set,
+    ] = defaultdict(set)
+
+    key_connectors_by_tax_id: Dict[
+        str,
+        set,
+    ] = defaultdict(set)
+
+    for pair in pair_records:
+        tax_id_norm = get_valid_tax_id(
+            pair.get("tax_id_norm")
+            or pair.get("tax_id")
+        )
+
+        director_id = clean_text(
+            pair.get("director_id")
+            or pair.get("person_id")
+        )
+
+        if not tax_id_norm:
+            continue
+
+        if director_id:
+            directors_by_tax_id[
+                tax_id_norm
+            ].add(director_id)
+
+            if (
+                director_id
+                in key_connector_director_ids
+            ):
+                key_connectors_by_tax_id[
+                    tax_id_norm
+                ].add(director_id)
+
+    shared_company_by_tax_id: Dict[
+        str,
+        set,
+    ] = defaultdict(set)
+
+    shared_links = extract_cached_records(
+        read_cache(
+            "shared_director_links",
+            default={},
+        )
+    )
+
+    for link in shared_links:
+        source_tax_id = get_valid_tax_id(
+            link.get("source_tax_id")
+            or link.get(
+                "source_tax_id_norm"
+            )
+            or link.get(
+                "company_a_tax_id"
+            )
+        )
+
+        target_tax_id = get_valid_tax_id(
+            link.get("target_tax_id")
+            or link.get(
+                "target_tax_id_norm"
+            )
+            or link.get(
+                "company_b_tax_id"
+            )
+        )
+
+        if (
+            not source_tax_id
+            or not target_tax_id
+            or source_tax_id
+            == target_tax_id
+        ):
+            continue
+
+        shared_company_by_tax_id[
+            source_tax_id
+        ].add(target_tax_id)
+
+        shared_company_by_tax_id[
+            target_tax_id
+        ].add(source_tax_id)
+
+    all_tax_ids = (
+        set(result)
+        | set(directors_by_tax_id)
+        | set(shared_company_by_tax_id)
+        | set(key_connectors_by_tax_id)
+    )
+
+    for tax_id_norm in all_tax_ids:
         item = result.setdefault(
             tax_id_norm,
             {
                 "director_count": 0,
                 "shared_company_count": 0,
                 "key_connector_count": 0,
-                "linkage_risk_level": "Normal",
                 "has_linkage": False,
+                "linkage_risk_level": "",
             },
         )
-        item["shared_company_count"] = max(to_int(item.get("shared_company_count"), 0), shared_count)
-        item["has_linkage"] = True
 
-    for item in result.values():
-        director_count = to_int(item.get("director_count"), 0)
-        shared_company_count = to_int(item.get("shared_company_count"), 0)
-        key_connector_count = to_int(item.get("key_connector_count"), 0)
+        item["director_count"] = max(
+            to_int(
+                item.get("director_count"),
+                0,
+            )
+            or 0,
+            len(
+                directors_by_tax_id.get(
+                    tax_id_norm,
+                    set(),
+                )
+            ),
+        )
 
-        if key_connector_count > 0 or shared_company_count >= 5:
-            item["linkage_risk_level"] = "Warning"
-        elif shared_company_count > 0 or director_count > 0:
-            item["linkage_risk_level"] = "Watch"
+        item["shared_company_count"] = max(
+            to_int(
+                item.get(
+                    "shared_company_count"
+                ),
+                0,
+            )
+            or 0,
+            len(
+                shared_company_by_tax_id.get(
+                    tax_id_norm,
+                    set(),
+                )
+            ),
+        )
+
+        item["key_connector_count"] = max(
+            to_int(
+                item.get(
+                    "key_connector_count"
+                ),
+                0,
+            )
+            or 0,
+            len(
+                key_connectors_by_tax_id.get(
+                    tax_id_norm,
+                    set(),
+                )
+            ),
+        )
+
+        item["has_linkage"] = bool(
+            item["director_count"]
+            or item[
+                "shared_company_count"
+            ]
+            or item[
+                "key_connector_count"
+            ]
+        )
+
+        if (
+            item["key_connector_count"] > 0
+            or item[
+                "shared_company_count"
+            ]
+            >= 5
+        ):
+            item["linkage_risk_level"] = (
+                "Warning"
+            )
+        elif (
+            item[
+                "shared_company_count"
+            ]
+            > 0
+            or item["director_count"] > 0
+        ):
+            item["linkage_risk_level"] = (
+                "Watch"
+            )
         else:
-            item["linkage_risk_level"] = "Normal"
+            item["linkage_risk_level"] = (
+                "Normal"
+            )
 
     return result
 
-def index_records_by_company_key(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def index_records_by_company_key(
+    records: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
     """
-    index records โดยใช้ tax_id_norm ก่อน
-    ถ้าไม่มี tax_id_norm ให้ใช้ company_key
+    index records โดยใช้ valid tax_id_norm ก่อน
+    ถ้าไม่มี valid tax_id_norm ให้ใช้ company_key
     """
 
-    result: Dict[str, Dict[str, Any]] = {}
+    result: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
 
     for record in records:
-        key = normalize_tax_id(record.get("tax_id_norm") or record.get("tax_id"))
-
-        if not key:
-            key = clean_text(record.get("company_key"))
+        key = get_company_group_key(
+            record
+        )
 
         if not key:
             continue
@@ -1463,8 +2427,19 @@ def index_records_by_company_key(records: List[Dict[str, Any]]) -> Dict[str, Dic
             result[key] = record
             continue
 
-        old_score = sum(1 for v in result[key].values() if not is_empty_value(v))
-        new_score = sum(1 for v in record.values() if not is_empty_value(v))
+        old_score = sum(
+            1
+            for value in result[
+                key
+            ].values()
+            if not is_empty_value(value)
+        )
+
+        new_score = sum(
+            1
+            for value in record.values()
+            if not is_empty_value(value)
+        )
 
         if new_score > old_score:
             result[key] = record
@@ -1481,25 +2456,53 @@ def build_company_base_record(
     """
     สร้าง 1 record สำหรับ company_unified_base
 
-    base ห้ามรอ spatial_join_result และห้ามรอ linkage graph summary
+    base ห้ามรอ spatial_join_result
+    และห้ามรอ linkage graph summary
     """
 
-    tax_id_norm = normalize_tax_id(
-        first_non_empty(
-            company_key if company_key.isdigit() else "",
-            policy.get("tax_id_norm"),
-            linkage.get("tax_id_norm"),
-            location.get("tax_id_norm"),
-            default="",
+    tax_id_norm = ""
+
+    for candidate in [
+        (
+            company_key
+            if company_key.isdigit()
+            else ""
+        ),
+        policy.get("tax_id_norm"),
+        linkage.get("tax_id_norm"),
+        location.get("tax_id_norm"),
+    ]:
+        tax_id_norm = get_valid_tax_id(
+            candidate
         )
+
+        if tax_id_norm:
+            break
+
+    tax_validation = validate_tax_id(
+        tax_id_norm
+    )
+
+    tax_id_raw = first_non_empty(
+        policy.get("tax_id_raw"),
+        linkage.get("tax_id_raw"),
+        location.get("tax_id_raw"),
+        tax_id_norm,
+        default="",
     )
 
     company_name = first_non_empty(
-        policy.get("company_name_policy"),
+        policy.get(
+            "company_name_policy"
+        ),
         policy.get("company_name"),
-        linkage.get("company_name_linkage"),
+        linkage.get(
+            "company_name_linkage"
+        ),
         linkage.get("name_th"),
-        location.get("company_name_location"),
+        location.get(
+            "company_name_location"
+        ),
         default="",
     )
 
@@ -1513,134 +2516,332 @@ def build_company_base_record(
 
     lat = location.get("lat")
     lon = location.get("lon")
-    location_source = location.get("location_source", "")
-    location_quality = location.get("location_quality", "missing_coordinate")
 
-    coord = validate_coordinate(lat, lon)
+    location_source = clean_text(
+        location.get(
+            "location_source",
+            "",
+        )
+    )
 
-    if not coord["valid"] and province in branch_by_province:
-        branch = branch_by_province[province]
+    location_quality = clean_text(
+        location.get(
+            "location_quality",
+            "missing_coordinate",
+        ),
+        default="missing_coordinate",
+    )
+
+    coordinate = validate_coordinate(
+        lat,
+        lon,
+    )
+
+    if (
+        not coordinate.get("valid")
+        and province
+        in branch_by_province
+    ):
+        branch = branch_by_province[
+            province
+        ]
+
         lat = branch.get("lat")
         lon = branch.get("lon")
-        location_source = branch.get("location_source", "policy_sheet_3_branch_or_province")
-        location_quality = "approximate_branch_or_province"
 
-    coord_final = validate_coordinate(lat, lon)
+        location_source = clean_text(
+            branch.get(
+                "location_source",
+                (
+                    "policy_sheet_3_"
+                    "branch_or_province"
+                ),
+            )
+        )
 
-    if not coord_final["valid"]:
-        if lat is None or lon is None or is_empty_value(lat) or is_empty_value(lon):
-            location_quality = "missing_coordinate"
+        location_quality = (
+            "approximate_branch_or_province"
+        )
+
+    final_coordinate = validate_coordinate(
+        lat,
+        lon,
+    )
+
+    if not final_coordinate.get("valid"):
+        if (
+            is_empty_value(lat)
+            or is_empty_value(lon)
+        ):
+            location_quality = (
+                "missing_coordinate"
+            )
         else:
-            location_quality = "invalid_coordinate"
+            location_quality = (
+                "invalid_coordinate"
+            )
 
     has_policy = bool(policy)
     has_linkage = bool(linkage)
-    has_location = bool(coord_final["valid"])
+    has_location = bool(
+        final_coordinate.get("valid")
+    )
+
+    active_policy_count = (
+        to_number(
+            policy.get(
+                "active_policy_count"
+            ),
+            0,
+        )
+        or 0
+    )
+
+    expired_policy_count = (
+        to_number(
+            policy.get(
+                "expired_policy_count"
+            ),
+            0,
+        )
+        or 0
+    )
+
+    if active_policy_count > 0:
+        policy_status = "Active"
+    elif expired_policy_count > 0:
+        policy_status = "Expired"
+    else:
+        policy_status = "Unknown"
 
     record = {
-        "tax_id_raw": first_non_empty(
-            policy.get("tax_id_norm"),
-            linkage.get("tax_id_raw"),
-            location.get("tax_id_raw"),
-            tax_id_norm,
-            default=tax_id_norm,
-        ),
+        "tax_id_raw": tax_id_raw,
         "tax_id_norm": tax_id_norm,
-        "tax_id_valid": validate_tax_id(tax_id_norm)["tax_id_valid"],
-        "tax_id_issue": validate_tax_id(tax_id_norm)["tax_id_issue"],
+        "tax_id_valid": bool(
+            tax_validation.get(
+                "tax_id_valid",
+                False,
+            )
+        ),
+        "tax_id_issue": tax_validation.get(
+            "tax_id_issue",
+            "",
+        ),
         "company_key": company_key,
-
         "company_name": company_name,
-        "company_name_policy": policy.get("company_name_policy", ""),
-        "company_name_linkage": linkage.get("company_name_linkage", ""),
-        "company_name_location": location.get("company_name_location", ""),
-
-        "business_type": policy.get("business_type", ""),
-        "business_type_objective": linkage.get("business_type_objective", ""),
-        "business_type_tsic": linkage.get("business_type_tsic", ""),
-        "company_size": linkage.get("company_size", ""),
-        "wtip": linkage.get("wtip", ""),
-        "boardlist": linkage.get("boardlist", ""),
-        "boardlist_raw": linkage.get("boardlist", ""),
+        "company_name_policy": policy.get(
+            "company_name_policy",
+            "",
+        ),
+        "company_name_linkage": linkage.get(
+            "company_name_linkage",
+            "",
+        ),
+        "company_name_location": location.get(
+            "company_name_location",
+            "",
+        ),
+        "business_type": policy.get(
+            "business_type",
+            "",
+        ),
+        "business_type_objective": linkage.get(
+            "business_type_objective",
+            "",
+        ),
+        "business_type_tsic": linkage.get(
+            "business_type_tsic",
+            "",
+        ),
+        "company_size": linkage.get(
+            "company_size",
+            "",
+        ),
+        "wtip": linkage.get(
+            "wtip",
+            "",
+        ),
+        "boardlist": linkage.get(
+            "boardlist",
+            "",
+        ),
+        "boardlist_raw": linkage.get(
+            "boardlist",
+            "",
+        ),
         "boardlist_profile": {
-            "raw": linkage.get("boardlist", ""),
-            "has_boardlist": bool(clean_text(linkage.get("boardlist"))),
+            "raw": linkage.get(
+                "boardlist",
+                "",
+            ),
+            "has_boardlist": bool(
+                clean_text(
+                    linkage.get(
+                        "boardlist"
+                    )
+                )
+            ),
         },
-
-        "most_recent_asset_val": policy.get("most_recent_asset_val"),
+        "most_recent_asset_val": policy.get(
+            "most_recent_asset_val"
+        ),
         "most_recent_income_val": first_non_empty(
-            policy.get("most_recent_income_val"),
-            policy.get("most_recent_income_val_policy"),
-            linkage.get("most_recent_income_val_linkage"),
+            policy.get(
+                "most_recent_income_val"
+            ),
+            policy.get(
+                "most_recent_income_val_policy"
+            ),
+            linkage.get(
+                "most_recent_income_val_linkage"
+            ),
             default=None,
         ),
         "registered_capital": first_non_empty(
-            policy.get("registered_capital"),
-            policy.get("registered_capital_policy"),
-            linkage.get("registered_capital_linkage"),
+            policy.get(
+                "registered_capital"
+            ),
+            policy.get(
+                "registered_capital_policy"
+            ),
+            linkage.get(
+                "registered_capital_linkage"
+            ),
             default=None,
         ),
-
-        "address": location.get("address", ""),
+        "address": location.get(
+            "address",
+            "",
+        ),
         "province": province,
-        "district": location.get("district", ""),
-        "subdistrict": location.get("subdistrict", ""),
-        "lat": coord_final["lat"],
-        "lon": coord_final["lon"],
-        "latitude": coord_final["lat"],
-        "longitude": coord_final["lon"],
+        "district": location.get(
+            "district",
+            "",
+        ),
+        "subdistrict": location.get(
+            "subdistrict",
+            "",
+        ),
+        "lat": final_coordinate.get(
+            "lat"
+        ),
+        "lon": final_coordinate.get(
+            "lon"
+        ),
+        "latitude": final_coordinate.get(
+            "lat"
+        ),
+        "longitude": final_coordinate.get(
+            "lon"
+        ),
         "location_source": location_source,
         "location_quality": location_quality,
-        "coordinate_valid": coord_final["valid"],
-        "coordinate_issue": coord_final["issue"],
-
+        "coordinate_valid": bool(
+            final_coordinate.get("valid")
+        ),
+        "coordinate_issue": final_coordinate.get(
+            "issue",
+            "",
+        ),
         "has_policy": has_policy,
         "has_linkage": has_linkage,
         "has_location": has_location,
         "has_flood_context": False,
-
-        "policy_status": "Active" if to_number(policy.get("active_policy_count"), 0) else "Expired" if to_number(policy.get("expired_policy_count"), 0) else "Unknown",
-        "premium": policy.get("total_premium", 0),
-        "loss": policy.get("total_loss", 0),
-        "suminsure": policy.get("total_suminsure", 0),
-        "total_premium": policy.get("total_premium", 0),
-        "total_loss": policy.get("total_loss", 0),
-        "total_suminsure": policy.get("total_suminsure", 0),
-        "total_noofpol": policy.get("total_noofpol", 0),
-        "active_policy_count": policy.get("active_policy_count", 0),
-        "expired_policy_count": policy.get("expired_policy_count", 0),
-        "policy_record_count": policy.get("policy_record_count", 0),
-        "product_count": policy.get("product_count", 0),
-        "subclass_count": policy.get("subclass_count", 0),
+        "policy_status": policy_status,
+        "premium": policy.get(
+            "total_premium",
+            0,
+        ),
+        "loss": policy.get(
+            "total_loss",
+            0,
+        ),
+        "suminsure": policy.get(
+            "total_suminsure",
+            0,
+        ),
+        "total_premium": policy.get(
+            "total_premium",
+            0,
+        ),
+        "total_loss": policy.get(
+            "total_loss",
+            0,
+        ),
+        "total_suminsure": policy.get(
+            "total_suminsure",
+            0,
+        ),
+        "total_noofpol": policy.get(
+            "total_noofpol",
+            0,
+        ),
+        "active_policy_count": active_policy_count,
+        "expired_policy_count": expired_policy_count,
+        "policy_record_count": policy.get(
+            "policy_record_count",
+            0,
+        ),
+        "product_count": policy.get(
+            "product_count",
+            0,
+        ),
+        "subclass_count": policy.get(
+            "subclass_count",
+            0,
+        ),
         "product_summary": {
-            "product_count": policy.get("product_count", 0),
-            "product_holding": policy.get("product_holding", 0),
+            "product_count": policy.get(
+                "product_count",
+                0,
+            ),
+            "product_holding": policy.get(
+                "product_holding",
+                0,
+            ),
         },
         "subclass_summary": {
-            "subclass_count": policy.get("subclass_count", 0),
-            "subclass_holding": policy.get("subclass_holding", 0),
+            "subclass_count": policy.get(
+                "subclass_count",
+                0,
+            ),
+            "subclass_holding": policy.get(
+                "subclass_holding",
+                0,
+            ),
         },
-        "first_policy_year": policy.get("first_policy_year"),
-        "latest_policy_year": policy.get("latest_policy_year"),
-        "loss_ratio": policy.get("loss_ratio"),
-        "loss_ratio_band": policy.get("loss_ratio_band", "Undefined"),
-        "premium_zero_with_loss_count": policy.get("premium_zero_with_loss_count", 0),
-        "status_conflict_count": policy.get("status_conflict_count", 0),
-
+        "first_policy_year": policy.get(
+            "first_policy_year"
+        ),
+        "latest_policy_year": policy.get(
+            "latest_policy_year"
+        ),
+        "loss_ratio": policy.get(
+            "loss_ratio"
+        ),
+        "loss_ratio_band": policy.get(
+            "loss_ratio_band",
+            "Undefined",
+        ),
+        "premium_zero_with_loss_count": policy.get(
+            "premium_zero_with_loss_count",
+            0,
+        ),
+        "status_conflict_count": policy.get(
+            "status_conflict_count",
+            0,
+        ),
         "director_count": 0,
         "shared_company_count": 0,
         "key_connector_count": 0,
         "linkage_risk_level": "Unknown",
-
         "flood_risk_level": "Unknown",
         "flood_join_level": "none",
         "flood_risk_reason": "",
         "nearest_rainfall_station_id": "",
         "nearest_waterlevel_station_id": "",
         "nearest_dam_id": "",
-
         "data_quality_flags": [],
-
         "source_flags": {
             "has_policy": has_policy,
             "has_linkage": has_linkage,
@@ -1649,13 +2850,11 @@ def build_company_base_record(
             "is_base_record": True,
             "is_enriched_record": False,
         },
-
         "record_stage": "base",
         "updated_at": now_iso(),
     }
 
     return to_jsonable(record)
-
 
 def enrich_company_base_record(
     base_record: Dict[str, Any],
@@ -1815,35 +3014,124 @@ def build_company_unified_base(force_refresh: bool = False) -> Dict[str, Any]:
         "cache_used": cache_result["cache_used"],
     }
 
-def build_company_unified_master(force_refresh: bool = False, enrichment_mode: str = "full") -> Dict[str, Any]:
+def build_company_unified_master(
+    force_refresh: bool = False,
+    enrichment_mode: str = "full",
+) -> Dict[str, Any]:
     """
     สร้าง company_unified_master enriched
 
-    enriched = company_unified_base + linkage summary + flood/spatial context + data quality flags
+    enriched = company_unified_base
+    + linkage summary
+    + flood/spatial context
+    + data quality flags
     """
 
+    normalized_mode = clean_text_lower(
+        enrichment_mode,
+        default="full",
+    )
+
+    allowed_modes = {
+        "full",
+        "spatial",
+        "flood",
+        "linkage",
+        "data_quality",
+    }
+
+    if normalized_mode not in allowed_modes:
+        normalized_mode = "full"
+
     def builder() -> Dict[str, Any]:
-        base_payload = build_company_unified_base(force_refresh=force_refresh)
-        base_records = base_payload.get("records", [])
+        base_payload = build_company_unified_base(
+            force_refresh=force_refresh
+        )
 
-        spatial_index = load_spatial_context_index() if enrichment_mode in {"full", "spatial", "flood"} else {}
-        linkage_summary_index = load_linkage_summary_index() if enrichment_mode in {"full", "linkage"} else {}
+        base_records = base_payload.get(
+            "records",
+            [],
+        )
 
-        quality_flags_by_tax_id: Dict[str, List[str]] = {}
+        spatial_index = (
+            load_spatial_context_index()
+            if normalized_mode
+            in {
+                "full",
+                "spatial",
+                "flood",
+            }
+            else {}
+        )
 
-        if enrichment_mode in {"full", "data_quality"} and build_quality_flags_by_tax_id is not None:
+        linkage_summary_index = (
+            load_linkage_summary_index()
+            if normalized_mode
+            in {
+                "full",
+                "linkage",
+            }
+            else {}
+        )
+
+        quality_flags_by_tax_id: Dict[
+            str,
+            List[str],
+        ] = {}
+
+        if (
+            normalized_mode
+            in {
+                "full",
+                "data_quality",
+            }
+            and build_quality_flags_by_tax_id
+            is not None
+        ):
             try:
-                quality_flags_by_tax_id = build_quality_flags_by_tax_id()
+                quality_flags_by_tax_id = (
+                    build_quality_flags_by_tax_id()
+                )
             except Exception:
                 quality_flags_by_tax_id = {}
 
-        enriched_records: List[Dict[str, Any]] = []
+        enriched_records: List[
+            Dict[str, Any]
+        ] = []
 
         for base_record in base_records:
-            tax_id_norm = normalize_tax_id(base_record.get("tax_id_norm"))
-            spatial = spatial_index.get(tax_id_norm, {}) if tax_id_norm else {}
-            linkage_summary = linkage_summary_index.get(tax_id_norm, {}) if tax_id_norm else {}
-            quality_flags = quality_flags_by_tax_id.get(tax_id_norm, []) if tax_id_norm else []
+            tax_id_norm = get_valid_tax_id(
+                base_record.get(
+                    "tax_id_norm"
+                )
+            )
+
+            spatial = (
+                spatial_index.get(
+                    tax_id_norm,
+                    {},
+                )
+                if tax_id_norm
+                else {}
+            )
+
+            linkage_summary = (
+                linkage_summary_index.get(
+                    tax_id_norm,
+                    {},
+                )
+                if tax_id_norm
+                else {}
+            )
+
+            quality_flags = (
+                quality_flags_by_tax_id.get(
+                    tax_id_norm,
+                    [],
+                )
+                if tax_id_norm
+                else []
+            )
 
             enriched_records.append(
                 enrich_company_base_record(
@@ -1856,34 +3144,64 @@ def build_company_unified_master(force_refresh: bool = False, enrichment_mode: s
 
         enriched_records = sorted(
             enriched_records,
-            key=lambda item: clean_text(item.get("company_name")),
+            key=lambda item: clean_text(
+                item.get("company_name")
+            ),
         )
 
         return {
             "records": enriched_records,
-            "total": len(enriched_records),
+            "total": len(
+                enriched_records
+            ),
             "created_at": now_iso(),
             "stage": "enriched",
-            "enrichment_mode": enrichment_mode,
+            "enrichment_mode": normalized_mode,
             "source": {
-                "base_count": len(base_records),
-                "spatial_context_count": len(spatial_index),
-                "linkage_summary_count": len(linkage_summary_index),
-                "quality_flag_company_count": len(quality_flags_by_tax_id),
+                "base_count": len(
+                    base_records
+                ),
+                "spatial_context_count": len(
+                    spatial_index
+                ),
+                "linkage_summary_count": len(
+                    linkage_summary_index
+                ),
+                "quality_flag_company_count": len(
+                    quality_flags_by_tax_id
+                ),
             },
         }
 
+    cache_key = (
+        CACHE_KEYS[
+            "company_unified_master"
+        ]
+        if normalized_mode == "full"
+        else (
+            f"{CACHE_KEYS['company_unified_master']}_"
+            f"{normalized_mode}"
+        )
+    )
+
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["company_unified_master"],
+        cache_key=cache_key,
         builder=builder,
         ttl_seconds=get_policy_ttl(),
         force_refresh=force_refresh,
-        source="company_policy_service.build_company_unified_master",
+        source=(
+            "company_policy_service."
+            "build_company_unified_master."
+            f"{normalized_mode}"
+        ),
     )
 
     return {
         **cache_result["data"],
-        "cache_used": cache_result["cache_used"],
+        "cache_used": cache_result[
+            "cache_used"
+        ],
+        "cache_key": cache_key,
     }
 
 def get_company_unified_base_records(force_refresh: bool = False) -> List[Dict[str, Any]]:
@@ -1929,67 +3247,209 @@ def get_company_list(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "cache_key": CACHE_KEYS["company_unified_master"],
     }
 
+def get_company_summary(
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        ctx = normalize_context(context)
 
-def get_company_summary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    API:
-    GET /api/companies/summary
-    """
+        records = get_company_unified_records(
+            force_refresh=ctx.get(
+                "force_refresh",
+                False,
+            )
+        )
 
-    ctx = normalize_context(context)
-    records = get_company_unified_records(force_refresh=ctx.get("force_refresh", False))
+        filtered_records = filter_records_without_pagination(
+            records=records,
+            context=ctx,
+            searchable_fields=COMPANY_SEARCHABLE_FIELDS,
+        )
 
-    total_companies = len(records)
-    companies_with_policy = sum(1 for r in records if to_bool(r.get("has_policy"), default=False))
-    companies_with_linkage = sum(1 for r in records if to_bool(r.get("has_linkage"), default=False))
-    companies_with_location = sum(1 for r in records if to_bool(r.get("has_location"), default=False))
-    companies_with_flood_context = sum(1 for r in records if to_bool(r.get("has_flood_context"), default=False))
+        total_companies = len(
+            filtered_records
+        )
 
-    flood_risk_counts = Counter(
-        clean_text(r.get("flood_risk_level"), default="Unknown")
-        for r in records
-    )
+        companies_with_policy = sum(
+            1
+            for record in filtered_records
+            if bool(
+                to_bool(
+                    record.get("has_policy"),
+                    default=False,
+                )
+            )
+        )
 
-    province_counts = Counter(
-        clean_text(r.get("province"), default="Unknown")
-        for r in records
-    )
+        companies_with_linkage = sum(
+            1
+            for record in filtered_records
+            if bool(
+                to_bool(
+                    record.get("has_linkage"),
+                    default=False,
+                )
+            )
+        )
 
-    return {
-        "total_companies": total_companies,
-        "companies_with_policy": companies_with_policy,
-        "companies_with_linkage": companies_with_linkage,
-        "companies_with_location": companies_with_location,
-        "companies_with_flood_context": companies_with_flood_context,
-        "total_premium": sum_field(records, "total_premium"),
-        "total_loss": sum_field(records, "total_loss"),
-        "total_suminsure": sum_field(records, "total_suminsure"),
-        "average_loss_ratio": (
-            sum(to_number(r.get("loss_ratio"), 0) or 0 for r in records if r.get("loss_ratio") is not None)
-            / max(1, sum(1 for r in records if r.get("loss_ratio") is not None))
-        ),
-        "flood_risk_counts": dict(flood_risk_counts),
-        "province_counts": dict(province_counts),
-        "generated_at": now_iso(),
-    }
+        companies_with_location = sum(
+            1
+            for record in filtered_records
+            if bool(
+                to_bool(
+                    record.get("has_location"),
+                    default=False,
+                )
+            )
+        )
 
+        companies_with_flood_context = sum(
+            1
+            for record in filtered_records
+            if bool(
+                to_bool(
+                    record.get(
+                        "has_flood_context"
+                    ),
+                    default=False,
+                )
+            )
+        )
 
-def get_company_detail(tax_id: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        flood_risk_counts = Counter(
+            clean_text(
+                record.get(
+                    "flood_risk_level"
+                ),
+                default="Unknown",
+            )
+            for record in filtered_records
+        )
+
+        province_counts = Counter(
+            clean_text(
+                record.get("province"),
+                default="Unknown",
+            )
+            for record in filtered_records
+        )
+
+        loss_ratio_values = [
+            to_number(
+                record.get("loss_ratio"),
+                None,
+            )
+            for record in filtered_records
+        ]
+
+        loss_ratio_values = [
+            value
+            for value in loss_ratio_values
+            if value is not None
+        ]
+
+        return {
+            "total_companies": total_companies,
+            "companies_with_policy": companies_with_policy,
+            "companies_with_linkage": companies_with_linkage,
+            "companies_with_location": companies_with_location,
+            "companies_with_flood_context": (
+                companies_with_flood_context
+            ),
+            "total_premium": sum_field(
+                filtered_records,
+                "total_premium",
+            ),
+            "total_loss": sum_field(
+                filtered_records,
+                "total_loss",
+            ),
+            "total_suminsure": sum_field(
+                filtered_records,
+                "total_suminsure",
+            ),
+            "average_loss_ratio": (
+                sum(loss_ratio_values)
+                / len(loss_ratio_values)
+                if loss_ratio_values
+                else 0
+            ),
+            "flood_risk_counts": dict(
+                flood_risk_counts
+            ),
+            "province_counts": dict(
+                province_counts
+            ),
+            "generated_at": now_iso(),
+        }
+
+def get_company_detail(
+    tax_id: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/companies/<tax_id>
     """
 
-    tax_id_norm = normalize_tax_id(tax_id)
+    tax_validation = validate_tax_id(
+        tax_id
+    )
+
+    tax_id_norm = clean_text(
+        tax_validation.get(
+            "tax_id_norm"
+        )
+    )
+
+    if not tax_validation.get(
+        "tax_id_valid",
+        False,
+    ):
+        return {
+            "tax_id": tax_id,
+            "tax_id_norm": tax_id_norm,
+            "found": False,
+            "company": None,
+            "policy": {
+                "records": [],
+                "total": 0,
+            },
+        }
+
     ctx = normalize_context(context)
 
-    company_records = get_company_unified_records(force_refresh=ctx.get("force_refresh", False))
+    company_records = get_company_unified_records(
+        force_refresh=ctx.get(
+            "force_refresh",
+            False,
+        )
+    )
+
     company = next(
-        (record for record in company_records if record.get("tax_id_norm") == tax_id_norm),
+        (
+            record
+            for record in company_records
+            if get_valid_tax_id(
+                record.get("tax_id_norm")
+            )
+            == tax_id_norm
+        ),
         None,
     )
 
-    policy_table = get_policy_company_table(tax_id_norm, context={"page_size": 500}).get("records", [])
+    policy_context = {
+        **ctx,
+        "page": 1,
+        "page_size": 500,
+    }
+
+    policy_table = get_policy_company_table(
+        tax_id_norm,
+        context=policy_context,
+    ).get(
+        "records",
+        [],
+    )
 
     return {
         "tax_id": tax_id,
@@ -2001,7 +3461,6 @@ def get_company_detail(tax_id: str, context: Optional[Dict[str, Any]] = None) ->
             "total": len(policy_table),
         },
     }
-
 
 def get_company_income_ranking(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -2160,40 +3619,127 @@ def get_policy_companies(context: Optional[Dict[str, Any]] = None) -> Dict[str, 
         searchable_fields=["tax_id_norm", "company_name", "company_name_policy", "loss_ratio_band"],
     )
 
-
-def get_policy_company_detail(tax_id: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_policy_company_detail(
+    tax_id: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/policy/company/<tax_id>
     """
 
-    tax_id_norm = normalize_tax_id(tax_id)
+    tax_validation = validate_tax_id(
+        tax_id
+    )
 
-    summary = get_policy_company_summary(tax_id_norm)
-    table = get_policy_company_table(tax_id_norm, context=context)
-    trend = get_policy_company_trend(tax_id_norm)
+    tax_id_norm = clean_text(
+        tax_validation.get(
+            "tax_id_norm"
+        )
+    )
+
+    if not tax_validation.get(
+        "tax_id_valid",
+        False,
+    ):
+        return {
+            "tax_id": tax_id,
+            "tax_id_norm": tax_id_norm,
+            "summary": {},
+            "records": [],
+            "table": {
+                "records": [],
+                "total": 0,
+                "page": 1,
+                "page_size": 0,
+                "total_pages": 0,
+                "has_next": False,
+                "has_prev": False,
+                "tax_id": tax_id,
+                "tax_id_norm": tax_id_norm,
+            },
+            "trend": {
+                "tax_id": tax_id,
+                "tax_id_norm": tax_id_norm,
+                "series": [],
+                "total_points": 0,
+            },
+        }
+
+    summary = get_policy_company_summary(
+        tax_id_norm
+    )
+
+    table = get_policy_company_table(
+        tax_id_norm,
+        context=context,
+    )
+
+    trend = get_policy_company_trend(
+        tax_id_norm
+    )
 
     return {
         "tax_id": tax_id,
         "tax_id_norm": tax_id_norm,
-        "summary": summary.get("summary", {}),
-        "records": table.get("records", []),
+        "summary": summary.get(
+            "summary",
+            {},
+        ),
+        "records": table.get(
+            "records",
+            [],
+        ),
         "table": table,
         "trend": trend,
     }
 
 
-def get_policy_company_summary(tax_id: str) -> Dict[str, Any]:
+def get_policy_company_summary(
+    tax_id: str,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/policy/company/<tax_id>/summary
     """
 
-    tax_id_norm = normalize_tax_id(tax_id)
-    records = build_policy_company_summary(force_refresh=False).get("records", [])
+    tax_validation = validate_tax_id(
+        tax_id
+    )
+
+    tax_id_norm = clean_text(
+        tax_validation.get(
+            "tax_id_norm"
+        )
+    )
+
+    if not tax_validation.get(
+        "tax_id_valid",
+        False,
+    ):
+        return {
+            "tax_id": tax_id,
+            "tax_id_norm": tax_id_norm,
+            "found": False,
+            "summary": {},
+        }
+
+    records = build_policy_company_summary(
+        force_refresh=False
+    ).get(
+        "records",
+        [],
+    )
 
     summary = next(
-        (record for record in records if record.get("tax_id_norm") == tax_id_norm),
+        (
+            record
+            for record in records
+            if get_valid_tax_id(
+                record.get("tax_id_norm")
+            )
+            == tax_id_norm
+        ),
         None,
     )
 
@@ -2205,19 +3751,64 @@ def get_policy_company_summary(tax_id: str) -> Dict[str, Any]:
     }
 
 
-def get_policy_company_table(tax_id: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_policy_company_table(
+    tax_id: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/policy/company/<tax_id>/table
     """
 
-    tax_id_norm = normalize_tax_id(tax_id)
+    tax_validation = validate_tax_id(
+        tax_id
+    )
+
+    tax_id_norm = clean_text(
+        tax_validation.get(
+            "tax_id_norm"
+        )
+    )
+
     ctx = normalize_context(context)
+
+    if not tax_validation.get(
+        "tax_id_valid",
+        False,
+    ):
+        result = apply_search_sort_pagination(
+            records=[],
+            context=ctx,
+            searchable_fields=None,
+        )
+
+        result["tax_id"] = tax_id
+        result["tax_id_norm"] = tax_id_norm
+
+        return result
 
     records = [
         record
-        for record in get_policy_fact_records(force_refresh=ctx.get("force_refresh", False))
-        if record.get("tax_id_norm") == tax_id_norm
+        for record in get_policy_fact_records(
+            force_refresh=ctx.get(
+                "force_refresh",
+                False,
+            )
+        )
+        if (
+            bool(
+                to_bool(
+                    record.get(
+                        "tax_id_valid"
+                    ),
+                    default=False,
+                )
+            )
+            and get_valid_tax_id(
+                record.get("tax_id_norm")
+            )
+            == tax_id_norm
+        )
     ]
 
     result = filter_records_for_api(
@@ -2232,49 +3823,116 @@ def get_policy_company_table(tax_id: str, context: Optional[Dict[str, Any]] = No
     return result
 
 
-def get_policy_company_trend(tax_id: str) -> Dict[str, Any]:
+def get_policy_company_trend(
+    tax_id: str,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/policy/company/<tax_id>/trend
     """
 
-    tax_id_norm = normalize_tax_id(tax_id)
+    tax_validation = validate_tax_id(
+        tax_id
+    )
+
+    tax_id_norm = clean_text(
+        tax_validation.get(
+            "tax_id_norm"
+        )
+    )
+
+    if not tax_validation.get(
+        "tax_id_valid",
+        False,
+    ):
+        return {
+            "tax_id": tax_id,
+            "tax_id_norm": tax_id_norm,
+            "series": [],
+            "total_points": 0,
+        }
 
     records = [
         record
-        for record in get_policy_fact_records(force_refresh=False)
-        if record.get("tax_id_norm") == tax_id_norm
+        for record in get_policy_fact_records(
+            force_refresh=False
+        )
+        if (
+            bool(
+                to_bool(
+                    record.get(
+                        "tax_id_valid"
+                    ),
+                    default=False,
+                )
+            )
+            and get_valid_tax_id(
+                record.get("tax_id_norm")
+            )
+            == tax_id_norm
+        )
     ]
 
     records_with_year = [
         record
         for record in records
-        if record.get("policy_year") is not None
+        if record.get("policy_year")
+        is not None
     ]
 
-    groups = group_records_by(records_with_year, "policy_year")
+    groups = group_records_by(
+        records_with_year,
+        "policy_year",
+    )
 
     series: List[Dict[str, Any]] = []
 
     for year, group in groups.items():
-        total_premium = sum_field(group, "premium")
-        total_loss = sum_field(group, "loss")
-        total_suminsure = sum_field(group, "suminsure")
-        loss_ratio = calculate_loss_ratio(total_loss, total_premium, zero_policy="zero")
+        total_premium = sum_field(
+            group,
+            "premium",
+        )
+        total_loss = sum_field(
+            group,
+            "loss",
+        )
+        total_suminsure = sum_field(
+            group,
+            "suminsure",
+        )
+
+        loss_ratio = calculate_loss_ratio(
+            total_loss,
+            total_premium,
+            zero_policy="zero",
+        )
 
         series.append(
             {
-                "policy_year": to_int(year, default=None),
+                "policy_year": to_int(
+                    year,
+                    default=None,
+                ),
                 "total_premium": total_premium,
                 "total_loss": total_loss,
                 "total_suminsure": total_suminsure,
                 "loss_ratio": loss_ratio,
-                "loss_ratio_band": get_loss_ratio_band(loss_ratio, premium=total_premium, loss=total_loss),
+                "loss_ratio_band": get_loss_ratio_band(
+                    loss_ratio,
+                    premium=total_premium,
+                    loss=total_loss,
+                ),
                 "record_count": len(group),
             }
         )
 
-    series = sorted(series, key=lambda item: item.get("policy_year") or 0)
+    series = sorted(
+        series,
+        key=lambda item: (
+            item.get("policy_year")
+            or 0
+        ),
+    )
 
     return {
         "tax_id": tax_id,
@@ -2282,7 +3940,6 @@ def get_policy_company_trend(tax_id: str) -> Dict[str, Any]:
         "series": series,
         "total_points": len(series),
     }
-
 
 def get_policy_product_summary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -2351,7 +4008,9 @@ def get_policy_loss_ratio_ranking(context: Optional[Dict[str, Any]] = None) -> D
     )
 
 
-def get_policy_high_loss_companies(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_policy_high_loss_companies(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/policy/high-loss
@@ -2361,67 +4020,142 @@ def get_policy_high_loss_companies(context: Optional[Dict[str, Any]] = None) -> 
 
     records = [
         record
-        for record in build_policy_company_summary(force_refresh=ctx.get("force_refresh", False)).get("records", [])
-        if (to_number(record.get("loss_ratio"), 0) or 0) >= 80
-        or clean_text(record.get("loss_ratio_band")) in {"Warning", "Critical"}
+        for record in build_policy_company_summary(
+            force_refresh=ctx.get(
+                "force_refresh",
+                False,
+            )
+        ).get(
+            "records",
+            [],
+        )
+        if (
+            (
+                to_number(
+                    record.get("loss_ratio"),
+                    0,
+                )
+                or 0
+            )
+            >= 80
+            or clean_text(
+                record.get(
+                    "loss_ratio_band"
+                )
+            )
+            in {
+                "Warning",
+                "Critical",
+            }
+        )
     ]
 
-    ctx["sort_by"] = ctx.get("sort_by") or "loss_ratio"
-    ctx["sort_dir"] = ctx.get("sort_dir") or "desc"
+    if not ctx.get("sort_by"):
+        ctx["sort_by"] = "loss_ratio"
+
+    if (
+        not isinstance(context, dict)
+        or not clean_text(
+            context.get("sort_dir")
+        )
+    ):
+        ctx["sort_dir"] = "desc"
 
     return filter_records_for_api(
         records=records,
         context=ctx,
-        searchable_fields=["tax_id_norm", "company_name", "loss_ratio_band"],
+        searchable_fields=[
+            "tax_id_norm",
+            "company_name",
+            "loss_ratio_band",
+        ],
     )
 
-
-def get_policy_exposure(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_policy_exposure(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     API:
     GET /api/policy/exposure
 
-    ใช้ company_unified_master เพื่อดู exposure พร้อม flood context
+    ใช้ company_unified_master
+    เพื่อดู exposure พร้อม flood context
     """
 
     ctx = normalize_context(context)
 
     records = [
         record
-        for record in get_company_unified_records(force_refresh=ctx.get("force_refresh", False))
-        if to_bool(record.get("has_policy"), default=False)
+        for record in get_company_unified_records(
+            force_refresh=ctx.get(
+                "force_refresh",
+                False,
+            )
+        )
+        if bool(
+            to_bool(
+                record.get("has_policy"),
+                default=False,
+            )
+        )
     ]
 
-    filtered = filter_records_for_api(
+    filtered_records = filter_records_without_pagination(
         records=records,
         context=ctx,
         searchable_fields=COMPANY_SEARCHABLE_FIELDS,
     )
 
+    paginated = apply_search_sort_pagination(
+        records=filtered_records,
+        context=ctx,
+        searchable_fields=None,
+    )
+
     exposure_summary = {
-        "total_companies": len(records),
-        "total_premium": sum_field(records, "total_premium"),
-        "total_loss": sum_field(records, "total_loss"),
-        "total_suminsure": sum_field(records, "total_suminsure"),
+        "total_companies": len(
+            filtered_records
+        ),
+        "total_premium": sum_field(
+            filtered_records,
+            "total_premium",
+        ),
+        "total_loss": sum_field(
+            filtered_records,
+            "total_loss",
+        ),
+        "total_suminsure": sum_field(
+            filtered_records,
+            "total_suminsure",
+        ),
         "risk_counts": dict(
             Counter(
-                clean_text(record.get("flood_risk_level"), default="Unknown")
-                for record in records
+                clean_text(
+                    record.get(
+                        "flood_risk_level"
+                    ),
+                    default="Unknown",
+                )
+                for record in filtered_records
             )
         ),
         "loss_ratio_band_counts": dict(
             Counter(
-                clean_text(record.get("loss_ratio_band"), default="Undefined")
-                for record in records
+                clean_text(
+                    record.get(
+                        "loss_ratio_band"
+                    ),
+                    default="Undefined",
+                )
+                for record in filtered_records
             )
         ),
     }
 
     return {
-        **filtered,
+        **paginated,
         "summary": exposure_summary,
     }
-
 
 # ============================================================
 # 11) DASHBOARD SUPPORT FUNCTIONS

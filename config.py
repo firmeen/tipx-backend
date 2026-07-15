@@ -125,8 +125,15 @@ FRONTEND_DIR: Path = PROJECT_ROOT / "frontend"
 # 3) INPUT FILE PATHS
 # ============================================================
 
-POLICY_INPUT_FILENAME: str = os.getenv("policy", "policy_input.xlsx")
-LINKAGE_INPUT_FILENAME: str = os.getenv("linkage", "linkage_input.xlsx")
+POLICY_INPUT_FILENAME: str = os.getenv(
+    "TIPX_POLICY_INPUT_FILENAME",
+    "policy_input.xlsx",
+).strip()
+
+LINKAGE_INPUT_FILENAME: str = os.getenv(
+    "TIPX_LINKAGE_INPUT_FILENAME",
+    "linkage_input.xlsx",
+).strip()
 
 POLICY_INPUT_PATH: Path = POLICY_INPUT_DIR / POLICY_INPUT_FILENAME
 LINKAGE_INPUT_PATH: Path = LINKAGE_INPUT_DIR / LINKAGE_INPUT_FILENAME
@@ -164,7 +171,7 @@ output_fl/
 """
 
 DEFAULT_FLOOD_PIPELINE_BASE_DIR: str = r"C:/Users/afimeenu/project/main"
-DEFAULT_FLOOD_OUTPUT_DIR: str = r"C:/Users/afimeenu/project/flood/output_fl"
+DEFAULT_FLOOD_OUTPUT_DIR: str = r"C:/Users/afimeenu/project/main/output_flood"
 
 FLOOD_PIPELINE_BASE_DIR: Path = Path(
     os.getenv("TIPX_FLOOD_PIPELINE_BASE_DIR", DEFAULT_FLOOD_PIPELINE_BASE_DIR)
@@ -257,7 +264,7 @@ FLOOD_PREDICTION_DIR: Path = Path(
 
 PREDICTION_DATA_DIR: Path = FLOOD_PREDICTION_DIR
 PREDICTION_FILE_PREFIX: str = "predict"
-PREDICTION_FILE_GLOB: str = "predict_*.xlsx"
+PREDICTION_FILE_GLOB: str = "predict_[0-9][0-9][0-9][0-9]_[0-9][0-9]_[0-9][0-9].xlsx"
 PREDICTION_FILE_PATTERN: str = "predict_YYYY_MM_DD.xlsx"
 PREDICTION_FILE_EXAMPLE: str = "predict_2026_06_16.xlsx"
 
@@ -268,7 +275,7 @@ UPLOAD_LOG_DIR: Path = WEB_DATA_DIR / "upload_logs"
 UPLOAD_ERROR_REPORT_DIR: Path = WEB_DATA_DIR / "upload_error_reports"
 WEB_CACHE_DIR: Path = WEB_DATA_DIR / "cache"
 WEB_LOG_DIR: Path = WEB_DATA_DIR / "logs"
-ERROR_LOG_PATH: Path = WEB_LOG_DIR / "tipx_backend_error.log"
+ERROR_LOG_PATH: Path = LOG_DIR / "tipx_backend_error.log"
 
 
 # ============================================================
@@ -2246,19 +2253,17 @@ CORS_ENABLED: bool = os.getenv("TIPX_CORS_ENABLED", "true").strip().lower() in {
 }
 
 CORS_ALLOW_ORIGINS: List[str] = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5000",
-    "http://127.0.0.1:5000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
+    origin.strip()
+    for origin in os.getenv(
+        "TIPX_CORS_ALLOW_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
 ]
 
 JSON_SORT_KEYS: bool = False
 JSON_AS_ASCII: bool = False
-MAX_CONTENT_LENGTH_MB: int = 100
+MAX_CONTENT_LENGTH_MB: int = UPLOAD_MAX_CONTENT_LENGTH_MB
 
 
 # ============================================================
@@ -2299,9 +2304,9 @@ security.py และ backend/auth/* จะใช้ค่ากลุ่มน�
 # legacy / package security
 # ------------------------------------------------------------
 
-SECRET_KEY: str = os.getenv("TIPX_SECRET_KEY", "tipx-development-secret-key-change-in-production")
+SECRET_KEY: str = os.getenv("TIPX_SECRET_KEY", "").strip()
 
-PACKAGE_TOKEN_SALT: str = os.getenv("TIPX_PACKAGE_TOKEN_SALT", "tipx-package-salt-change-in-production")
+PACKAGE_TOKEN_SALT: str = os.getenv("TIPX_PACKAGE_TOKEN_SALT", "").strip()
 
 ENABLE_PACKAGE_ACCESS_TOKEN: bool = os.getenv(
     "TIPX_ENABLE_PACKAGE_ACCESS_TOKEN", "false"
@@ -2320,7 +2325,8 @@ MASK_DIRECTOR_VISIBLE_FIRST_CHARS: int = 2
 MYSQL_HOST: str = os.getenv("MYSQL_HOST", "127.0.0.1")
 MYSQL_PORT: int = int(os.getenv("MYSQL_PORT", "3307"))
 MYSQL_USER: str = os.getenv("MYSQL_USER", "tipx")
-MYSQL_PASSWORD: str = os.getenv("MYSQL_PASSWORD", "tipx1722569")
+# MYSQL_PASSWORD: str = os.getenv("MYSQL_PASSWORD", "tipx1722569")
+MYSQL_PASSWORD: str = os.getenv("MYSQL_PASSWORD", "").strip()
 MYSQL_DATABASE: str = os.getenv("MYSQL_DATABASE", "tipx_login")
 MYSQL_CHARSET: str = os.getenv("MYSQL_CHARSET", "utf8mb4")
 MYSQL_CONNECT_TIMEOUT_SECONDS: int = int(os.getenv("MYSQL_CONNECT_TIMEOUT_SECONDS", "10"))
@@ -2335,7 +2341,7 @@ AUTH_DB_AUTO_CREATE: bool = os.getenv("AUTH_DB_AUTO_CREATE", "true").strip().low
     "y",
 }
 
-AUTH_DB_AUTO_SEED: bool = os.getenv("AUTH_DB_AUTO_SEED", "true").strip().lower() in {
+AUTH_DB_AUTO_SEED: bool = os.getenv("AUTH_DB_AUTO_SEED", "false").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -2363,14 +2369,14 @@ AUTH_ALLOW_OAUTH: bool = False
 AUTH_ALLOW_API_KEY: bool = False
 AUTH_ALLOW_SESSION_TABLE: bool = False
 
-AUTH_ADMIN_USERNAME: str = os.getenv("AUTH_ADMIN_USERNAME", "admin")
-AUTH_ADMIN_PASSWORD: str = os.getenv("AUTH_ADMIN_PASSWORD", "change-me-admin")
+AUTH_ADMIN_USERNAME: str = os.getenv("AUTH_ADMIN_USERNAME", "admin").strip()
+AUTH_ADMIN_PASSWORD: str = os.getenv("AUTH_ADMIN_PASSWORD", "").strip()
 
-AUTH_USER_USERNAME: str = os.getenv("AUTH_USER_USERNAME", "user")
-AUTH_USER_PASSWORD: str = os.getenv("AUTH_USER_PASSWORD", "change-me-user")
+AUTH_USER_USERNAME: str = os.getenv("AUTH_USER_USERNAME", "user").strip()
+AUTH_USER_PASSWORD: str = os.getenv("AUTH_USER_PASSWORD", "").strip()
 
-AUTH_VIEWER_USERNAME: str = os.getenv("AUTH_VIEWER_USERNAME", "viewer")
-AUTH_VIEWER_PASSWORD: str = os.getenv("AUTH_VIEWER_PASSWORD", "change-me-viewer")
+AUTH_VIEWER_USERNAME: str = os.getenv("AUTH_VIEWER_USERNAME", "viewer").strip()
+AUTH_VIEWER_PASSWORD: str = os.getenv("AUTH_VIEWER_PASSWORD", "").strip()
 
 AUTH_ROLES: List[str] = [
     "admin",
@@ -2472,9 +2478,7 @@ AUTH_PUBLIC_PREFIXES: List[str] = [
     "/assets",
     "/frontend",
     "/external_viewer",
-    f"{PUBLIC_API_PREFIX}",
-    f"{API_PREFIX}/public",
-    f"{API_PREFIX}{PUBLIC_API_PREFIX}",
+    PUBLIC_API_PREFIX,
 ]
 
 AUTH_AUTHENTICATED_EXACT_PATHS: List[str] = [
@@ -3280,20 +3284,36 @@ def find_latest_prediction_file() -> Optional[Path]:
     if not FLOOD_PREDICTION_DIR.exists():
         return None
 
-    files = sorted(
-        [
-            path
-            for path in FLOOD_PREDICTION_DIR.glob(PREDICTION_FILE_GLOB)
-            if path.is_file()
-        ],
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
+    files = [
+        path
+        for path in FLOOD_PREDICTION_DIR.glob(PREDICTION_FILE_GLOB)
+        if path.is_file()
+    ]
 
     if not files:
         return None
 
-    return files[0]
+    prefix = f"{PREDICTION_FILE_PREFIX}_"
+    dated_files: List[Tuple[Tuple[int, int, int], Path]] = []
+
+    for path in files:
+        date_text = path.stem[len(prefix):] if path.stem.startswith(prefix) else ""
+        date_parts = date_text.split("_")
+
+        if len(date_parts) != 3 or not all(part.isdigit() for part in date_parts):
+            continue
+
+        year, month, day = (int(part) for part in date_parts)
+
+        if year < 1 or not 1 <= month <= 12 or not 1 <= day <= 31:
+            continue
+
+        dated_files.append(((year, month, day), path))
+
+    if dated_files:
+        return max(dated_files, key=lambda item: item[0])[1]
+
+    return max(files, key=lambda path: path.stat().st_mtime)
 
 
 def allowed_upload_file(filename: str) -> bool:

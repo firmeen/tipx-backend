@@ -47,18 +47,9 @@ Core Concepts:
 """
 
 from __future__ import annotations
-try:
-    import bootstrap
-    BOOTSTRAP_LOADED = True
-except Exception as e:
-    bootstrap = None
-    BOOTSTRAP_LOADED = False
-    BOOTSTRAP_ERROR = str(e)
 from collections import Counter, defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
-
-import pandas as pd
 
 from config import (
     LINKAGE_INPUT_PATH,
@@ -76,12 +67,9 @@ from config import (
 
 from utils import (
     apply_search_sort_pagination,
-    build_director_company_pairs_from_record,
     clean_dataframe_common,
     clean_text,
     clean_text_lower,
-    count_distinct,
-    dataframe_to_records,
     first_non_empty,
     get_or_build_cache,
     group_records_by,
@@ -98,7 +86,6 @@ from utils import (
     read_cache,
     read_excel_by_logical_sheet,
     rename_columns_by_candidates,
-    sum_field,
     to_bool,
     to_int,
     to_jsonable,
@@ -197,35 +184,153 @@ def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def normalize_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def normalize_context(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     normalize context จาก api_routes.py
     """
 
+    raw_context = (
+        dict(context)
+        if isinstance(context, dict)
+        else {}
+    )
+
     result = dict(DEFAULT_CONTEXT)
-    result.update(context or {})
+    result.update(raw_context)
 
-    result["force_refresh"] = bool(result.get("force_refresh", False))
-    result["page"] = int(result.get("page", 1) or 1)
-    result["page_size"] = int(result.get("page_size", 50) or 50)
-    result["search"] = clean_text(result.get("search", ""))
-    result["sort_by"] = clean_text(result.get("sort_by", ""))
-    result["sort_dir"] = clean_text_lower(result.get("sort_dir", "asc")) or "asc"
+    result["force_refresh"] = bool(
+        to_bool(
+            result.get("force_refresh"),
+            default=False,
+        )
+    )
 
-    if not isinstance(result.get("filters"), dict):
+    try:
+        result["page"] = max(
+            1,
+            int(
+                result.get("page", 1)
+                or 1
+            ),
+        )
+    except (TypeError, ValueError):
+        result["page"] = 1
+
+    try:
+        result["page_size"] = max(
+            1,
+            min(
+                5000,
+                int(
+                    result.get("page_size", 50)
+                    or 50
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        result["page_size"] = 50
+
+    result["search"] = clean_text(
+        result.get("search", "")
+    )
+    result["sort_by"] = clean_text(
+        result.get("sort_by", "")
+    )
+    result["sort_dir"] = (
+        clean_text_lower(
+            result.get("sort_dir", "asc")
+        )
+        or "asc"
+    )
+
+    if result["sort_dir"] not in {
+        "asc",
+        "desc",
+    }:
+        result["sort_dir"] = "asc"
+
+    if not isinstance(
+        result.get("filters"),
+        dict,
+    ):
         result["filters"] = {}
 
-    result["mode"] = clean_text(result.get("mode", GRAPH_DEFAULT_MODE), default=GRAPH_DEFAULT_MODE)
-    result["depth"] = max(1, min(int(result.get("depth", GRAPH_DEFAULT_DEPTH) or GRAPH_DEFAULT_DEPTH), 5))
-    result["max_nodes"] = max(10, min(int(result.get("max_nodes", GRAPH_DEFAULT_MAX_NODES) or GRAPH_DEFAULT_MAX_NODES), 2000))
-    result["tax_id"] = normalize_tax_id(result.get("tax_id", ""))
-    result["director_id"] = clean_text(result.get("director_id", ""))
-    result["include_shared_edges"] = bool(to_bool(result.get("include_shared_edges", True), default=True))
-    result["include_policy"] = bool(to_bool(result.get("include_policy", True), default=True))
-    result["include_flood"] = bool(to_bool(result.get("include_flood", True), default=True))
+    result["mode"] = clean_text(
+        result.get(
+            "mode",
+            GRAPH_DEFAULT_MODE,
+        ),
+        default=GRAPH_DEFAULT_MODE,
+    )
+
+    try:
+        result["depth"] = max(
+            1,
+            min(
+                5,
+                int(
+                    result.get(
+                        "depth",
+                        GRAPH_DEFAULT_DEPTH,
+                    )
+                    or GRAPH_DEFAULT_DEPTH
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        result["depth"] = GRAPH_DEFAULT_DEPTH
+
+    try:
+        result["max_nodes"] = max(
+            10,
+            min(
+                1500,
+                int(
+                    result.get(
+                        "max_nodes",
+                        GRAPH_DEFAULT_MAX_NODES,
+                    )
+                    or GRAPH_DEFAULT_MAX_NODES
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        result["max_nodes"] = (
+            GRAPH_DEFAULT_MAX_NODES
+        )
+
+    result["tax_id"] = get_valid_tax_id(
+        result.get("tax_id", "")
+    )
+    result["director_id"] = clean_text(
+        result.get("director_id", "")
+    )
+
+    result["include_shared_edges"] = bool(
+        to_bool(
+            result.get(
+                "include_shared_edges",
+                True,
+            ),
+            default=True,
+        )
+    )
+    result["include_policy"] = bool(
+        to_bool(
+            result.get("include_policy", True),
+            default=True,
+        )
+    )
+    result["include_flood"] = bool(
+        to_bool(
+            result.get("include_flood", True),
+            default=True,
+        )
+    )
 
     return result
-
 
 def get_linkage_ttl() -> int:
     """
@@ -234,6 +339,66 @@ def get_linkage_ttl() -> int:
 
     return int(CACHE_TTL_SECONDS.get("linkage", 3600))
 
+def get_valid_tax_id(
+    value: Any,
+) -> str:
+    validation = validate_tax_id(
+        value
+    )
+
+    if not validation.get(
+        "tax_id_valid",
+        False,
+    ):
+        return ""
+
+    return clean_text(
+        validation.get("tax_id_norm")
+    )
+
+
+def get_linkage_risk_level(
+    director_count: Any,
+    shared_company_count: Any,
+    key_connector_count: Any,
+) -> str:
+    director_total = (
+        to_int(
+            director_count,
+            0,
+        )
+        or 0
+    )
+
+    shared_total = (
+        to_int(
+            shared_company_count,
+            0,
+        )
+        or 0
+    )
+
+    connector_total = (
+        to_int(
+            key_connector_count,
+            0,
+        )
+        or 0
+    )
+
+    if (
+        connector_total > 0
+        or shared_total >= 5
+    ):
+        return "Warning"
+
+    if (
+        shared_total > 0
+        or director_total > 0
+    ):
+        return "Watch"
+
+    return "Normal"
 
 def filter_records_api(
     records: List[Dict[str, Any]],
@@ -249,27 +414,55 @@ def filter_records_api(
 
     if filter_records_for_service is not None:
         try:
-            return filter_records_for_service(
-                records=records,
-                context=ctx,
-                target=target,
-                paginate=True,
+            filtered_result = (
+                filter_records_for_service(
+                    records=records,
+                    context=ctx,
+                    target=target,
+                    paginate=True,
+                )
             )
+
+            if (
+                isinstance(filtered_result, dict)
+                and isinstance(
+                    filtered_result.get("records"),
+                    list,
+                )
+            ):
+                return filtered_result
+
         except Exception:
             pass
 
+    filtered_records = list(
+        records
+        or []
+    )
+
+    try:
+        from filter_engine import apply_simple_filters
+
+        filtered_records = apply_simple_filters(
+            filtered_records,
+            ctx.get("filters", {}),
+        )
+    except Exception:
+        pass
+
     return apply_search_sort_pagination(
-        records=records,
+        records=filtered_records,
         context=ctx,
         searchable_fields=searchable_fields,
     )
-
 
 # ============================================================
 # 3) INPUT LOADER
 # ============================================================
 
-def load_linkage_input_clean(force_refresh: bool = False) -> Dict[str, Any]:
+def load_linkage_input_clean(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
     อ่าน linkage_input.xlsx และ clean เบื้องต้น
 
@@ -289,23 +482,46 @@ def load_linkage_input_clean(force_refresh: bool = False) -> Dict[str, Any]:
     """
 
     def builder() -> Dict[str, Any]:
-        if not LINKAGE_INPUT_PATH.exists():
+        if (
+            not LINKAGE_INPUT_PATH.exists()
+            or not LINKAGE_INPUT_PATH.is_file()
+        ):
             return {
                 "records": [],
                 "total": 0,
-                "source_path": str(LINKAGE_INPUT_PATH),
+                "source_path": str(
+                    LINKAGE_INPUT_PATH
+                ),
                 "created_at": now_iso(),
-                "warnings": ["linkage_input_file_missing"],
+                "warnings": [
+                    "linkage_input_file_missing"
+                ],
             }
 
-        df = read_excel_by_logical_sheet(
-            LINKAGE_INPUT_PATH,
-            expected_sheet_name=None,
-            fallback_index=LINKAGE_SHEET_INDEX_FALLBACK,
-            dtype=str,
-        )
+        try:
+            df = read_excel_by_logical_sheet(
+                LINKAGE_INPUT_PATH,
+                expected_sheet_name=None,
+                fallback_index=(
+                    LINKAGE_SHEET_INDEX_FALLBACK
+                ),
+                dtype=str,
+            )
+        except Exception:
+            return {
+                "records": [],
+                "total": 0,
+                "source_path": str(
+                    LINKAGE_INPUT_PATH
+                ),
+                "created_at": now_iso(),
+                "warnings": [
+                    "linkage_input_read_failed"
+                ],
+            }
 
         df = clean_dataframe_common(df)
+
         df = rename_columns_by_candidates(
             df,
             LINKAGE_COLUMNS,
@@ -316,71 +532,165 @@ def load_linkage_input_clean(force_refresh: bool = False) -> Dict[str, Any]:
             return {
                 "records": [],
                 "total": 0,
-                "source_path": str(LINKAGE_INPUT_PATH),
+                "source_path": str(
+                    LINKAGE_INPUT_PATH
+                ),
                 "created_at": now_iso(),
-                "warnings": ["linkage_input_empty"],
+                "warnings": [
+                    "linkage_input_empty"
+                ],
             }
 
         if "tax_id" not in df.columns:
             df["tax_id"] = ""
 
-        records: List[Dict[str, Any]] = []
+        records: List[
+            Dict[str, Any]
+        ] = []
 
         for idx, row in df.iterrows():
-            validation = validate_tax_id(row.get("tax_id"))
-            tax_id_norm = validation["tax_id_norm"]
+            validation = validate_tax_id(
+                row.get("tax_id")
+            )
 
-            company_name = clean_text(row.get("name_th") or row.get("company_name"))
+            company_name = clean_text(
+                row.get("name_th")
+                or row.get("company_name")
+            )
 
-            director_names = parse_boardlist(row.get("boardlist"))
+            director_names: List[str] = []
+            seen_director_ids: Set[str] = set()
 
-            record = {
-                "source_file": LINKAGE_INPUT_PATH.name,
-                "source_sheet": "linkage_input",
-                "source_row": int(idx) + 2,
+            for raw_director_name in parse_boardlist(
+                row.get("boardlist")
+            ):
+                director_name = normalize_director_name(
+                    raw_director_name
+                )
 
-                "tax_id_raw": validation["tax_id_raw"],
-                "tax_id_norm": tax_id_norm,
-                "tax_id_valid": validation["tax_id_valid"],
-                "tax_id_issue": validation["tax_id_issue"],
+                director_id = make_director_id(
+                    director_name
+                )
 
-                "company_name": company_name,
-                "name_th": company_name,
-                "boardlist": clean_text(row.get("boardlist")),
-                "director_names": director_names,
-                "director_count_raw": len(director_names),
+                if (
+                    not director_name
+                    or not director_id
+                    or director_id
+                    in seen_director_ids
+                ):
+                    continue
 
-                "business_type_objective": clean_text(row.get("business_type_objective")),
-                "business_type_tsic": clean_text(row.get("business_type_tsic")),
-                "company_size": clean_text(row.get("company_size")),
-                "wtip": clean_text(row.get("wtip")),
+                seen_director_ids.add(
+                    director_id
+                )
+                director_names.append(
+                    director_name
+                )
 
-                "most_recent_income_val": to_number(row.get("most_recent_income_val"), None),
-                "registered_capital": to_number(row.get("registered_capital"), None),
-            }
-
-            records.append(record)
+            records.append(
+                {
+                    "source_file": (
+                        LINKAGE_INPUT_PATH.name
+                    ),
+                    "source_sheet": (
+                        "linkage_input"
+                    ),
+                    "source_row": int(idx) + 2,
+                    "tax_id_raw": validation.get(
+                        "tax_id_raw",
+                        "",
+                    ),
+                    "tax_id_norm": validation.get(
+                        "tax_id_norm",
+                        "",
+                    ),
+                    "tax_id_valid": bool(
+                        validation.get(
+                            "tax_id_valid",
+                            False,
+                        )
+                    ),
+                    "tax_id_issue": validation.get(
+                        "tax_id_issue",
+                        "",
+                    ),
+                    "company_name": company_name,
+                    "name_th": company_name,
+                    "boardlist": clean_text(
+                        row.get("boardlist")
+                    ),
+                    "director_names": (
+                        director_names
+                    ),
+                    "director_count_raw": len(
+                        director_names
+                    ),
+                    "business_type_objective": clean_text(
+                        row.get(
+                            "business_type_objective"
+                        )
+                    ),
+                    "business_type_tsic": clean_text(
+                        row.get(
+                            "business_type_tsic"
+                        )
+                    ),
+                    "company_size": clean_text(
+                        row.get("company_size")
+                    ),
+                    "wtip": clean_text(
+                        row.get("wtip")
+                    ),
+                    "most_recent_income_val": to_number(
+                        row.get(
+                            "most_recent_income_val"
+                        ),
+                        None,
+                    ),
+                    "registered_capital": to_number(
+                        row.get(
+                            "registered_capital"
+                        ),
+                        None,
+                    ),
+                }
+            )
 
         return {
             "records": records,
             "total": len(records),
-            "source_path": str(LINKAGE_INPUT_PATH),
+            "source_path": str(
+                LINKAGE_INPUT_PATH
+            ),
             "created_at": now_iso(),
+            "invalid_tax_id_count": sum(
+                1
+                for record in records
+                if not record.get(
+                    "tax_id_valid"
+                )
+            ),
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["linkage_input_clean"],
+        cache_key=CACHE_KEYS[
+            "linkage_input_clean"
+        ],
         builder=builder,
         ttl_seconds=get_linkage_ttl(),
         force_refresh=force_refresh,
-        source="linkage_service.load_linkage_input_clean",
+        source=(
+            "linkage_service."
+            "load_linkage_input_clean"
+        ),
     )
 
     return {
         **cache_result["data"],
-        "cache_used": cache_result["cache_used"],
+        "cache_used": cache_result[
+            "cache_used"
+        ],
     }
-
 
 def get_linkage_input_records(force_refresh: bool = False) -> List[Dict[str, Any]]:
     """
@@ -394,74 +704,144 @@ def get_linkage_input_records(force_refresh: bool = False) -> List[Dict[str, Any
 # 4) COMPANY UNIFIED ENRICHMENT
 # ============================================================
 
-def extract_records_from_cache_payload(payload: Any) -> List[Dict[str, Any]]:
+def extract_records_from_cache_payload(
+    payload: Any,
+) -> List[Dict[str, Any]]:
     """
     ดึง records จาก cache payload หลายรูปแบบ
     """
 
-    if isinstance(payload, dict):
-        if isinstance(payload.get("records"), list):
-            return payload["records"]
-
-        if isinstance(payload.get("data"), dict) and isinstance(payload["data"].get("records"), list):
-            return payload["data"]["records"]
-
-        if isinstance(payload.get("data"), list):
-            return payload["data"]
-
     if isinstance(payload, list):
-        return payload
+        return [
+            record
+            for record in payload
+            if isinstance(record, dict)
+        ]
+
+    if not isinstance(payload, dict):
+        return []
+
+    for key in [
+        "records",
+        "items",
+    ]:
+        value = payload.get(key)
+
+        if isinstance(value, list):
+            return [
+                record
+                for record in value
+                if isinstance(record, dict)
+            ]
+
+    data = payload.get("data")
+
+    if isinstance(data, list):
+        return [
+            record
+            for record in data
+            if isinstance(record, dict)
+        ]
+
+    if isinstance(data, dict):
+        return extract_records_from_cache_payload(
+            data
+        )
 
     return []
 
 
-def index_company_records_by_tax_id(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def index_company_records_by_tax_id(
+    records: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
     """
-    index company records ด้วย tax_id_norm
+    index company records ด้วย valid tax_id_norm
     """
 
-    result: Dict[str, Dict[str, Any]] = {}
+    result: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
+
+    def record_score(
+        record: Dict[str, Any],
+    ) -> int:
+        return sum(
+            1
+            for value in record.values()
+            if not is_empty_value(value)
+        )
 
     for record in records or []:
         if not isinstance(record, dict):
             continue
 
-        tax_id_norm = normalize_tax_id(record.get("tax_id_norm") or record.get("tax_id"))
+        tax_id_norm = get_valid_tax_id(
+            record.get("tax_id_norm")
+            or record.get("tax_id")
+            or record.get("tax_id_raw")
+        )
 
-        if tax_id_norm:
+        if not tax_id_norm:
+            continue
+
+        if tax_id_norm not in result:
+            result[tax_id_norm] = record
+            continue
+
+        if (
+            record_score(record)
+            > record_score(
+                result[tax_id_norm]
+            )
+        ):
             result[tax_id_norm] = record
 
     return result
 
-
 def load_company_source_payload() -> Dict[str, Any]:
     """
-    PHASE linkage อ่าน company_unified_base ก่อน
-    ถ้าไม่มีให้ fallback เป็น company_unified_master
-    ถ้ายังไม่มี ให้ใช้ linkage input record เป็น fallback ใน enrich_company_fields()
+    PHASE linkage อ่าน company_unified_base เท่านั้น
+
+    ถ้าไม่มี company_unified_base:
+    - ใช้ linkage input record เป็น fallback
+    - ไม่อ่าน company_unified_master
+      เพื่อไม่สร้าง circular dependency
     """
 
-    for cache_key in ["company_unified_base", "company_unified_master"]:
-        payload = read_cache(cache_key, default={})
-        records = extract_records_from_cache_payload(payload)
+    payload = read_cache(
+        "company_unified_base",
+        default={},
+    )
 
-        if records:
-            return {
-                "company_source": cache_key,
-                "records": records,
-                "index": index_company_records_by_tax_id(records),
-                "record_count": len(records),
-                "degraded": cache_key != "company_unified_base",
-            }
+    records = extract_records_from_cache_payload(
+        payload
+    )
+
+    if records:
+        return {
+            "company_source": (
+                "company_unified_base"
+            ),
+            "records": records,
+            "index": (
+                index_company_records_by_tax_id(
+                    records
+                )
+            ),
+            "record_count": len(records),
+            "degraded": False,
+        }
 
     return {
-        "company_source": "linkage_input_fallback",
+        "company_source": (
+            "linkage_input_fallback"
+        ),
         "records": [],
         "index": {},
         "record_count": 0,
         "degraded": True,
     }
-
 
 def build_linkage_cache_meta(
     cache_key: str,
@@ -620,7 +1000,9 @@ def enrich_company_fields(
 # 5) DIRECTOR-COMPANY PAIRS
 # ============================================================
 
-def build_director_company_pairs(force_refresh: bool = False) -> Dict[str, Any]:
+def build_director_company_pairs(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
     สร้าง director_company_pairs
 
@@ -629,98 +1011,319 @@ def build_director_company_pairs(force_refresh: bool = False) -> Dict[str, Any]:
     """
 
     def builder() -> Dict[str, Any]:
-        linkage_records = get_linkage_input_records(force_refresh=force_refresh)
-        company_source_payload = load_company_source_payload()
-        company_index = company_source_payload.get("index", {})
-        company_source = company_source_payload.get("company_source", "linkage_input_fallback")
+        linkage_records = get_linkage_input_records(
+            force_refresh=force_refresh
+        )
 
-        pairs: List[Dict[str, Any]] = []
+        company_source_payload = (
+            load_company_source_payload()
+        )
+
+        company_index = (
+            company_source_payload.get(
+                "index",
+                {},
+            )
+        )
+
+        company_source = (
+            company_source_payload.get(
+                "company_source",
+                "linkage_input_fallback",
+            )
+        )
+
+        pairs: List[
+            Dict[str, Any]
+        ] = []
+
+        invalid_company_count = 0
+        invalid_director_count = 0
 
         for record in linkage_records:
-            tax_id_norm = normalize_tax_id(record.get("tax_id_norm"))
-            company_enriched = enrich_company_fields(record, company_index=company_index)
+            tax_id_norm = get_valid_tax_id(
+                record.get("tax_id_norm")
+                or record.get("tax_id")
+                or record.get("tax_id_raw")
+            )
 
-            director_names = record.get("director_names")
+            if not tax_id_norm:
+                invalid_company_count += 1
+                continue
 
-            if not isinstance(director_names, list):
-                director_names = parse_boardlist(record.get("boardlist"))
+            company_enriched = enrich_company_fields(
+                record,
+                company_index=company_index,
+            )
 
-            for director_name in director_names:
-                director_name_clean = normalize_director_name(director_name)
-                director_id = make_director_id(director_name_clean)
+            director_names = record.get(
+                "director_names"
+            )
 
-                if not tax_id_norm or not director_id:
+            if not isinstance(
+                director_names,
+                list,
+            ):
+                director_names = parse_boardlist(
+                    record.get("boardlist")
+                )
+
+            directors: Dict[str, str] = {}
+
+            for raw_director_name in director_names:
+                director_name = normalize_director_name(
+                    raw_director_name
+                )
+
+                director_id = make_director_id(
+                    director_name
+                )
+
+                if (
+                    not director_name
+                    or not director_id
+                ):
+                    invalid_director_count += 1
                     continue
+
+                directors.setdefault(
+                    director_id,
+                    director_name,
+                )
+
+            for director_id, director_name in sorted(
+                directors.items(),
+                key=lambda item: item[1],
+            ):
+                company_node_id = make_company_node_id(
+                    tax_id_norm
+                )
+
+                director_node_id = make_director_node_id(
+                    director_id
+                )
 
                 pair = {
                     "pair_id": make_hash_id(
-                        f"{tax_id_norm}|{director_id}",
+                        (
+                            f"{tax_id_norm}|"
+                            f"{director_id}"
+                        ),
                         prefix="pair",
                         length=20,
                     ),
-
                     "tax_id_norm": tax_id_norm,
-                    "company_node_id": make_company_node_id(tax_id_norm),
-                    "company_name": company_enriched.get("company_name", ""),
+                    "tax_id_valid": True,
+                    "company_node_id": (
+                        company_node_id
+                    ),
+                    "company_name": (
+                        company_enriched.get(
+                            "company_name",
+                            "",
+                        )
+                    ),
                     "director_id": director_id,
-                    "director_node_id": make_director_node_id(director_id),
-                    "director_name": director_name_clean,
-                    "director_name_norm": normalize_director_name_for_id(director_name_clean),
-
-                    "business_type_objective": company_enriched.get("business_type_objective", ""),
-                    "business_type_tsic": company_enriched.get("business_type_tsic", ""),
-                    "company_size": company_enriched.get("company_size", ""),
-                    "wtip": company_enriched.get("wtip", ""),
-
-                    "province": company_enriched.get("province", ""),
-                    "district": company_enriched.get("district", ""),
-                    "lat": company_enriched.get("lat"),
-                    "lon": company_enriched.get("lon"),
-                    "latitude": company_enriched.get("latitude", company_enriched.get("lat")),
-                    "longitude": company_enriched.get("longitude", company_enriched.get("lon")),
-                    "location_quality": company_enriched.get("location_quality", ""),
-
-                    "has_policy": company_enriched.get("has_policy", False),
-                    "has_location": company_enriched.get("has_location", False),
-                    "has_flood_context": company_enriched.get("has_flood_context", False),
-
-                    "total_premium": company_enriched.get("total_premium", 0),
-                    "total_loss": company_enriched.get("total_loss", 0),
-                    "total_suminsure": company_enriched.get("total_suminsure", 0),
-                    "loss_ratio": company_enriched.get("loss_ratio"),
-                    "loss_ratio_band": company_enriched.get("loss_ratio_band", "Undefined"),
-
-                    "most_recent_income_val": company_enriched.get("most_recent_income_val"),
-                    "registered_capital": company_enriched.get("registered_capital"),
-
-                    "flood_risk_level": company_enriched.get("flood_risk_level", "Unknown"),
-                    "flood_join_level": company_enriched.get("flood_join_level", "none"),
-                    "flood_risk_reason": company_enriched.get("flood_risk_reason", ""),
-
+                    "director_node_id": (
+                        director_node_id
+                    ),
+                    "director_name": director_name,
+                    "director_name_norm": (
+                        normalize_director_name_for_id(
+                            director_name
+                        )
+                    ),
+                    "business_type_objective": (
+                        company_enriched.get(
+                            "business_type_objective",
+                            "",
+                        )
+                    ),
+                    "business_type_tsic": (
+                        company_enriched.get(
+                            "business_type_tsic",
+                            "",
+                        )
+                    ),
+                    "company_size": (
+                        company_enriched.get(
+                            "company_size",
+                            "",
+                        )
+                    ),
+                    "wtip": company_enriched.get(
+                        "wtip",
+                        "",
+                    ),
+                    "province": (
+                        company_enriched.get(
+                            "province",
+                            "",
+                        )
+                    ),
+                    "district": (
+                        company_enriched.get(
+                            "district",
+                            "",
+                        )
+                    ),
+                    "lat": company_enriched.get(
+                        "lat"
+                    ),
+                    "lon": company_enriched.get(
+                        "lon"
+                    ),
+                    "latitude": (
+                        company_enriched.get(
+                            "latitude",
+                            company_enriched.get(
+                                "lat"
+                            ),
+                        )
+                    ),
+                    "longitude": (
+                        company_enriched.get(
+                            "longitude",
+                            company_enriched.get(
+                                "lon"
+                            ),
+                        )
+                    ),
+                    "location_quality": (
+                        company_enriched.get(
+                            "location_quality",
+                            "",
+                        )
+                    ),
+                    "has_policy": bool(
+                        to_bool(
+                            company_enriched.get(
+                                "has_policy"
+                            ),
+                            default=False,
+                        )
+                    ),
+                    "has_location": bool(
+                        to_bool(
+                            company_enriched.get(
+                                "has_location"
+                            ),
+                            default=False,
+                        )
+                    ),
+                    "has_flood_context": bool(
+                        to_bool(
+                            company_enriched.get(
+                                "has_flood_context"
+                            ),
+                            default=False,
+                        )
+                    ),
+                    "total_premium": (
+                        to_number(
+                            company_enriched.get(
+                                "total_premium"
+                            ),
+                            0,
+                        )
+                        or 0
+                    ),
+                    "total_loss": (
+                        to_number(
+                            company_enriched.get(
+                                "total_loss"
+                            ),
+                            0,
+                        )
+                        or 0
+                    ),
+                    "total_suminsure": (
+                        to_number(
+                            company_enriched.get(
+                                "total_suminsure"
+                            ),
+                            0,
+                        )
+                        or 0
+                    ),
+                    "loss_ratio": (
+                        company_enriched.get(
+                            "loss_ratio"
+                        )
+                    ),
+                    "loss_ratio_band": (
+                        company_enriched.get(
+                            "loss_ratio_band",
+                            "Undefined",
+                        )
+                    ),
+                    "most_recent_income_val": (
+                        company_enriched.get(
+                            "most_recent_income_val"
+                        )
+                    ),
+                    "registered_capital": (
+                        company_enriched.get(
+                            "registered_capital"
+                        )
+                    ),
+                    "flood_risk_level": (
+                        company_enriched.get(
+                            "flood_risk_level",
+                            "Unknown",
+                        )
+                    ),
+                    "flood_join_level": (
+                        company_enriched.get(
+                            "flood_join_level",
+                            "none",
+                        )
+                    ),
+                    "flood_risk_reason": (
+                        company_enriched.get(
+                            "flood_risk_reason",
+                            "",
+                        )
+                    ),
                     "edge_contract": {
-                        "company_node_id": make_company_node_id(tax_id_norm),
-                        "director_node_id": make_director_node_id(director_id),
-                        "edge_type": EDGE_TYPE_DIRECTOR_OF,
+                        "company_node_id": (
+                            company_node_id
+                        ),
+                        "director_node_id": (
+                            director_node_id
+                        ),
+                        "edge_type": (
+                            EDGE_TYPE_DIRECTOR_OF
+                        ),
                     },
-                    "company_source": company_source,
-                    "source_file": record.get("source_file", ""),
-                    "source_row": record.get("source_row"),
+                    "company_source": (
+                        company_source
+                    ),
+                    "source_file": record.get(
+                        "source_file",
+                        "",
+                    ),
+                    "source_row": record.get(
+                        "source_row"
+                    ),
                 }
 
                 pairs.append(pair)
 
-        unique: Dict[str, Dict[str, Any]] = {}
-
-        for pair in pairs:
-            unique[pair["pair_id"]] = pair
-
-        records = list(unique.values())
+        unique = {
+            pair["pair_id"]: pair
+            for pair in pairs
+        }
 
         records = sorted(
-            records,
+            unique.values(),
             key=lambda item: (
-                clean_text(item.get("director_name")),
-                clean_text(item.get("company_name")),
+                clean_text(
+                    item.get("director_name")
+                ),
+                clean_text(
+                    item.get("company_name")
+                ),
             ),
         )
 
@@ -729,27 +1332,57 @@ def build_director_company_pairs(force_refresh: bool = False) -> Dict[str, Any]:
             "total": len(records),
             "created_at": now_iso(),
             "meta": build_linkage_cache_meta(
-                cache_key=CACHE_KEYS["director_company_pairs"],
-                source_input=str(LINKAGE_INPUT_PATH),
+                cache_key=CACHE_KEYS[
+                    "director_company_pairs"
+                ],
+                source_input=str(
+                    LINKAGE_INPUT_PATH
+                ),
                 company_source=company_source,
                 record_count=len(records),
-                degraded=company_source != "company_unified_base",
+                degraded=(
+                    company_source
+                    != "company_unified_base"
+                ),
+                extra={
+                    "invalid_company_count": (
+                        invalid_company_count
+                    ),
+                    "invalid_director_count": (
+                        invalid_director_count
+                    ),
+                },
             ),
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["director_company_pairs"],
+        cache_key=CACHE_KEYS[
+            "director_company_pairs"
+        ],
         builder=builder,
         ttl_seconds=get_linkage_ttl(),
         force_refresh=force_refresh,
-        source="linkage_service.build_director_company_pairs",
+        source=(
+            "linkage_service."
+            "build_director_company_pairs"
+        ),
     )
 
-    data = dict(cache_result["data"])
-    data["cache_used"] = cache_result["cache_used"]
+    data = dict(
+        cache_result["data"]
+    )
 
-    if isinstance(data.get("meta"), dict):
-        data["meta"]["cache_used"] = cache_result["cache_used"]
+    data["cache_used"] = cache_result[
+        "cache_used"
+    ]
+
+    if isinstance(
+        data.get("meta"),
+        dict,
+    ):
+        data["meta"]["cache_used"] = (
+            cache_result["cache_used"]
+        )
 
     return data
 
@@ -928,219 +1561,362 @@ def get_director_master_records(force_refresh: bool = False) -> List[Dict[str, A
 # 7) LINKAGE COMPANY SUMMARY
 # ============================================================
 
-def build_linkage_company_summary(force_refresh: bool = False) -> Dict[str, Any]:
+def build_linkage_company_summary(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
     สร้าง linkage_company_summary
 
-    1 แถว = company 1 บริษัท พร้อมจำนวน director และ key connector
+    1 แถว = company 1 บริษัท
+    พร้อมจำนวน director, shared company และ key connector
     """
 
     def builder() -> Dict[str, Any]:
-        pairs = get_director_company_pair_records(force_refresh=force_refresh)
-        director_master = get_director_master_records(force_refresh=force_refresh)
+        pairs = get_director_company_pair_records(
+            force_refresh=force_refresh
+        )
+
+        director_master = get_director_master_records(
+            force_refresh=force_refresh
+        )
 
         director_index = {
-            item.get("director_id"): item
+            clean_text(
+                item.get("director_id")
+            ): item
             for item in director_master
+            if clean_text(
+                item.get("director_id")
+            )
         }
 
-        groups = group_records_by(pairs, "tax_id_norm")
+        shared_links = build_shared_director_links(
+            force_refresh=force_refresh
+        ).get(
+            "records",
+            [],
+        )
 
-        records: List[Dict[str, Any]] = []
+        shared_company_by_tax_id: Dict[
+            str,
+            Set[str],
+        ] = defaultdict(set)
 
-        for tax_id_norm, group in groups.items():
-            if tax_id_norm == "__EMPTY__":
+        for link in shared_links:
+            source_tax_id = get_valid_tax_id(
+                link.get("source_tax_id")
+            )
+            target_tax_id = get_valid_tax_id(
+                link.get("target_tax_id")
+            )
+
+            if (
+                not source_tax_id
+                or not target_tax_id
+                or source_tax_id
+                == target_tax_id
+            ):
                 continue
+
+            shared_company_by_tax_id[
+                source_tax_id
+            ].add(target_tax_id)
+
+            shared_company_by_tax_id[
+                target_tax_id
+            ].add(source_tax_id)
+
+        groups = group_records_by(
+            pairs,
+            "tax_id_norm",
+        )
+
+        records: List[
+            Dict[str, Any]
+        ] = []
+
+        for raw_tax_id, group in groups.items():
+            tax_id_norm = get_valid_tax_id(
+                raw_tax_id
+            )
+
+            if not tax_id_norm:
+                continue
+
+            representative = max(
+                group,
+                key=lambda item: sum(
+                    1
+                    for value in item.values()
+                    if not is_empty_value(value)
+                ),
+            )
 
             director_ids = sorted(
                 {
-                    clean_text(item.get("director_id"))
+                    clean_text(
+                        item.get("director_id")
+                    )
                     for item in group
-                    if clean_text(item.get("director_id"))
+                    if clean_text(
+                        item.get("director_id")
+                    )
                 }
             )
 
-            key_connectors = [
-                director_index.get(director_id, {})
+            key_connector_ids = [
+                director_id
                 for director_id in director_ids
-                if director_index.get(director_id, {}).get("is_key_connector")
+                if bool(
+                    to_bool(
+                        director_index.get(
+                            director_id,
+                            {},
+                        ).get(
+                            "is_key_connector"
+                        ),
+                        default=False,
+                    )
+                )
             ]
 
-            company_name = first_non_empty(
-                *[item.get("company_name") for item in group],
-                default="",
+            shared_company_ids = sorted(
+                shared_company_by_tax_id.get(
+                    tax_id_norm,
+                    set(),
+                )
             )
 
-            record = {
-                "tax_id_norm": tax_id_norm,
-                "company_name": company_name,
-                "director_count": len(director_ids),
-                "director_ids": director_ids,
-                "director_names": [
-                    director_index.get(director_id, {}).get("director_name", "")
-                    for director_id in director_ids
-                ],
-                "key_connector_count": len(key_connectors),
-                "key_connector_ids": [
-                    item.get("director_id")
-                    for item in key_connectors
-                    if item.get("director_id")
-                ],
-                "shared_company_count": 0,
-                "has_linkage": len(director_ids) > 0,
-                "province": first_non_empty(*[item.get("province") for item in group], default=""),
-                "flood_risk_level": first_non_empty(*[item.get("flood_risk_level") for item in group], default="Unknown"),
-                "total_premium": first_non_empty(*[item.get("total_premium") for item in group], default=0),
-                "total_suminsure": first_non_empty(*[item.get("total_suminsure") for item in group], default=0),
-            }
-
-            records.append(record)
-
-        shared_links = build_shared_director_links(force_refresh=force_refresh).get("records", [])
-        shared_count_by_tax: Dict[str, Set[str]] = defaultdict(set)
-
-        for link in shared_links:
-            source_tax_id = normalize_tax_id(link.get("source_tax_id"))
-            target_tax_id = normalize_tax_id(link.get("target_tax_id"))
-
-            if source_tax_id and target_tax_id:
-                shared_count_by_tax[source_tax_id].add(target_tax_id)
-                shared_count_by_tax[target_tax_id].add(source_tax_id)
-
-        for record in records:
-            tax_id_norm = record.get("tax_id_norm")
-            record["shared_company_count"] = len(shared_count_by_tax.get(tax_id_norm, set()))
-
-        return {
-            "records": records,
-            "total": len(records),
-            "created_at": now_iso(),
-        }
-
-    cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["linkage_company_summary"],
-        builder=builder,
-        ttl_seconds=get_linkage_ttl(),
-        force_refresh=force_refresh,
-        source="linkage_service.build_linkage_company_summary",
-    )
-
-    return {
-        **cache_result["data"],
-        "cache_used": cache_result["cache_used"],
-    }
-
-
-# ============================================================
-# 8) SHARED DIRECTOR LINKS
-# ============================================================
-
-def build_shared_director_links(force_refresh: bool = False) -> Dict[str, Any]:
-    """
-    สร้าง shared_director_links
-
-    1 แถว = company A เชื่อม company B ผ่านกรรมการร่วม
-    """
-
-    def builder() -> Dict[str, Any]:
-        pairs = get_director_company_pair_records(force_refresh=force_refresh)
-
-        director_groups = group_records_by(pairs, "director_id")
-
-        company_pair_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
-
-        for director_id, group in director_groups.items():
-            if director_id == "__EMPTY__":
-                continue
-
-            companies: Dict[str, Dict[str, Any]] = {}
-
-            for item in group:
-                tax_id_norm = normalize_tax_id(item.get("tax_id_norm"))
-
-                if tax_id_norm:
-                    companies[tax_id_norm] = item
-
-            company_ids = sorted(companies.keys())
-
-            if len(company_ids) < 2:
-                continue
-
-            director_name = first_non_empty(
-                *[item.get("director_name") for item in group],
-                default="",
+            director_count = len(
+                director_ids
+            )
+            shared_company_count = len(
+                shared_company_ids
+            )
+            key_connector_count = len(
+                key_connector_ids
             )
 
-            for i in range(len(company_ids)):
-                for j in range(i + 1, len(company_ids)):
-                    source_tax_id = company_ids[i]
-                    target_tax_id = company_ids[j]
-
-                    pair_key = tuple(sorted([source_tax_id, target_tax_id]))
-
-                    if pair_key not in company_pair_map:
-                        source_company = companies[source_tax_id]
-                        target_company = companies[target_tax_id]
-
-                        company_pair_map[pair_key] = {
-                            "link_id": make_hash_id(
-                                f"{pair_key[0]}|{pair_key[1]}",
-                                prefix="shared",
-                                length=20,
+            records.append(
+                {
+                    "tax_id_norm": tax_id_norm,
+                    "tax_id_valid": True,
+                    "company_name": first_non_empty(
+                        *[
+                            item.get("company_name")
+                            for item in group
+                        ],
+                        default="",
+                    ),
+                    "director_count": director_count,
+                    "director_ids": director_ids,
+                    "director_names": [
+                        director_index.get(
+                            director_id,
+                            {},
+                        ).get(
+                            "director_name",
+                            "",
+                        )
+                        for director_id
+                        in director_ids
+                    ],
+                    "key_connector_count": (
+                        key_connector_count
+                    ),
+                    "key_connector_ids": (
+                        key_connector_ids
+                    ),
+                    "shared_company_count": (
+                        shared_company_count
+                    ),
+                    "shared_company_ids": (
+                        shared_company_ids
+                    ),
+                    "has_linkage": (
+                        director_count > 0
+                    ),
+                    "linkage_risk_level": (
+                        get_linkage_risk_level(
+                            director_count=(
+                                director_count
                             ),
-                            "source_tax_id": pair_key[0],
-                            "target_tax_id": pair_key[1],
-                            "source_company_name": source_company.get("company_name", ""),
-                            "target_company_name": target_company.get("company_name", ""),
-                            "shared_director_ids": [],
-                            "shared_directors": [],
-                            "shared_directors_text": "",
-                            "weight": 0,
-
-                            "source_province": source_company.get("province", ""),
-                            "target_province": target_company.get("province", ""),
-                            "source_lat": source_company.get("lat"),
-                            "source_lon": source_company.get("lon"),
-                            "target_lat": target_company.get("lat"),
-                            "target_lon": target_company.get("lon"),
-
-                            "source_flood_risk_level": source_company.get("flood_risk_level", "Unknown"),
-                            "target_flood_risk_level": target_company.get("flood_risk_level", "Unknown"),
-
-                            "source_total_suminsure": source_company.get("total_suminsure", 0),
-                            "target_total_suminsure": target_company.get("total_suminsure", 0),
-                        }
-
-                    link = company_pair_map[pair_key]
-
-                    if director_id not in link["shared_director_ids"]:
-                        link["shared_director_ids"].append(director_id)
-
-                    if director_name and director_name not in link["shared_directors"]:
-                        link["shared_directors"].append(director_name)
-
-        records = list(company_pair_map.values())
-
-        for record in records:
-            record["weight"] = len(record["shared_director_ids"])
-            record["shared_directors_text"] = ", ".join(record["shared_directors"])
-            record["combined_flood_risk_level"] = _combine_risk_levels_safe(
-                [
-                    record.get("source_flood_risk_level"),
-                    record.get("target_flood_risk_level"),
-                ]
-            )
-            record["combined_suminsure"] = (
-                (to_number(record.get("source_total_suminsure"), 0) or 0)
-                + (to_number(record.get("target_total_suminsure"), 0) or 0)
+                            shared_company_count=(
+                                shared_company_count
+                            ),
+                            key_connector_count=(
+                                key_connector_count
+                            ),
+                        )
+                    ),
+                    "province": representative.get(
+                        "province",
+                        "",
+                    ),
+                    "district": representative.get(
+                        "district",
+                        "",
+                    ),
+                    "lat": representative.get(
+                        "lat"
+                    ),
+                    "lon": representative.get(
+                        "lon"
+                    ),
+                    "latitude": representative.get(
+                        "latitude",
+                        representative.get("lat"),
+                    ),
+                    "longitude": representative.get(
+                        "longitude",
+                        representative.get("lon"),
+                    ),
+                    "location_quality": (
+                        representative.get(
+                            "location_quality",
+                            "",
+                        )
+                    ),
+                    "has_policy": bool(
+                        to_bool(
+                            representative.get(
+                                "has_policy"
+                            ),
+                            default=False,
+                        )
+                    ),
+                    "has_location": bool(
+                        to_bool(
+                            representative.get(
+                                "has_location"
+                            ),
+                            default=False,
+                        )
+                    ),
+                    "has_flood_context": bool(
+                        to_bool(
+                            representative.get(
+                                "has_flood_context"
+                            ),
+                            default=False,
+                        )
+                    ),
+                    "business_type_objective": (
+                        representative.get(
+                            "business_type_objective",
+                            "",
+                        )
+                    ),
+                    "business_type_tsic": (
+                        representative.get(
+                            "business_type_tsic",
+                            "",
+                        )
+                    ),
+                    "company_size": (
+                        representative.get(
+                            "company_size",
+                            "",
+                        )
+                    ),
+                    "wtip": representative.get(
+                        "wtip",
+                        "",
+                    ),
+                    "flood_risk_level": (
+                        representative.get(
+                            "flood_risk_level",
+                            "Unknown",
+                        )
+                    ),
+                    "flood_join_level": (
+                        representative.get(
+                            "flood_join_level",
+                            "none",
+                        )
+                    ),
+                    "total_premium": (
+                        to_number(
+                            representative.get(
+                                "total_premium"
+                            ),
+                            0,
+                        )
+                        or 0
+                    ),
+                    "total_loss": (
+                        to_number(
+                            representative.get(
+                                "total_loss"
+                            ),
+                            0,
+                        )
+                        or 0
+                    ),
+                    "total_suminsure": (
+                        to_number(
+                            representative.get(
+                                "total_suminsure"
+                            ),
+                            0,
+                        )
+                        or 0
+                    ),
+                    "loss_ratio": representative.get(
+                        "loss_ratio"
+                    ),
+                    "loss_ratio_band": (
+                        representative.get(
+                            "loss_ratio_band",
+                            "Undefined",
+                        )
+                    ),
+                    "most_recent_income_val": (
+                        representative.get(
+                            "most_recent_income_val"
+                        )
+                    ),
+                    "registered_capital": (
+                        representative.get(
+                            "registered_capital"
+                        )
+                    ),
+                }
             )
 
         records = sorted(
             records,
             key=lambda item: (
-                -(to_number(item.get("weight"), 0) or 0),
-                clean_text(item.get("source_company_name")),
-                clean_text(item.get("target_company_name")),
+                -(
+                    to_int(
+                        item.get(
+                            "key_connector_count"
+                        ),
+                        0,
+                    )
+                    or 0
+                ),
+                -(
+                    to_int(
+                        item.get(
+                            "shared_company_count"
+                        ),
+                        0,
+                    )
+                    or 0
+                ),
+                -(
+                    to_int(
+                        item.get(
+                            "director_count"
+                        ),
+                        0,
+                    )
+                    or 0
+                ),
+                clean_text(
+                    item.get("company_name")
+                ),
             ),
         )
 
@@ -1151,16 +1927,354 @@ def build_shared_director_links(force_refresh: bool = False) -> Dict[str, Any]:
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["shared_director_links"],
+        cache_key=CACHE_KEYS[
+            "linkage_company_summary"
+        ],
         builder=builder,
         ttl_seconds=get_linkage_ttl(),
         force_refresh=force_refresh,
-        source="linkage_service.build_shared_director_links",
+        source=(
+            "linkage_service."
+            "build_linkage_company_summary"
+        ),
     )
 
     return {
         **cache_result["data"],
-        "cache_used": cache_result["cache_used"],
+        "cache_used": cache_result[
+            "cache_used"
+        ],
+    }
+
+# ============================================================
+# 8) SHARED DIRECTOR LINKS
+# ============================================================
+
+def build_shared_director_links(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    """
+    สร้าง shared_director_links
+
+    1 แถว = company A เชื่อม company B
+    ผ่านกรรมการร่วม
+    """
+
+    def builder() -> Dict[str, Any]:
+        pairs = get_director_company_pair_records(
+            force_refresh=force_refresh
+        )
+
+        director_groups = group_records_by(
+            pairs,
+            "director_id",
+        )
+
+        company_pair_map: Dict[
+            Tuple[str, str],
+            Dict[str, Any],
+        ] = {}
+
+        for director_id, group in director_groups.items():
+            director_id = clean_text(
+                director_id
+            )
+
+            if (
+                not director_id
+                or director_id == "__EMPTY__"
+            ):
+                continue
+
+            companies: Dict[
+                str,
+                Dict[str, Any],
+            ] = {}
+
+            for item in group:
+                tax_id_norm = get_valid_tax_id(
+                    item.get("tax_id_norm")
+                )
+
+                if not tax_id_norm:
+                    continue
+
+                existing = companies.get(
+                    tax_id_norm
+                )
+
+                if existing is None:
+                    companies[tax_id_norm] = item
+                    continue
+
+                existing_score = sum(
+                    1
+                    for value in existing.values()
+                    if not is_empty_value(value)
+                )
+
+                item_score = sum(
+                    1
+                    for value in item.values()
+                    if not is_empty_value(value)
+                )
+
+                if item_score > existing_score:
+                    companies[tax_id_norm] = item
+
+            company_ids = sorted(
+                companies
+            )
+
+            if len(company_ids) < 2:
+                continue
+
+            director_name = first_non_empty(
+                *[
+                    item.get("director_name")
+                    for item in group
+                ],
+                default="",
+            )
+
+            for source_index in range(
+                len(company_ids) - 1
+            ):
+                source_tax_id = company_ids[
+                    source_index
+                ]
+
+                for target_index in range(
+                    source_index + 1,
+                    len(company_ids),
+                ):
+                    target_tax_id = company_ids[
+                        target_index
+                    ]
+
+                    pair_key = (
+                        source_tax_id,
+                        target_tax_id,
+                    )
+
+                    if pair_key not in company_pair_map:
+                        source_company = companies[
+                            source_tax_id
+                        ]
+                        target_company = companies[
+                            target_tax_id
+                        ]
+
+                        company_pair_map[pair_key] = {
+                            "link_id": make_hash_id(
+                                (
+                                    f"{source_tax_id}|"
+                                    f"{target_tax_id}"
+                                ),
+                                prefix="shared",
+                                length=20,
+                            ),
+                            "source_tax_id": (
+                                source_tax_id
+                            ),
+                            "target_tax_id": (
+                                target_tax_id
+                            ),
+                            "source_company_name": (
+                                source_company.get(
+                                    "company_name",
+                                    "",
+                                )
+                            ),
+                            "target_company_name": (
+                                target_company.get(
+                                    "company_name",
+                                    "",
+                                )
+                            ),
+                            "shared_director_ids": [],
+                            "shared_directors": [],
+                            "shared_directors_text": "",
+                            "weight": 0,
+                            "source_province": (
+                                source_company.get(
+                                    "province",
+                                    "",
+                                )
+                            ),
+                            "target_province": (
+                                target_company.get(
+                                    "province",
+                                    "",
+                                )
+                            ),
+                            "source_lat": (
+                                source_company.get("lat")
+                            ),
+                            "source_lon": (
+                                source_company.get("lon")
+                            ),
+                            "target_lat": (
+                                target_company.get("lat")
+                            ),
+                            "target_lon": (
+                                target_company.get("lon")
+                            ),
+                            "source_flood_risk_level": (
+                                source_company.get(
+                                    "flood_risk_level",
+                                    "Unknown",
+                                )
+                            ),
+                            "target_flood_risk_level": (
+                                target_company.get(
+                                    "flood_risk_level",
+                                    "Unknown",
+                                )
+                            ),
+                            "source_total_suminsure": (
+                                source_company.get(
+                                    "total_suminsure",
+                                    0,
+                                )
+                            ),
+                            "target_total_suminsure": (
+                                target_company.get(
+                                    "total_suminsure",
+                                    0,
+                                )
+                            ),
+                        }
+
+                    link = company_pair_map[
+                        pair_key
+                    ]
+
+                    if (
+                        director_id
+                        not in link[
+                            "shared_director_ids"
+                        ]
+                    ):
+                        link[
+                            "shared_director_ids"
+                        ].append(director_id)
+
+                    if (
+                        director_name
+                        and director_name
+                        not in link[
+                            "shared_directors"
+                        ]
+                    ):
+                        link[
+                            "shared_directors"
+                        ].append(director_name)
+
+        records = list(
+            company_pair_map.values()
+        )
+
+        for record in records:
+            record["weight"] = len(
+                record[
+                    "shared_director_ids"
+                ]
+            )
+
+            record[
+                "shared_director_count"
+            ] = record["weight"]
+
+            record[
+                "shared_directors_text"
+            ] = ", ".join(
+                record[
+                    "shared_directors"
+                ]
+            )
+
+            record[
+                "combined_flood_risk_level"
+            ] = _combine_risk_levels_safe(
+                [
+                    record.get(
+                        "source_flood_risk_level"
+                    ),
+                    record.get(
+                        "target_flood_risk_level"
+                    ),
+                ]
+            )
+
+            record["combined_suminsure"] = (
+                (
+                    to_number(
+                        record.get(
+                            "source_total_suminsure"
+                        ),
+                        0,
+                    )
+                    or 0
+                )
+                + (
+                    to_number(
+                        record.get(
+                            "target_total_suminsure"
+                        ),
+                        0,
+                    )
+                    or 0
+                )
+            )
+
+        records = sorted(
+            records,
+            key=lambda item: (
+                -(
+                    to_number(
+                        item.get("weight"),
+                        0,
+                    )
+                    or 0
+                ),
+                clean_text(
+                    item.get(
+                        "source_company_name"
+                    )
+                ),
+                clean_text(
+                    item.get(
+                        "target_company_name"
+                    )
+                ),
+            ),
+        )
+
+        return {
+            "records": records,
+            "total": len(records),
+            "created_at": now_iso(),
+        }
+
+    cache_result = get_or_build_cache(
+        cache_key=CACHE_KEYS[
+            "shared_director_links"
+        ],
+        builder=builder,
+        ttl_seconds=get_linkage_ttl(),
+        force_refresh=force_refresh,
+        source=(
+            "linkage_service."
+            "build_shared_director_links"
+        ),
+    )
+
+    return {
+        **cache_result["data"],
+        "cache_used": cache_result[
+            "cache_used"
+        ],
     }
 
 
@@ -1176,25 +2290,73 @@ def get_shared_director_link_records(force_refresh: bool = False) -> List[Dict[s
 # 9) GRAPH NODES / EDGES
 # ============================================================
 
-def make_company_node(company_record: Dict[str, Any]) -> Dict[str, Any]:
+def make_company_node(
+    company_record: Dict[str, Any],
+) -> Dict[str, Any]:
     """
     สร้าง company node สำหรับ D3 graph
     """
 
-    tax_id_norm = normalize_tax_id(company_record.get("tax_id_norm"))
-    node_id = make_company_node_id(tax_id_norm)
+    tax_id_norm = get_valid_tax_id(
+        company_record.get("tax_id_norm")
+        or company_record.get("tax_id")
+    )
 
-    total_suminsure = to_number(company_record.get("total_suminsure"), 0) or 0
-    director_count = to_number(company_record.get("director_count"), 0) or 0
+    if not tax_id_norm:
+        return {}
 
-    size = GRAPH_NODE_SIZE.get("company", 18) + min(20, director_count * 2)
+    node_id = make_company_node_id(
+        tax_id_norm
+    )
+
+    total_suminsure = (
+        to_number(
+            company_record.get(
+                "total_suminsure"
+            ),
+            0,
+        )
+        or 0
+    )
+
+    director_count = (
+        to_number(
+            company_record.get(
+                "director_count"
+            ),
+            0,
+        )
+        or 0
+    )
+
+    size = (
+        GRAPH_NODE_SIZE.get(
+            "company",
+            18,
+        )
+        + min(
+            20,
+            director_count * 2,
+        )
+    )
 
     if total_suminsure > 0:
-        size += min(24, total_suminsure / 1_000_000)
+        size += min(
+            24,
+            total_suminsure / 1_000_000,
+        )
 
-    risk_level = clean_text(company_record.get("flood_risk_level"), default="Unknown")
+    risk_level = clean_text(
+        company_record.get(
+            "flood_risk_level"
+        ),
+        default="Unknown",
+    )
 
-    color = GRAPH_COLORS.get("company", "#2563eb")
+    color = GRAPH_COLORS.get(
+        "company",
+        "#2563eb",
+    )
 
     if risk_level == "Critical":
         color = "#dc2626"
@@ -1205,10 +2367,42 @@ def make_company_node(company_record: Dict[str, Any]) -> Dict[str, Any]:
     elif risk_level == "Normal":
         color = "#22c55e"
 
+    has_policy = bool(
+        to_bool(
+            company_record.get(
+                "has_policy"
+            ),
+            default=False,
+        )
+    )
+
+    has_flood_context = bool(
+        to_bool(
+            company_record.get(
+                "has_flood_context"
+            ),
+            default=False,
+        )
+    )
+
+    has_linkage = bool(
+        to_bool(
+            company_record.get(
+                "has_linkage"
+            ),
+            default=True,
+        )
+    )
+
     return {
         "id": node_id,
         "type": "company",
-        "label": clean_text(company_record.get("company_name"), default=tax_id_norm),
+        "label": clean_text(
+            company_record.get(
+                "company_name"
+            ),
+            default=tax_id_norm,
+        ),
         "tax_id_norm": tax_id_norm,
         "director_id": None,
         "size": round(size, 2),
@@ -1217,22 +2411,88 @@ def make_company_node(company_record: Dict[str, Any]) -> Dict[str, Any]:
         "badges": [
             badge
             for badge, enabled in {
-                "policy": to_bool(company_record.get("has_policy"), default=False),
-                "flood": to_bool(company_record.get("has_flood_context"), default=False),
-                "linkage": to_bool(company_record.get("has_linkage"), default=True),
+                "policy": has_policy,
+                "flood": has_flood_context,
+                "linkage": has_linkage,
             }.items()
             if enabled
         ],
         "metadata": {
-            "company_name": company_record.get("company_name", ""),
-            "province": company_record.get("province", ""),
-            "business_type_tsic": company_record.get("business_type_tsic", ""),
-            "company_size": company_record.get("company_size", ""),
-            "wtip": company_record.get("wtip", ""),
-            "total_premium": company_record.get("total_premium", 0),
-            "total_suminsure": company_record.get("total_suminsure", 0),
-            "loss_ratio": company_record.get("loss_ratio"),
-            "loss_ratio_band": company_record.get("loss_ratio_band", "Undefined"),
+            "company_name": (
+                company_record.get(
+                    "company_name",
+                    "",
+                )
+            ),
+            "province": company_record.get(
+                "province",
+                "",
+            ),
+            "district": company_record.get(
+                "district",
+                "",
+            ),
+            "business_type_tsic": (
+                company_record.get(
+                    "business_type_tsic",
+                    "",
+                )
+            ),
+            "company_size": (
+                company_record.get(
+                    "company_size",
+                    "",
+                )
+            ),
+            "wtip": company_record.get(
+                "wtip",
+                "",
+            ),
+            "director_count": director_count,
+            "shared_company_count": (
+                company_record.get(
+                    "shared_company_count",
+                    0,
+                )
+            ),
+            "key_connector_count": (
+                company_record.get(
+                    "key_connector_count",
+                    0,
+                )
+            ),
+            "linkage_risk_level": (
+                company_record.get(
+                    "linkage_risk_level",
+                    "Normal",
+                )
+            ),
+            "has_policy": has_policy,
+            "has_flood_context": (
+                has_flood_context
+            ),
+            "total_premium": (
+                company_record.get(
+                    "total_premium",
+                    0,
+                )
+            ),
+            "total_loss": company_record.get(
+                "total_loss",
+                0,
+            ),
+            "total_suminsure": (
+                total_suminsure
+            ),
+            "loss_ratio": company_record.get(
+                "loss_ratio"
+            ),
+            "loss_ratio_band": (
+                company_record.get(
+                    "loss_ratio_band",
+                    "Undefined",
+                )
+            ),
             "flood_risk_level": risk_level,
             "lat": company_record.get("lat"),
             "lon": company_record.get("lon"),
@@ -1240,66 +2500,176 @@ def make_company_node(company_record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def make_director_node(director_record: Dict[str, Any]) -> Dict[str, Any]:
+def make_director_node(
+    director_record: Dict[str, Any],
+) -> Dict[str, Any]:
     """
     สร้าง director node สำหรับ D3 graph
     """
 
-    director_id = clean_text(director_record.get("director_id"))
-    node_id = make_director_node_id(director_id)
+    director_id = clean_text(
+        director_record.get("director_id")
+    )
 
-    company_count = to_number(director_record.get("company_count"), 0) or 0
-    is_key_connector = bool(to_bool(director_record.get("is_key_connector"), default=False))
+    if not director_id:
+        return {}
 
-    size = GRAPH_NODE_SIZE.get("director", 12) + min(30, company_count * 4)
+    node_id = make_director_node_id(
+        director_id
+    )
 
-    color = GRAPH_COLORS.get("key_connector" if is_key_connector else "director", "#9333ea")
+    company_count = (
+        to_number(
+            director_record.get(
+                "company_count"
+            ),
+            0,
+        )
+        or 0
+    )
+
+    is_key_connector = bool(
+        to_bool(
+            director_record.get(
+                "is_key_connector"
+            ),
+            default=False,
+        )
+    )
+
+    size = (
+        GRAPH_NODE_SIZE.get(
+            "director",
+            12,
+        )
+        + min(
+            30,
+            company_count * 4,
+        )
+    )
+
+    color = GRAPH_COLORS.get(
+        (
+            "key_connector"
+            if is_key_connector
+            else "director"
+        ),
+        "#9333ea",
+    )
 
     return {
         "id": node_id,
         "type": "director",
-        "label": clean_text(director_record.get("director_name"), default=director_id),
+        "label": clean_text(
+            director_record.get(
+                "director_name"
+            ),
+            default=director_id,
+        ),
         "tax_id_norm": None,
         "director_id": director_id,
         "size": round(size, 2),
         "color": color,
         "border_color": "#ffffff",
-        "badges": ["key_connector"] if is_key_connector else [],
+        "badges": (
+            ["key_connector"]
+            if is_key_connector
+            else []
+        ),
         "metadata": {
-            "director_name": director_record.get("director_name", ""),
-            "company_count": director_record.get("company_count", 0),
-            "is_key_connector": is_key_connector,
-            "company_list": director_record.get("company_list", []),
-            "province_list": director_record.get("province_list", []),
-            "total_connected_premium": director_record.get("total_connected_premium", 0),
-            "total_connected_suminsure": director_record.get("total_connected_suminsure", 0),
-            "highest_flood_risk_level": director_record.get("highest_flood_risk_level", "Unknown"),
+            "director_name": (
+                director_record.get(
+                    "director_name",
+                    "",
+                )
+            ),
+            "company_count": company_count,
+            "is_key_connector": (
+                is_key_connector
+            ),
+            "company_list": (
+                director_record.get(
+                    "company_list",
+                    [],
+                )
+            ),
+            "province_list": (
+                director_record.get(
+                    "province_list",
+                    [],
+                )
+            ),
+            "total_connected_premium": (
+                director_record.get(
+                    "total_connected_premium",
+                    0,
+                )
+            ),
+            "total_connected_loss": (
+                director_record.get(
+                    "total_connected_loss",
+                    0,
+                )
+            ),
+            "total_connected_suminsure": (
+                director_record.get(
+                    "total_connected_suminsure",
+                    0,
+                )
+            ),
+            "highest_flood_risk_level": (
+                director_record.get(
+                    "highest_flood_risk_level",
+                    "Unknown",
+                )
+            ),
         },
     }
 
-
-def build_linkage_nodes(force_refresh: bool = False) -> Dict[str, Any]:
+def build_linkage_nodes(
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
     """
     สร้าง linkage_nodes สำหรับ graph
     """
 
     def builder() -> Dict[str, Any]:
-        company_summary = build_linkage_company_summary(force_refresh=force_refresh).get("records", [])
-        director_master = build_director_master(force_refresh=force_refresh).get("records", [])
+        company_summary = (
+            build_linkage_company_summary(
+                force_refresh=force_refresh
+            ).get("records", [])
+        )
 
-        nodes: Dict[str, Dict[str, Any]] = {}
+        director_master = (
+            build_director_master(
+                force_refresh=force_refresh
+            ).get("records", [])
+        )
+
+        nodes: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
 
         for company in company_summary:
-            node = make_company_node(company)
-            if node["id"]:
+            node = make_company_node(
+                company
+            )
+
+            if node.get("id"):
                 nodes[node["id"]] = node
 
         for director in director_master:
-            node = make_director_node(director)
-            if node["id"]:
+            node = make_director_node(
+                director
+            )
+
+            if node.get("id"):
                 nodes[node["id"]] = node
 
-        records = list(nodes.values())
+        records = list(
+            nodes.values()
+        )
 
         return {
             "records": records,
@@ -1308,39 +2678,71 @@ def build_linkage_nodes(force_refresh: bool = False) -> Dict[str, Any]:
         }
 
     cache_result = get_or_build_cache(
-        cache_key=CACHE_KEYS["linkage_nodes"],
+        cache_key=CACHE_KEYS[
+            "linkage_nodes"
+        ],
         builder=builder,
         ttl_seconds=get_linkage_ttl(),
         force_refresh=force_refresh,
-        source="linkage_service.build_linkage_nodes",
+        source=(
+            "linkage_service."
+            "build_linkage_nodes"
+        ),
     )
 
     return {
         **cache_result["data"],
-        "cache_used": cache_result["cache_used"],
+        "cache_used": cache_result[
+            "cache_used"
+        ],
     }
 
-
-def build_director_of_edges(force_refresh: bool = False) -> List[Dict[str, Any]]:
+def build_director_of_edges(
+    force_refresh: bool = False,
+) -> List[Dict[str, Any]]:
     """
     สร้าง DIRECTOR_OF edges
     """
 
-    pairs = get_director_company_pair_records(force_refresh=force_refresh)
+    pairs = get_director_company_pair_records(
+        force_refresh=force_refresh
+    )
 
-    edges: Dict[str, Dict[str, Any]] = {}
+    edges: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
 
     for pair in pairs:
-        tax_id_norm = normalize_tax_id(pair.get("tax_id_norm"))
-        director_id = clean_text(pair.get("director_id"))
+        tax_id_norm = get_valid_tax_id(
+            pair.get("tax_id_norm")
+        )
 
-        source = make_company_node_id(tax_id_norm)
-        target = make_director_node_id(director_id)
+        director_id = clean_text(
+            pair.get("director_id")
+        )
+
+        if (
+            not tax_id_norm
+            or not director_id
+        ):
+            continue
+
+        source = make_company_node_id(
+            tax_id_norm
+        )
+        target = make_director_node_id(
+            director_id
+        )
 
         if not source or not target:
             continue
 
-        edge_id = make_edge_id(source, target, EDGE_TYPE_DIRECTOR_OF)
+        edge_id = make_edge_id(
+            source,
+            target,
+            EDGE_TYPE_DIRECTOR_OF,
+        )
 
         edges[edge_id] = {
             "id": edge_id,
@@ -1351,60 +2753,159 @@ def build_director_of_edges(force_refresh: bool = False) -> List[Dict[str, Any]]
             "shared_directors": [],
             "metadata": {
                 "tax_id_norm": tax_id_norm,
-                "company_name": pair.get("company_name", ""),
+                "company_name": pair.get(
+                    "company_name",
+                    "",
+                ),
                 "director_id": director_id,
-                "director_name": pair.get("director_name", ""),
-                "province": pair.get("province", ""),
-                "flood_risk_level": pair.get("flood_risk_level", "Unknown"),
-                "total_suminsure": pair.get("total_suminsure", 0),
+                "director_name": pair.get(
+                    "director_name",
+                    "",
+                ),
+                "province": pair.get(
+                    "province",
+                    "",
+                ),
+                "flood_risk_level": (
+                    pair.get(
+                        "flood_risk_level",
+                        "Unknown",
+                    )
+                ),
+                "total_suminsure": pair.get(
+                    "total_suminsure",
+                    0,
+                ),
             },
         }
 
-    return list(edges.values())
+    return list(
+        edges.values()
+    )
 
 
-def build_shared_director_edges(force_refresh: bool = False) -> List[Dict[str, Any]]:
+def build_shared_director_edges(
+    force_refresh: bool = False,
+) -> List[Dict[str, Any]]:
     """
-    สร้าง SHARED_DIRECTOR edges ระหว่าง company-company
+    สร้าง SHARED_DIRECTOR edges
+    ระหว่าง company-company
     """
 
-    shared_links = get_shared_director_link_records(force_refresh=force_refresh)
+    shared_links = (
+        get_shared_director_link_records(
+            force_refresh=force_refresh
+        )
+    )
 
-    edges: List[Dict[str, Any]] = []
+    edges: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
 
     for link in shared_links:
-        source = make_company_node_id(link.get("source_tax_id"))
-        target = make_company_node_id(link.get("target_tax_id"))
+        source_tax_id = get_valid_tax_id(
+            link.get("source_tax_id")
+        )
+        target_tax_id = get_valid_tax_id(
+            link.get("target_tax_id")
+        )
+
+        if (
+            not source_tax_id
+            or not target_tax_id
+            or source_tax_id
+            == target_tax_id
+        ):
+            continue
+
+        source = make_company_node_id(
+            source_tax_id
+        )
+        target = make_company_node_id(
+            target_tax_id
+        )
 
         if not source or not target:
             continue
 
-        edge_id = make_edge_id(source, target, EDGE_TYPE_SHARED_DIRECTOR)
-
-        edges.append(
-            {
-                "id": edge_id,
-                "source": source,
-                "target": target,
-                "type": EDGE_TYPE_SHARED_DIRECTOR,
-                "weight": link.get("weight", 1),
-                "shared_directors": link.get("shared_directors", []),
-                "metadata": {
-                    "link_id": link.get("link_id"),
-                    "source_tax_id": link.get("source_tax_id"),
-                    "target_tax_id": link.get("target_tax_id"),
-                    "source_company_name": link.get("source_company_name"),
-                    "target_company_name": link.get("target_company_name"),
-                    "shared_director_ids": link.get("shared_director_ids", []),
-                    "shared_directors": link.get("shared_directors", []),
-                    "combined_flood_risk_level": link.get("combined_flood_risk_level", "Unknown"),
-                    "combined_suminsure": link.get("combined_suminsure", 0),
-                },
-            }
+        edge_id = make_edge_id(
+            source,
+            target,
+            EDGE_TYPE_SHARED_DIRECTOR,
         )
 
-    return edges
+        edges[edge_id] = {
+            "id": edge_id,
+            "source": source,
+            "target": target,
+            "type": EDGE_TYPE_SHARED_DIRECTOR,
+            "weight": (
+                to_number(
+                    link.get("weight"),
+                    1,
+                )
+                or 1
+            ),
+            "shared_directors": list(
+                link.get(
+                    "shared_directors",
+                    [],
+                )
+                or []
+            ),
+            "metadata": {
+                "link_id": link.get(
+                    "link_id"
+                ),
+                "source_tax_id": (
+                    source_tax_id
+                ),
+                "target_tax_id": (
+                    target_tax_id
+                ),
+                "source_company_name": (
+                    link.get(
+                        "source_company_name"
+                    )
+                ),
+                "target_company_name": (
+                    link.get(
+                        "target_company_name"
+                    )
+                ),
+                "shared_director_ids": list(
+                    link.get(
+                        "shared_director_ids",
+                        [],
+                    )
+                    or []
+                ),
+                "shared_directors": list(
+                    link.get(
+                        "shared_directors",
+                        [],
+                    )
+                    or []
+                ),
+                "combined_flood_risk_level": (
+                    link.get(
+                        "combined_flood_risk_level",
+                        "Unknown",
+                    )
+                ),
+                "combined_suminsure": (
+                    link.get(
+                        "combined_suminsure",
+                        0,
+                    )
+                ),
+            },
+        }
 
+    return list(
+        edges.values()
+    )
 
 def build_linkage_edges(force_refresh: bool = False) -> Dict[str, Any]:
     """
@@ -1491,7 +2992,6 @@ def collect_nodes_by_depth(
 
     return visited
 
-
 def filter_graph_payload(
     nodes: List[Dict[str, Any]],
     edges: List[Dict[str, Any]],
@@ -1504,97 +3004,338 @@ def filter_graph_payload(
     - depth
     - max_nodes
     - include_shared_edges
+    - include_policy
+    - include_flood
     """
 
     ctx = normalize_context(context)
 
+    working_nodes: List[
+        Dict[str, Any]
+    ] = []
+
+    for node in nodes or []:
+        if not isinstance(node, dict):
+            continue
+
+        node_copy = dict(node)
+        node_copy["badges"] = list(
+            node.get("badges", [])
+            or []
+        )
+        node_copy["metadata"] = dict(
+            node.get("metadata", {})
+            or {}
+        )
+
+        if not ctx.get("include_policy"):
+            node_copy["badges"] = [
+                badge
+                for badge in node_copy[
+                    "badges"
+                ]
+                if badge != "policy"
+            ]
+
+            for key in [
+                "has_policy",
+                "total_premium",
+                "total_loss",
+                "total_suminsure",
+                "loss_ratio",
+                "loss_ratio_band",
+                "total_connected_premium",
+                "total_connected_loss",
+                "total_connected_suminsure",
+            ]:
+                node_copy["metadata"].pop(
+                    key,
+                    None,
+                )
+
+        if not ctx.get("include_flood"):
+            node_copy["badges"] = [
+                badge
+                for badge in node_copy[
+                    "badges"
+                ]
+                if badge != "flood"
+            ]
+
+            for key in [
+                "has_flood_context",
+                "flood_risk_level",
+                "highest_flood_risk_level",
+            ]:
+                node_copy["metadata"].pop(
+                    key,
+                    None,
+                )
+
+        working_nodes.append(
+            node_copy
+        )
+
+    working_edges: List[
+        Dict[str, Any]
+    ] = []
+
+    for edge in edges or []:
+        if not isinstance(edge, dict):
+            continue
+
+        edge_copy = dict(edge)
+        edge_copy["metadata"] = dict(
+            edge.get("metadata", {})
+            or {}
+        )
+        edge_copy["shared_directors"] = list(
+            edge.get("shared_directors", [])
+            or []
+        )
+
+        if not ctx.get("include_policy"):
+            for key in [
+                "total_suminsure",
+                "combined_suminsure",
+            ]:
+                edge_copy["metadata"].pop(
+                    key,
+                    None,
+                )
+
+        if not ctx.get("include_flood"):
+            for key in [
+                "flood_risk_level",
+                "combined_flood_risk_level",
+            ]:
+                edge_copy["metadata"].pop(
+                    key,
+                    None,
+                )
+
+        working_edges.append(
+            edge_copy
+        )
+
     node_index = {
-        node.get("id"): node
-        for node in nodes
-        if node.get("id")
+        clean_text(node.get("id")): node
+        for node in working_nodes
+        if clean_text(node.get("id"))
     }
 
-    filtered_edges = list(edges)
+    filtered_edges = list(
+        working_edges
+    )
 
-    if not ctx.get("include_shared_edges", True):
+    if not ctx.get(
+        "include_shared_edges",
+        True,
+    ):
         filtered_edges = [
             edge
             for edge in filtered_edges
-            if edge.get("type") != EDGE_TYPE_SHARED_DIRECTOR
+            if edge.get("type")
+            != EDGE_TYPE_SHARED_DIRECTOR
         ]
 
     seed_node_ids: List[str] = []
 
     if ctx.get("tax_id"):
-        seed = make_company_node_id(ctx["tax_id"])
+        seed = make_company_node_id(
+            ctx["tax_id"]
+        )
+
         if seed:
             seed_node_ids.append(seed)
 
     if ctx.get("director_id"):
-        seed = make_director_node_id(ctx["director_id"])
+        seed = make_director_node_id(
+            ctx["director_id"]
+        )
+
         if seed:
             seed_node_ids.append(seed)
+
+    seed_node_ids = list(
+        dict.fromkeys(seed_node_ids)
+    )
 
     if seed_node_ids:
         allowed_nodes = collect_nodes_by_depth(
             seed_node_ids=seed_node_ids,
             edges=filtered_edges,
-            depth=ctx.get("depth", GRAPH_DEFAULT_DEPTH),
+            depth=ctx.get(
+                "depth",
+                GRAPH_DEFAULT_DEPTH,
+            ),
         )
     else:
-        allowed_nodes = set(node_index.keys())
+        allowed_nodes = set(
+            node_index
+        )
 
     graph_nodes = [
         node
-        for node_id, node in node_index.items()
+        for node_id, node
+        in node_index.items()
         if node_id in allowed_nodes
     ]
 
-    allowed_node_ids = {node.get("id") for node in graph_nodes}
+    allowed_node_ids = {
+        node.get("id")
+        for node in graph_nodes
+    }
 
     graph_edges = [
         edge
         for edge in filtered_edges
-        if edge.get("source") in allowed_node_ids
-        and edge.get("target") in allowed_node_ids
+        if edge.get("source")
+        in allowed_node_ids
+        and edge.get("target")
+        in allowed_node_ids
     ]
 
     limited = False
-    max_nodes = ctx.get("max_nodes", GRAPH_DEFAULT_MAX_NODES)
+
+    max_nodes = ctx.get(
+        "max_nodes",
+        GRAPH_DEFAULT_MAX_NODES,
+    )
 
     if len(graph_nodes) > max_nodes:
         limited = True
 
-        graph_nodes = sorted(
-            graph_nodes,
-            key=lambda node: to_number(node.get("size"), 0) or 0,
-            reverse=True,
-        )[:max_nodes]
+        degree_by_node: Dict[
+            str,
+            int,
+        ] = defaultdict(int)
 
-        allowed_node_ids = {node.get("id") for node in graph_nodes}
+        for edge in graph_edges:
+            source = clean_text(
+                edge.get("source")
+            )
+            target = clean_text(
+                edge.get("target")
+            )
+
+            if source:
+                degree_by_node[source] += 1
+
+            if target:
+                degree_by_node[target] += 1
+
+        seed_nodes = [
+            node_index[seed_node_id]
+            for seed_node_id in seed_node_ids
+            if seed_node_id in node_index
+            and seed_node_id
+            in allowed_node_ids
+        ]
+
+        seed_id_set = {
+            node.get("id")
+            for node in seed_nodes
+        }
+
+        remaining_nodes = [
+            node
+            for node in graph_nodes
+            if node.get("id")
+            not in seed_id_set
+        ]
+
+        remaining_nodes = sorted(
+            remaining_nodes,
+            key=lambda node: (
+                degree_by_node.get(
+                    clean_text(
+                        node.get("id")
+                    ),
+                    0,
+                ),
+                (
+                    to_number(
+                        node.get("size"),
+                        0,
+                    )
+                    or 0
+                ),
+                clean_text(
+                    node.get("label")
+                ),
+            ),
+            reverse=True,
+        )
+
+        remaining_limit = max(
+            0,
+            max_nodes - len(seed_nodes),
+        )
+
+        graph_nodes = (
+            seed_nodes
+            + remaining_nodes[
+                :remaining_limit
+            ]
+        )
+
+        allowed_node_ids = {
+            node.get("id")
+            for node in graph_nodes
+        }
 
         graph_edges = [
             edge
             for edge in graph_edges
-            if edge.get("source") in allowed_node_ids
-            and edge.get("target") in allowed_node_ids
+            if edge.get("source")
+            in allowed_node_ids
+            and edge.get("target")
+            in allowed_node_ids
         ]
+
+    warnings: List[str] = []
+
+    if limited:
+        warnings.append(
+            "graph_limited_by_max_nodes"
+        )
+
+    missing_seed_node_ids = [
+        seed_node_id
+        for seed_node_id in seed_node_ids
+        if seed_node_id not in node_index
+    ]
+
+    if missing_seed_node_ids:
+        warnings.append(
+            "graph_seed_not_found"
+        )
 
     return {
         "nodes": graph_nodes,
         "edges": graph_edges,
         "limited": limited,
-        "summary": build_graph_summary(graph_nodes, graph_edges),
+        "summary": build_graph_summary(
+            graph_nodes,
+            graph_edges,
+        ),
         "layout": {
-            "mode": ctx.get("mode", GRAPH_DEFAULT_MODE),
-            "depth": ctx.get("depth", GRAPH_DEFAULT_DEPTH),
+            "mode": ctx.get(
+                "mode",
+                GRAPH_DEFAULT_MODE,
+            ),
+            "depth": ctx.get(
+                "depth",
+                GRAPH_DEFAULT_DEPTH,
+            ),
             "max_nodes": max_nodes,
         },
-        "warnings": [
-            "graph_limited_by_max_nodes"
-        ] if limited else [],
+        "warnings": warnings,
+        "missing_seed_node_ids": (
+            missing_seed_node_ids
+        ),
     }
-
 
 def build_graph_summary(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -1850,40 +3591,178 @@ def get_linkage_company_detail(
     GET /api/linkage/company/<tax_id>
     """
 
-    tax_id_norm = normalize_tax_id(tax_id)
+    tax_id_norm = get_valid_tax_id(
+        tax_id
+    )
+
     ctx = normalize_context(context)
+
+    if not tax_id_norm:
+        return {
+            "tax_id": tax_id,
+            "tax_id_norm": "",
+            "found": False,
+            "company_name": "",
+            "directors": [],
+            "director_count": 0,
+            "shared_links": [],
+            "connected_companies": [],
+            "shared_company_count": 0,
+            "edges": [],
+            "graph": {
+                "nodes": [],
+                "edges": [],
+                "limited": False,
+                "summary": {},
+            },
+        }
+
+    force_refresh = ctx.get(
+        "force_refresh",
+        False,
+    )
 
     pairs = [
         pair
-        for pair in get_director_company_pair_records(force_refresh=ctx.get("force_refresh", False))
-        if pair.get("tax_id_norm") == tax_id_norm
+        for pair in get_director_company_pair_records(
+            force_refresh=force_refresh
+        )
+        if get_valid_tax_id(
+            pair.get("tax_id_norm")
+        )
+        == tax_id_norm
     ]
 
     director_ids = sorted(
         {
-            pair.get("director_id")
+            clean_text(
+                pair.get("director_id")
+            )
             for pair in pairs
-            if pair.get("director_id")
+            if clean_text(
+                pair.get("director_id")
+            )
         }
     )
 
     directors_index = {
-        director.get("director_id"): director
-        for director in get_director_master_records(force_refresh=ctx.get("force_refresh", False))
+        clean_text(
+            director.get("director_id")
+        ): director
+        for director in get_director_master_records(
+            force_refresh=force_refresh
+        )
+        if clean_text(
+            director.get("director_id")
+        )
     }
 
     directors = [
-        directors_index.get(director_id)
+        directors_index[director_id]
         for director_id in director_ids
-        if directors_index.get(director_id)
+        if director_id in directors_index
     ]
 
     shared_links = [
         link
-        for link in get_shared_director_link_records(force_refresh=ctx.get("force_refresh", False))
-        if link.get("source_tax_id") == tax_id_norm
-        or link.get("target_tax_id") == tax_id_norm
+        for link in get_shared_director_link_records(
+            force_refresh=force_refresh
+        )
+        if (
+            get_valid_tax_id(
+                link.get("source_tax_id")
+            )
+            == tax_id_norm
+            or get_valid_tax_id(
+                link.get("target_tax_id")
+            )
+            == tax_id_norm
+        )
     ]
+
+    connected_companies_by_tax_id: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
+
+    for link in shared_links:
+        source_tax_id = get_valid_tax_id(
+            link.get("source_tax_id")
+        )
+        target_tax_id = get_valid_tax_id(
+            link.get("target_tax_id")
+        )
+
+        if source_tax_id == tax_id_norm:
+            connected_tax_id = target_tax_id
+            connected_name = link.get(
+                "target_company_name",
+                "",
+            )
+            connected_province = link.get(
+                "target_province",
+                "",
+            )
+        else:
+            connected_tax_id = source_tax_id
+            connected_name = link.get(
+                "source_company_name",
+                "",
+            )
+            connected_province = link.get(
+                "source_province",
+                "",
+            )
+
+        if not connected_tax_id:
+            continue
+
+        connected_companies_by_tax_id[
+            connected_tax_id
+        ] = {
+            "tax_id_norm": connected_tax_id,
+            "company_name": connected_name,
+            "province": connected_province,
+            "shared_director_count": (
+                to_int(
+                    link.get("weight"),
+                    0,
+                )
+                or 0
+            ),
+            "shared_director_ids": list(
+                link.get(
+                    "shared_director_ids",
+                    [],
+                )
+                or []
+            ),
+            "shared_directors": list(
+                link.get(
+                    "shared_directors",
+                    [],
+                )
+                or []
+            ),
+        }
+
+    connected_companies = sorted(
+        connected_companies_by_tax_id.values(),
+        key=lambda item: (
+            -(
+                to_int(
+                    item.get(
+                        "shared_director_count"
+                    ),
+                    0,
+                )
+                or 0
+            ),
+            clean_text(
+                item.get("company_name")
+            ),
+        ),
+    )
 
     graph = get_linkage_graph(
         {
@@ -1894,22 +3773,30 @@ def get_linkage_company_detail(
     )
 
     company_name = first_non_empty(
-        *[pair.get("company_name") for pair in pairs],
+        *[
+            pair.get("company_name")
+            for pair in pairs
+        ],
         default="",
     )
 
     return {
         "tax_id": tax_id,
         "tax_id_norm": tax_id_norm,
-        "found": len(pairs) > 0,
+        "found": bool(pairs),
         "company_name": company_name,
         "directors": directors,
         "director_count": len(directors),
         "shared_links": shared_links,
-        "shared_company_count": len(shared_links),
+        "connected_companies": (
+            connected_companies
+        ),
+        "shared_company_count": len(
+            connected_companies
+        ),
+        "edges": shared_links,
         "graph": graph,
     }
-
 
 def get_linkage_director_detail(
     director_id: str,
@@ -1920,35 +3807,83 @@ def get_linkage_director_detail(
     GET /api/linkage/director/<director_id>
     """
 
-    director_id = clean_text(director_id)
+    director_id = clean_text(
+        director_id
+    )
+
     ctx = normalize_context(context)
 
-    directors = get_director_master_records(force_refresh=ctx.get("force_refresh", False))
+    if not director_id:
+        return {
+            "director_id": "",
+            "found": False,
+            "director": {},
+            "companies": [],
+            "company_count": 0,
+            "shared_links": [],
+            "edges": [],
+            "graph": {
+                "nodes": [],
+                "edges": [],
+                "limited": False,
+                "summary": {},
+            },
+        }
+
+    force_refresh = ctx.get(
+        "force_refresh",
+        False,
+    )
+
+    directors = get_director_master_records(
+        force_refresh=force_refresh
+    )
 
     director = next(
-        (item for item in directors if item.get("director_id") == director_id),
+        (
+            item
+            for item in directors
+            if clean_text(
+                item.get("director_id")
+            )
+            == director_id
+        ),
         None,
     )
 
     pairs = [
         pair
-        for pair in get_director_company_pair_records(force_refresh=ctx.get("force_refresh", False))
-        if pair.get("director_id") == director_id
+        for pair in get_director_company_pair_records(
+            force_refresh=force_refresh
+        )
+        if clean_text(
+            pair.get("director_id")
+        )
+        == director_id
     ]
-
-    company_tax_ids = {
-        pair.get("tax_id_norm")
-        for pair in pairs
-        if pair.get("tax_id_norm")
-    }
 
     shared_links = [
         link
-        for link in get_shared_director_link_records(force_refresh=ctx.get("force_refresh", False))
-        if any(
-            tax_id in company_tax_ids
-            for tax_id in [link.get("source_tax_id"), link.get("target_tax_id")]
+        for link in get_shared_director_link_records(
+            force_refresh=force_refresh
         )
+        if director_id
+        in {
+            clean_text(
+                shared_director_id
+            )
+            for shared_director_id
+            in (
+                link.get(
+                    "shared_director_ids",
+                    [],
+                )
+                or []
+            )
+            if clean_text(
+                shared_director_id
+            )
+        }
     ]
 
     graph = get_linkage_graph(
@@ -1961,14 +3896,17 @@ def get_linkage_director_detail(
 
     return {
         "director_id": director_id,
-        "found": director is not None,
+        "found": bool(
+            director
+            or pairs
+        ),
         "director": director or {},
         "companies": pairs,
         "company_count": len(pairs),
         "shared_links": shared_links,
+        "edges": shared_links,
         "graph": graph,
     }
-
 
 def get_key_connectors(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -2093,7 +4031,9 @@ def get_linkage_dashboard_payload(context: Optional[Dict[str, Any]] = None) -> D
         "generated_at": now_iso(),
     }
 
-def rebuild_linkage_cache(force_refresh: bool = True) -> Dict[str, Any]:
+def rebuild_linkage_cache(
+    force_refresh: bool = True,
+) -> Dict[str, Any]:
     """
     rebuild cache ทั้งหมดของ linkage
 
@@ -2101,58 +4041,206 @@ def rebuild_linkage_cache(force_refresh: bool = True) -> Dict[str, Any]:
     - อ่าน company_unified_base ถ้ามี
     - fallback เป็น linkage input
     - เขียน graph หลักที่ linkage_graph_payload
-    - เขียน alias linkage_graph / graph_payload ด้วย payload เดียวกัน
+    - ใช้ alias result ที่ graph builder เขียนแล้ว
     """
 
-    company_source_payload = load_company_source_payload()
-    company_source = company_source_payload.get("company_source", "linkage_input_fallback")
+    company_source_payload = (
+        load_company_source_payload()
+    )
+
+    company_source = (
+        company_source_payload.get(
+            "company_source",
+            "linkage_input_fallback",
+        )
+    )
 
     results = {
-        "linkage_input_clean": load_linkage_input_clean(force_refresh=force_refresh),
-        "director_company_pairs": build_director_company_pairs(force_refresh=force_refresh),
-        "director_master": build_director_master(force_refresh=force_refresh),
-        "shared_director_links": build_shared_director_links(force_refresh=force_refresh),
-        "linkage_company_summary": build_linkage_company_summary(force_refresh=force_refresh),
-        "linkage_nodes": build_linkage_nodes(force_refresh=force_refresh),
-        "linkage_edges": build_linkage_edges(force_refresh=force_refresh),
-        "linkage_graph_payload": build_linkage_graph_payload(force_refresh=force_refresh),
-        "exposure_by_director": build_exposure_by_director(force_refresh=force_refresh),
+        "linkage_input_clean": (
+            load_linkage_input_clean(
+                force_refresh=force_refresh
+            )
+        ),
+        "director_company_pairs": (
+            build_director_company_pairs(
+                force_refresh=force_refresh
+            )
+        ),
+        "director_master": (
+            build_director_master(
+                force_refresh=force_refresh
+            )
+        ),
+        "shared_director_links": (
+            build_shared_director_links(
+                force_refresh=force_refresh
+            )
+        ),
+        "linkage_company_summary": (
+            build_linkage_company_summary(
+                force_refresh=force_refresh
+            )
+        ),
+        "linkage_nodes": (
+            build_linkage_nodes(
+                force_refresh=force_refresh
+            )
+        ),
+        "linkage_edges": (
+            build_linkage_edges(
+                force_refresh=force_refresh
+            )
+        ),
+        "linkage_graph_payload": (
+            build_linkage_graph_payload(
+                force_refresh=force_refresh
+            )
+        ),
+        "exposure_by_director": (
+            build_exposure_by_director(
+                force_refresh=force_refresh
+            )
+        ),
     }
 
-    graph_payload = results["linkage_graph_payload"]
-    alias_results = write_linkage_graph_aliases(graph_payload, cache_used=graph_payload.get("cache_used", False))
+    graph_payload = results[
+        "linkage_graph_payload"
+    ]
+
+    alias_results = (
+        graph_payload.get(
+            "alias_cache_results",
+            {},
+        )
+        if isinstance(
+            graph_payload,
+            dict,
+        )
+        else {}
+    )
+
+    result_summary: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
+
+    for key, value in results.items():
+        if not isinstance(value, dict):
+            value = {}
+
+        summary = (
+            value.get("summary", {})
+            if isinstance(
+                value.get("summary"),
+                dict,
+            )
+            else {}
+        )
+
+        meta = (
+            value.get("meta", {})
+            if isinstance(
+                value.get("meta"),
+                dict,
+            )
+            else {}
+        )
+
+        result_summary[key] = {
+            "cache_key": CACHE_KEYS.get(
+                key,
+                key,
+            ),
+            "total": value.get("total"),
+            "record_count": (
+                value.get("total")
+                if value.get("total")
+                is not None
+                else meta.get(
+                    "record_count",
+                    0,
+                )
+            ),
+            "node_count": summary.get(
+                "node_count",
+                meta.get("node_count", 0),
+            ),
+            "edge_count": summary.get(
+                "edge_count",
+                meta.get("edge_count", 0),
+            ),
+            "cache_used": value.get(
+                "cache_used"
+            ),
+            "created_at": value.get(
+                "created_at"
+            ),
+            "meta": meta,
+        }
 
     return {
         "rebuilt": True,
         "phase": "linkage",
         "company_source": company_source,
-        "degraded": company_source != "company_unified_base",
-        "results": {
-            key: {
-                "cache_key": CACHE_KEYS.get(key, key),
-                "total": value.get("total"),
-                "record_count": value.get("total") if value.get("total") is not None else value.get("meta", {}).get("record_count"),
-                "node_count": value.get("summary", {}).get("node_count") if isinstance(value.get("summary"), dict) else value.get("meta", {}).get("node_count"),
-                "edge_count": value.get("summary", {}).get("edge_count") if isinstance(value.get("summary"), dict) else value.get("meta", {}).get("edge_count"),
-                "cache_used": value.get("cache_used"),
-                "created_at": value.get("created_at"),
-                "meta": value.get("meta", {}),
-            }
-            for key, value in results.items()
-        },
+        "degraded": (
+            company_source
+            != "company_unified_base"
+        ),
+        "results": result_summary,
         "aliases": {
-            "linkage_graph": LINKAGE_GRAPH_MAIN_CACHE_KEY,
-            "graph_payload": LINKAGE_GRAPH_MAIN_CACHE_KEY,
+            "linkage_graph": (
+                LINKAGE_GRAPH_MAIN_CACHE_KEY
+            ),
+            "graph_payload": (
+                LINKAGE_GRAPH_MAIN_CACHE_KEY
+            ),
         },
         "alias_cache_results": alias_results,
         "meta": build_linkage_cache_meta(
-            cache_key=LINKAGE_GRAPH_MAIN_CACHE_KEY,
-            source_input=str(LINKAGE_INPUT_PATH),
+            cache_key=(
+                LINKAGE_GRAPH_MAIN_CACHE_KEY
+            ),
+            source_input=str(
+                LINKAGE_INPUT_PATH
+            ),
             company_source=company_source,
-            record_count=sum(to_int(value.get("total"), 0) for value in results.values() if isinstance(value, dict)),
-            node_count=results["linkage_graph_payload"].get("summary", {}).get("node_count", 0),
-            edge_count=results["linkage_graph_payload"].get("summary", {}).get("edge_count", 0),
-            degraded=company_source != "company_unified_base",
+            record_count=sum(
+                (
+                    to_int(
+                        value.get("total"),
+                        0,
+                    )
+                    or 0
+                )
+                for value in results.values()
+                if isinstance(value, dict)
+            ),
+            node_count=(
+                graph_payload.get(
+                    "summary",
+                    {},
+                ).get("node_count", 0)
+                if isinstance(
+                    graph_payload,
+                    dict,
+                )
+                else 0
+            ),
+            edge_count=(
+                graph_payload.get(
+                    "summary",
+                    {},
+                ).get("edge_count", 0)
+                if isinstance(
+                    graph_payload,
+                    dict,
+                )
+                else 0
+            ),
+            degraded=(
+                company_source
+                != "company_unified_base"
+            ),
         ),
         "generated_at": now_iso(),
     }

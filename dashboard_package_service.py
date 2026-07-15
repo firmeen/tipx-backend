@@ -51,7 +51,9 @@ packages/
 
 from __future__ import annotations
 
+import inspect
 import json
+import os
 import shutil
 import config
 from collections import Counter, defaultdict
@@ -59,349 +61,88 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-try:
-    import pandas as pd
-    PANDAS_LOADED = True
-except Exception as e:
-    PANDAS_LOADED = False
-    PANDAS_ERROR = str(e)
+import pandas as pd
 
-    class _MiniDataFrame:
-        def __init__(self, records: Optional[List[Dict[str, Any]]] = None) -> None:
-            self._records = [dict(item) for item in records or [] if isinstance(item, dict)]
-            self.columns = list({key for record in self._records for key in record})
+from config import (
+    APP_NAME,
+    APP_SHORT_NAME,
+    APP_VERSION,
+    API_PREFIX,
+    PUBLIC_API_PREFIX,
+    PACKAGE_DIR,
+    PACKAGE_ZIP_DIR,
+    PACKAGE_COMPONENTS,
+    PACKAGE_SECURITY_OPTIONS,
+    PACKAGE_DEFAULT_EXPIRE_DAYS,
+    PACKAGE_MAX_EXPIRE_DAYS,
+    PACKAGE_INDEX_FILENAME,
+    PACKAGE_META_FILENAME,
+    PACKAGE_SNAPSHOT_FILENAME,
+    PACKAGE_PUBLIC_DATA_FILENAME,
+    PACKAGE_EXPORT_DIRNAME,
+    PACKAGE_EXTERNAL_VIEWER_DIRNAME,
+    OUTPUT_DIR,
+    CACHE_TTL_SECONDS,
+    RISK_LEVELS,
+    RISK_COLORS,
+    RISK_SCORE,
+)
 
-        @property
-        def empty(self) -> bool:
-            return not bool(self._records)
+from utils import (
+    append_jsonl,
+    apply_search_sort_pagination,
+    clean_text,
+    clean_text_lower,
+    create_zip_from_folder,
+    dataframe_to_records,
+    ensure_dir,
+    ensure_parent_dir,
+    file_info,
+    file_write_lock,
+    format_number,
+    format_percent,
+    get_cache_file_path,
+    get_or_build_cache,
+    is_empty_value,
+    normalize_risk_level,
+    normalize_tax_id,
+    read_json,
+    safe_filename,
+    sum_field,
+    to_bool,
+    to_int,
+    to_jsonable,
+    to_number,
+    write_excel,
+    write_json,
+    write_text,
+)
 
-        def to_dict(self, orient: str = "records") -> Any:
-            if orient == "records":
-                return [dict(item) for item in self._records]
-            return {idx: dict(item) for idx, item in enumerate(self._records)}
+from security import (
+    apply_export_field_policy_to_records,
+    attach_package_checksum,
+    build_access_log_record,
+    build_package_meta as build_security_package_meta,
+    build_public_api_urls,
+    build_public_error,
+    build_public_package_snapshot,
+    build_public_success,
+    build_safe_public_meta,
+    check_public_package_access,
+    create_package_checksum,
+    build_public_package_url_meta,
+    public_access_allowed,
+    extract_public_package_component,
+    generate_package_id,
+    sanitize_package_components,
+    sanitize_public_payload,
+    verify_package_checksum,
+)
 
-    class _PandasFallback:
-        DataFrame = _MiniDataFrame
-
-    pd = _PandasFallback()
-
-try:
-    from config import (
-        APP_NAME,
-        APP_SHORT_NAME,
-        APP_VERSION,
-        API_PREFIX,
-        PUBLIC_API_PREFIX,
-        PACKAGE_DIR,
-        PACKAGE_COMPONENTS,
-        PACKAGE_SECURITY_OPTIONS,
-        PACKAGE_DEFAULT_EXPIRE_DAYS,
-        PACKAGE_MAX_EXPIRE_DAYS,
-        PACKAGE_INDEX_FILENAME,
-        PACKAGE_META_FILENAME,
-        PACKAGE_SNAPSHOT_FILENAME,
-        PACKAGE_PUBLIC_DATA_FILENAME,
-        PACKAGE_EXPORT_DIRNAME,
-        PACKAGE_EXTERNAL_VIEWER_DIRNAME,
-        OUTPUT_DIR,
-        CACHE_TTL_SECONDS,
-        RISK_LEVELS,
-        RISK_COLORS,
-        RISK_SCORE,
-    )
-    CONFIG_LOADED = True
-except Exception as e:
-    CONFIG_LOADED = False
-    CONFIG_ERROR = str(e)
-    _BASE_DIR = Path(__file__).resolve().parent
-    APP_NAME = "TIPX Enterprise Intelligence Dashboard"
-    APP_SHORT_NAME = "TIPX"
-    APP_VERSION = "unknown"
-    API_PREFIX = "/api"
-    PUBLIC_API_PREFIX = "/api/public"
-    PACKAGE_DIR = _BASE_DIR / "packages"
-    PACKAGE_COMPONENTS = ["summary", "map", "charts", "tables", "data_quality"]
-    PACKAGE_SECURITY_OPTIONS = {
-        "mask_tax_id": True,
-        "mask_director_name": True,
-        "mask_person_name": True,
-        "mask_address": True,
-        "hide_financial_fields": False,
-        "remove_internal_paths": True,
-        "remove_debug_fields": True,
-        "public": True,
-    }
-    PACKAGE_DEFAULT_EXPIRE_DAYS = 30
-    PACKAGE_MAX_EXPIRE_DAYS = 365
-    PACKAGE_INDEX_FILENAME = "package_index.json"
-    PACKAGE_META_FILENAME = "package_meta.json"
-    PACKAGE_SNAPSHOT_FILENAME = "package_snapshot.json"
-    PACKAGE_PUBLIC_DATA_FILENAME = "public_data.json"
-    PACKAGE_EXPORT_DIRNAME = "exports"
-    PACKAGE_EXTERNAL_VIEWER_DIRNAME = "external_viewer"
-    OUTPUT_DIR = _BASE_DIR / "output"
-    CACHE_TTL_SECONDS = 300
-    RISK_LEVELS = {}
-    RISK_COLORS = {}
-    RISK_SCORE = {}
-
-try:
-    from utils import (
-        apply_search_sort_pagination,
-        clean_text,
-        clean_text_lower,
-        create_zip_from_folder,
-        dataframe_to_records,
-        ensure_dir,
-        ensure_parent_dir,
-        file_info,
-        format_number,
-        format_percent,
-        get_or_build_cache,
-        is_empty_value,
-        normalize_risk_level,
-        normalize_tax_id,
-        read_json,
-        safe_filename,
-        sum_field,
-        to_bool,
-        to_int,
-        to_jsonable,
-        to_number,
-        write_excel,
-        write_json,
-        write_text,
-    )
-    UTILS_LOADED = True
-except Exception as e:
-    UTILS_LOADED = False
-    UTILS_ERROR = str(e)
-
-    def clean_text(value: Any, default: str = "") -> str:
-        if value is None:
-            return default
-        text = str(value).strip()
-        return text if text else default
-
-    def clean_text_lower(value: Any, default: str = "") -> str:
-        return clean_text(value, default=default).lower()
-
-    def is_empty_value(value: Any) -> bool:
-        if value is None:
-            return True
-        if isinstance(value, str) and value.strip() in {"", "-", "N/A", "n/a", "None", "none", "null", "nan", "NaN"}:
-            return True
-        if isinstance(value, float) and value != value:
-            return True
-        return False
-
-    def to_jsonable(value: Any) -> Any:
-        if value is None or isinstance(value, (str, int, bool)):
-            return value
-        if isinstance(value, float):
-            return None if value != value else value
-        if isinstance(value, (datetime, Path)):
-            return value.isoformat() if isinstance(value, datetime) else str(value)
-        if isinstance(value, dict):
-            return {str(k): to_jsonable(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple, set)):
-            return [to_jsonable(item) for item in value]
-        if hasattr(value, "to_dict"):
-            try:
-                return to_jsonable(value.to_dict("records"))
-            except Exception:
-                try:
-                    return to_jsonable(value.to_dict())
-                except Exception:
-                    pass
-        return clean_text(value)
-
-    def to_bool(value: Any, default: bool = False) -> bool:
-        if isinstance(value, bool):
-            return value
-        if is_empty_value(value):
-            return default
-        return clean_text_lower(value) in {"1", "true", "yes", "y", "on"}
-
-    def to_int(value: Any, default: int = 0) -> int:
-        try:
-            return int(float(clean_text(value)))
-        except Exception:
-            return default
-
-    def to_number(value: Any, default: float = 0.0) -> float:
-        try:
-            return float(str(value).replace(",", ""))
-        except Exception:
-            return default
-
-    def dataframe_to_records(value: Any) -> List[Dict[str, Any]]:
-        if isinstance(value, list):
-            return [dict(item) for item in value if isinstance(item, dict)]
-        if hasattr(value, "to_dict"):
-            try:
-                return [dict(item) for item in value.to_dict("records") if isinstance(item, dict)]
-            except Exception:
-                return []
-        return []
-
-    def ensure_dir(path: Any) -> Path:
-        target = Path(path)
-        target.mkdir(parents=True, exist_ok=True)
-        return target
-
-    def ensure_parent_dir(path: Any) -> Path:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        return target
-
-    def read_json(path: Any, default: Any = None) -> Any:
-        try:
-            target = Path(path)
-            if not target.exists():
-                return default
-            return json.loads(target.read_text(encoding="utf-8"))
-        except Exception:
-            return default
-
-    def write_json(path: Any, data: Any, **kwargs: Any) -> Path:
-        target = ensure_parent_dir(path)
-        target.write_text(json.dumps(to_jsonable(data), ensure_ascii=False, indent=2), encoding="utf-8")
-        return target
-
-    def write_text(path: Any, text: str, **kwargs: Any) -> Path:
-        target = ensure_parent_dir(path)
-        target.write_text(clean_text(text), encoding="utf-8")
-        return target
-
-    def safe_filename(value: Any, default: str = "package") -> str:
-        text = clean_text(value, default=default)
-        safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in text)
-        return safe.strip("_") or default
-
-    def format_number(value: Any, default: str = "0") -> str:
-        return f"{to_number(value):,.0f}" if not is_empty_value(value) else default
-
-    def format_percent(value: Any, default: str = "0%") -> str:
-        return f"{to_number(value) * 100:.1f}%" if not is_empty_value(value) else default
-
-    def normalize_tax_id(value: Any) -> str:
-        return "".join(ch for ch in clean_text(value) if ch.isdigit())
-
-    def normalize_risk_level(value: Any, default: str = "Unknown") -> str:
-        return clean_text(value, default=default)
-
-    def sum_field(records: List[Dict[str, Any]], field: str) -> float:
-        return sum(to_number(record.get(field), 0.0) for record in records if isinstance(record, dict))
-
-    def file_info(path: Any) -> Dict[str, Any]:
-        target = Path(path)
-        return {"name": target.name, "exists": target.exists(), "size": target.stat().st_size if target.exists() else 0}
-
-    def apply_search_sort_pagination(records: List[Dict[str, Any]], context: Dict[str, Any], searchable_fields: Optional[List[str]] = None) -> Dict[str, Any]:
-        page = max(1, to_int(context.get("page"), 1))
-        page_size = max(1, min(500, to_int(context.get("page_size"), 50)))
-        total = len(records or [])
-        start = (page - 1) * page_size
-        return {"records": (records or [])[start:start + page_size], "total": total, "page": page, "page_size": page_size}
-
-    def get_or_build_cache(cache_key: str, builder: Any, ttl_seconds: int = 0, force_refresh: bool = False) -> Any:
-        return builder()
-
-    def create_zip_from_folder(*args: Any, **kwargs: Any) -> Path:
-        return Path("")
-
-    def write_excel(*args: Any, **kwargs: Any) -> Path:
-        return Path("")
-
-try:
-    from security import (
-        apply_export_field_policy_to_records,
-        attach_package_checksum,
-        build_access_log_record,
-        build_package_meta,
-        build_public_api_urls,
-        build_public_error,
-        build_public_package_snapshot,
-        build_public_success,
-        build_safe_public_meta,
-        check_public_package_access,
-        create_package_checksum,
-        build_public_package_url_meta,
-        public_access_allowed,
-        extract_public_package_component,
-        generate_package_id,
-        sanitize_package_components,
-        sanitize_public_payload,
-        verify_package_checksum,
-    )
-    SECURITY_LOADED = True
-except Exception as e:
-    SECURITY_LOADED = False
-    SECURITY_ERROR = str(e)
-
-    def sanitize_public_payload(payload: Any, policy: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Any:
-        return to_jsonable(payload)
-
-    def apply_export_field_policy_to_records(records: List[Dict[str, Any]], security_options: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        return [dict(record) for record in records or [] if isinstance(record, dict)]
-
-    def create_package_checksum(payload: Any) -> str:
-        import hashlib
-        stable = json.dumps(to_jsonable(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(stable.encode("utf-8")).hexdigest()
-
-    def attach_package_checksum(payload: Dict[str, Any]) -> Dict[str, Any]:
-        result = dict(payload or {})
-        result["checksum"] = create_package_checksum(result)
-        return result
-
-    def verify_package_checksum(payload: Any, checksum: Optional[str] = None) -> Any:
-        return bool(checksum and create_package_checksum(payload) == checksum)
-
-    def generate_package_id(prefix: str = "PKG") -> str:
-        return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-    def sanitize_package_components(components: Optional[List[str]]) -> List[str]:
-        return [clean_text(item) for item in components or PACKAGE_COMPONENTS if clean_text(item)]
-
-    def build_access_log_record(package_id: str, action: str = "view", allowed: bool = True, reason: str = "", **kwargs: Any) -> Dict[str, Any]:
-        return {"package_id": clean_text(package_id), "action": clean_text(action, "view"), "allowed": bool(allowed), "reason": clean_text(reason), "accessed_at": now_iso(), **to_jsonable(kwargs)}
-
-    def build_public_error(reason: str, package_id: str = "", status: str = "denied") -> Dict[str, Any]:
-        return {"status": status, "allowed": False, "reason": clean_text(reason), "package_id": clean_text(package_id)}
-
-    def build_public_success(data: Any, package_id: str = "", component: str = "") -> Dict[str, Any]:
-        return {"status": "ok", "allowed": True, "package_id": clean_text(package_id), "component": clean_text(component), "data": to_jsonable(data)}
-
-    def build_safe_public_meta(package_meta: Dict[str, Any]) -> Dict[str, Any]:
-        return sanitize_public_payload(package_meta or {})
-
-    def check_public_package_access(package_meta: Dict[str, Any], token: str = "", component: str = "") -> Dict[str, Any]:
-        if not package_meta:
-            return {"allowed": False, "reason": "package_not_found"}
-        if package_meta.get("enabled") is False:
-            return {"allowed": False, "reason": "package_disabled"}
-        return {"allowed": True, "reason": "ok"}
-
-    def public_access_allowed(package_meta: Dict[str, Any], component: Optional[str] = None, token: Optional[str] = None) -> Dict[str, Any]:
-        return check_public_package_access(package_meta, token=token or "", component=component or "")
-
-    def build_public_api_urls(package_id: str, token: str = "") -> Dict[str, str]:
-        return build_public_package_url_meta(package_id, token=token)
-
-    def build_public_package_url_meta(package_id: str, base_url: Optional[str] = None, token: Optional[str] = None) -> Dict[str, Any]:
-        base = f"{PUBLIC_API_PREFIX}/packages/{clean_text(package_id)}"
-        return {"package_id": clean_text(package_id), "public_url": f"{base}/data", "meta_url": f"{base}/meta", "data_url": f"{base}/data", "summary_url": f"{base}/summary", "map_url": f"{base}/map", "charts_url": f"{base}/charts", "tables_url": f"{base}/tables", "expires_at": ""}
-
-    def build_package_meta(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-        return {}
-
-    def build_public_package_snapshot(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-        return {}
-
-    def extract_public_package_component(public_data: Dict[str, Any], component: str) -> Any:
-        return public_data.get(component)
+PANDAS_LOADED = True
+CONFIG_LOADED = True
+UTILS_LOADED = True
+SECURITY_LOADED = True
 
 try:
     from company_policy_service import (
@@ -419,6 +160,8 @@ try:
         get_policy_exposure,
         get_company_policy_dashboard_payload,
         rebuild_company_policy_cache,
+        rebuild_company_policy_base_cache as rebuild_company_policy_base_service,
+        rebuild_company_policy_enriched_cache as rebuild_company_policy_enriched_service,
     )
 except Exception:
     get_company_list = None
@@ -435,7 +178,9 @@ except Exception:
     get_policy_exposure = None
     get_company_policy_dashboard_payload = None
     rebuild_company_policy_cache = None
-
+    rebuild_company_policy_base_service = None
+    rebuild_company_policy_enriched_service = None
+    
 try:
     from linkage_service import (
         get_linkage_summary,
@@ -586,31 +331,97 @@ def now_iso() -> str:
 
     return datetime.now().isoformat(timespec="seconds")
 
-
-def normalize_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    normalize context จาก api_routes.py
-    """
-
+def normalize_context(
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     result = dict(DEFAULT_CONTEXT)
-    result.update(context or {})
 
-    result["force_refresh"] = bool(result.get("force_refresh", False))
-    result["page"] = int(result.get("page", 1) or 1)
-    result["page_size"] = int(result.get("page_size", 50) or 50)
-    result["search"] = clean_text(result.get("search", ""))
-    result["sort_by"] = clean_text(result.get("sort_by", ""))
-    result["sort_dir"] = clean_text_lower(result.get("sort_dir", "asc")) or "asc"
+    if isinstance(context, dict):
+        result.update(context)
 
-    if not isinstance(result.get("filters"), dict):
+    result["force_refresh"] = bool(
+        to_bool(
+            result.get("force_refresh"),
+            default=False,
+        )
+    )
+    result["snapshot_only"] = bool(
+        to_bool(
+            result.get("snapshot_only"),
+            default=False,
+        )
+    )
+
+    try:
+        result["page"] = max(
+            1,
+            int(
+                result.get("page", 1)
+                or 1
+            ),
+        )
+    except (TypeError, ValueError):
+        result["page"] = 1
+
+    try:
+        result["page_size"] = max(
+            1,
+            min(
+                5000,
+                int(
+                    result.get("page_size", 50)
+                    or 50
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        result["page_size"] = 50
+
+    result["search"] = clean_text(
+        result.get("search", "")
+    )
+    result["sort_by"] = clean_text(
+        result.get("sort_by", "")
+    )
+    result["sort_dir"] = (
+        clean_text_lower(
+            result.get("sort_dir", "asc")
+        )
+        or "asc"
+    )
+
+    if result["sort_dir"] not in {
+        "asc",
+        "desc",
+    }:
+        result["sort_dir"] = "asc"
+
+    if not isinstance(
+        result.get("filters"),
+        dict,
+    ):
         result["filters"] = {}
 
-    result["include_map"] = bool(to_bool(result.get("include_map", True), default=True))
-    result["include_graph"] = bool(to_bool(result.get("include_graph", True), default=True))
-    result["include_data_quality"] = bool(to_bool(result.get("include_data_quality", True), default=True))
+    result["include_map"] = bool(
+        to_bool(
+            result.get("include_map"),
+            default=True,
+        )
+    )
+    result["include_graph"] = bool(
+        to_bool(
+            result.get("include_graph"),
+            default=True,
+        )
+    )
+    result["include_data_quality"] = bool(
+        to_bool(
+            result.get("include_data_quality"),
+            default=True,
+        )
+    )
 
     return result
-
 
 def get_dashboard_ttl() -> int:
     """
@@ -620,23 +431,30 @@ def get_dashboard_ttl() -> int:
     return int(CACHE_TTL_SECONDS.get("dashboard", 900))
 
 
-def safe_call_service(function_ref: Any, fallback: Any = None, *args: Any, **kwargs: Any) -> Any:
-    """
-    เรียก service function แบบปลอดภัย
-    """
-
+def safe_call_service(
+    function_ref: Any,
+    fallback: Any = None,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
     if function_ref is None:
-        return fallback if fallback is not None else {}
+        return (
+            fallback
+            if fallback is not None
+            else {}
+        )
 
     try:
-        return function_ref(*args, **kwargs)
-    except Exception as exc:
-        return {
-            "error": True,
-            "message": str(exc),
-            "function": getattr(function_ref, "__name__", "unknown"),
-            "data": fallback if fallback is not None else {},
-        }
+        return function_ref(
+            *args,
+            **kwargs,
+        )
+    except Exception:
+        return (
+            fallback
+            if fallback is not None
+            else {}
+        )
 
 
 def extract_records(payload: Any) -> List[Dict[str, Any]]:
@@ -1516,52 +1334,150 @@ def get_flood_charts(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
 # 8) PACKAGE PREVIEW
 # ============================================================
 
-def normalize_package_request(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    request = payload if isinstance(payload, dict) else {}
+def normalize_package_request(
+    payload: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    request = (
+        payload
+        if isinstance(payload, dict)
+        else {}
+    )
 
-    default_components = [
-        "summary",
-        "map",
-        "charts",
-        "tables",
-        "data_quality",
-        "prediction",
-        "entity",
-    ]
+    default_components = list(
+        dict.fromkeys(
+            [
+                *PACKAGE_COMPONENTS,
+                "prediction",
+                "entity",
+            ]
+        )
+    )
 
-    raw_components = request.get("components") if isinstance(request.get("components"), list) else default_components
-    components = sanitize_package_components(raw_components)
+    raw_components = (
+        request.get("components")
+        if isinstance(
+            request.get("components"),
+            list,
+        )
+        else default_components
+    )
+
     components = [
         component
-        for component in components
-        if component in ALLOWED_PUBLIC_COMPONENTS
-        or component in {"companies", "policy_summary", "linkage_graph", "map_layers"}
+        for component
+        in sanitize_package_components(
+            raw_components
+        )
+        if component
+        in ALLOWED_PUBLIC_COMPONENTS
     ]
 
-    if not components:
-        components = default_components
+    components = list(
+        dict.fromkeys(
+            components
+        )
+    )
 
-    security_policy = dict(PACKAGE_SECURITY_OPTIONS)
-    if isinstance(request.get("security"), dict):
-        security_policy.update(request["security"])
+    if not components:
+        components = (
+            default_components
+        )
+
+    security_policy = dict(
+        PACKAGE_SECURITY_OPTIONS
+    )
+
+    if isinstance(
+        request.get("security"),
+        dict,
+    ):
+        security_policy.update(
+            request["security"]
+        )
 
     security_policy["public"] = True
-    security_policy["remove_internal_paths"] = True
-    security_policy["remove_debug_fields"] = True
+    security_policy[
+        "remove_internal_paths"
+    ] = True
+    security_policy[
+        "remove_debug_fields"
+    ] = True
+
+    try:
+        expires_days = int(
+            request.get(
+                "expires_days",
+                request.get(
+                    "expire_days",
+                    PACKAGE_DEFAULT_EXPIRE_DAYS,
+                ),
+            )
+            or PACKAGE_DEFAULT_EXPIRE_DAYS
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        expires_days = (
+            PACKAGE_DEFAULT_EXPIRE_DAYS
+        )
+
+    expires_days = max(
+        1,
+        min(
+            expires_days,
+            PACKAGE_MAX_EXPIRE_DAYS,
+        ),
+    )
 
     return {
-        "package_name": clean_text(request.get("package_name") or request.get("name"), "TIPX Dashboard Package"),
-        "description": clean_text(request.get("description")),
+        "package_name": clean_text(
+            request.get(
+                "package_name"
+            )
+            or request.get("name"),
+            "TIPX Dashboard Package",
+        ),
+        "description": clean_text(
+            request.get(
+                "description"
+            )
+        ),
         "components": components,
         "security": security_policy,
-        "scope": build_package_scope(request),
-        "public": to_bool(request.get("public"), True),
-        "expires_days": max(1, min(to_int(request.get("expires_days"), PACKAGE_DEFAULT_EXPIRE_DAYS), PACKAGE_MAX_EXPIRE_DAYS)),
-        "filters": request.get("filters", {}) if isinstance(request.get("filters"), dict) else {},
-        "force_refresh": to_bool(request.get("force_refresh"), False),
+        "scope": build_package_scope(
+            request
+        ),
+        "public": bool(
+            to_bool(
+                request.get("public"),
+                default=True,
+            )
+        ),
+        "expires_days": expires_days,
+        "filters": (
+            request.get(
+                "filters",
+                {},
+            )
+            if isinstance(
+                request.get("filters"),
+                dict,
+            )
+            else {}
+        ),
+        "force_refresh": bool(
+            to_bool(
+                request.get(
+                    "force_refresh"
+                ),
+                default=False,
+            )
+        ),
         "snapshot_only": True,
     }
-
 
 def preview_package(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -2527,31 +2443,204 @@ def generate_package(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "generated_at": now_iso(),
     }
 
+def collect_record_counts_from_snapshot(
+    snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    data = (
+        snapshot.get("data", {})
+        if (
+            isinstance(snapshot, dict)
+            and isinstance(
+                snapshot.get("data"),
+                dict,
+            )
+        )
+        else {}
+    )
 
-def collect_record_counts_from_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    สรุปจำนวน records ใน snapshot
-    """
+    counts: Dict[str, int] = {}
 
-    tables = snapshot.get("data", {}).get("tables", {})
+    tables_payload = data.get(
+        "tables",
+        {},
+    )
 
-    counts = {}
+    if isinstance(
+        tables_payload,
+        dict,
+    ):
+        if isinstance(
+            tables_payload.get("tables"),
+            list,
+        ):
+            table_items = (
+                tables_payload["tables"]
+            )
+        else:
+            table_items = [
+                {
+                    "table_id": key,
+                    **value,
+                }
+                for key, value
+                in tables_payload.items()
+                if isinstance(value, dict)
+            ]
 
-    for table_key, table_payload in tables.items():
-        counts[table_key] = len(table_payload.get("records", []))
+    elif isinstance(
+        tables_payload,
+        list,
+    ):
+        table_items = tables_payload
 
-    map_layers = snapshot.get("data", {}).get("map_layers", {}).get("layers", {})
+    else:
+        table_items = []
 
-    for layer_key, layer_payload in map_layers.items():
-        counts[f"map_{layer_key}"] = layer_payload.get("record_count", 0)
+    for table in table_items:
+        if not isinstance(table, dict):
+            continue
 
-    graph = snapshot.get("data", {}).get("linkage_graph", {})
+        table_id = clean_text(
+            table.get("table_id")
+            or table.get("id"),
+            default="table",
+        )
 
-    counts["graph_nodes"] = len(graph.get("nodes", []))
-    counts["graph_edges"] = len(graph.get("edges", []))
+        records = (
+            table.get("records")
+            if isinstance(
+                table.get("records"),
+                list,
+            )
+            else table.get("rows")
+            if isinstance(
+                table.get("rows"),
+                list,
+            )
+            else []
+        )
+
+        counts[table_id] = len(
+            records
+        )
+
+    map_payload = (
+        data.get("map_layers")
+        or data.get("map")
+        or {}
+    )
+
+    map_payload = extract_payload_data(
+        map_payload,
+        map_payload,
+    )
+
+    layers = (
+        map_payload.get("layers", {})
+        if isinstance(map_payload, dict)
+        else {}
+    )
+
+    if isinstance(layers, list):
+        layer_items = [
+            (
+                clean_text(
+                    layer.get("layer_id"),
+                    default=f"layer_{index}",
+                ),
+                layer,
+            )
+            for index, layer
+            in enumerate(layers)
+            if isinstance(layer, dict)
+        ]
+
+    elif isinstance(layers, dict):
+        layer_items = list(
+            layers.items()
+        )
+
+    else:
+        layer_items = []
+
+    for layer_id, layer in layer_items:
+        feature_collection = (
+            layer.get(
+                "feature_collection"
+            )
+            or layer.get("features")
+            or {}
+        )
+
+        if (
+            isinstance(
+                feature_collection,
+                dict,
+            )
+            and isinstance(
+                feature_collection.get(
+                    "features"
+                ),
+                list,
+            )
+        ):
+            layer_count = len(
+                feature_collection[
+                    "features"
+                ]
+            )
+        else:
+            layer_count = (
+                to_int(
+                    layer.get(
+                        "record_count"
+                    ),
+                    0,
+                )
+                or 0
+            )
+
+        counts[
+            f"map_{layer_id}"
+        ] = layer_count
+
+    graph = data.get(
+        "linkage_graph",
+        {},
+    )
+
+    if isinstance(graph, dict):
+        counts["graph_nodes"] = len(
+            graph.get("nodes", [])
+            if isinstance(
+                graph.get("nodes"),
+                list,
+            )
+            else []
+        )
+        counts["graph_edges"] = len(
+            graph.get("edges", [])
+            if isinstance(
+                graph.get("edges"),
+                list,
+            )
+            else []
+        )
+
+    for key in [
+        "companies",
+        "policy_summary",
+        "policy_table",
+        "linkage_lines",
+        "prediction",
+        "entity",
+    ]:
+        value = data.get(key)
+
+        if isinstance(value, list):
+            counts[key] = len(value)
 
     return counts
-
 
 def list_packages(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -3226,11 +3315,18 @@ ALLOWED_PUBLIC_COMPONENTS = {
     "meta",
     "data",
     "summary",
+    "companies",
+    "policy_summary",
+    "policy_table",
+    "linkage_graph",
+    "linkage_lines",
+    "flood_summary",
     "map",
     "map_layers",
     "charts",
     "tables",
     "data_quality",
+    "filter_options",
     "prediction",
     "flood_prediction",
     "flood_prediction_latest",
@@ -3251,7 +3347,7 @@ PUBLIC_COMPONENT_FILES = {
     "uploaded_entity": "entity.json",
     "uploaded_entity_latest": "entity.json",
     "map_layers": "map.json",
-    "access_log": "access_log.json",
+    "access_log": "access_log.jsonl",
 }
 
 PACKAGE_FILE_NAMES = {
@@ -3266,16 +3362,23 @@ PACKAGE_FILE_NAMES = {
     "prediction": "prediction.json",
     "prediction_map": "prediction_map.json",
     "entity": "entity.json",
-    "access_log": "access_log.json",
+    "access_log": "access_log.jsonl",
 }
 
 PACKAGE_CHECKSUM_COMPONENT_KEYS = [
     "summary",
+    "companies",
+    "policy_summary",
+    "policy_table",
+    "linkage_graph",
+    "linkage_lines",
+    "flood_summary",
     "map",
     "map_layers",
     "charts",
     "tables",
     "data_quality",
+    "filter_options",
     "prediction",
     "flood_prediction",
     "flood_prediction_latest",
@@ -3385,22 +3488,63 @@ def make_package_response(
 ) -> Dict[str, Any]:
     return make_dashboard_response(data=data, message=message, meta=meta, errors=errors, success=success)
 
-
 def make_package_error(
     message: str = "Package operation failed.",
     error_type: str = "PackageError",
     status_code: int = 500,
     field: str = "",
-    data: Optional[Dict[str, Any]] = None,
+    data: Optional[
+        Dict[str, Any]
+    ] = None,
 ) -> Dict[str, Any]:
-    return make_package_response(
-        data=data or {},
-        message=message,
-        meta={"status_code": status_code, "degraded": True},
-        errors=[{"type": error_type, "field": field, "message": message}],
-        success=False,
+    safe_status_code = max(
+        400,
+        min(
+            int(status_code or 500),
+            599,
+        ),
     )
 
+    public_message = clean_text(
+        message,
+        "Package operation failed.",
+    )
+
+    if (
+        safe_status_code >= 500
+        and not bool(
+            getattr(
+                config,
+                "DEBUG",
+                False,
+            )
+        )
+    ):
+        public_message = (
+            "Package operation failed."
+        )
+
+    return make_package_response(
+        data=data or {},
+        message=public_message,
+        meta={
+            "status_code": safe_status_code,
+            "degraded": True,
+        },
+        errors=[
+            {
+                "type": clean_text(
+                    error_type,
+                    "PackageError",
+                ),
+                "field": clean_text(
+                    field
+                ),
+                "message": public_message,
+            }
+        ],
+        success=False,
+    )
 
 def make_degraded_package_response(reason: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return make_package_response(
@@ -3424,32 +3568,90 @@ def ensure_package_dir(package_id: Optional[str] = None) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
+def _safe_package_id(
+    package_id: Any,
+) -> str:
+    text = clean_text(
+        package_id
+    )
 
-def _safe_package_id(package_id: Any) -> str:
-    text = safe_slug(package_id, default="")
-    if not text or text in {".", ".."}:
+    if (
+        not text
+        or text in {".", ".."}
+        or len(text) > 128
+        or Path(text).name != text
+        or any(
+            not (
+                character.isalnum()
+                or character in {
+                    "-",
+                    "_",
+                }
+            )
+            for character in text
+        )
+    ):
         return ""
+
     return text
 
 
-def get_package_folder(package_id: str) -> Path:
-    clean_id = _safe_package_id(package_id)
+def get_package_folder(
+    package_id: str,
+) -> Path:
+    clean_id = _safe_package_id(
+        package_id
+    )
+
     root = _package_root()
+
     if not clean_id:
         return root / "__invalid__"
-    candidate = (root / clean_id).resolve()
-    if root not in candidate.parents and candidate != root:
+
+    candidate = (
+        root
+        / clean_id
+    ).resolve()
+
+    if root not in candidate.parents:
         return root / "__invalid__"
+
     return candidate
 
 
-def get_package_file(package_id: str, filename: str) -> Path:
-    allowed = set(PACKAGE_FILE_NAMES.values()) | {PACKAGE_INDEX_FILENAME, "access_log.jsonl"}
-    clean_name = Path(clean_text(filename)).name
-    if clean_name not in allowed:
-        clean_name = PACKAGE_META_FILENAME
-    return get_package_folder(package_id) / clean_name
+def get_package_file(
+    package_id: str,
+    filename: str,
+) -> Path:
+    allowed = (
+        set(
+            PACKAGE_FILE_NAMES.values()
+        )
+        | {
+            PACKAGE_INDEX_FILENAME,
+            "access_log.json",
+            "access_log.jsonl",
+        }
+    )
 
+    clean_name = Path(
+        clean_text(filename)
+    ).name
+
+    if clean_name not in allowed:
+        return (
+            get_package_folder(
+                package_id
+            )
+            / "__invalid__"
+        )
+
+    return (
+        get_package_folder(
+            package_id
+        )
+        / clean_name
+    )
 
 def read_json_file_safe(path: Any, default: Any = None) -> Any:
     try:
@@ -3478,18 +3680,34 @@ def extract_payload_data(payload: Any, default: Any = None) -> Any:
     return payload if payload is not None else default
 
 
-def remove_snapshot_internal_keys(payload: Any) -> Any:
+def remove_snapshot_internal_keys(
+    payload: Any,
+) -> Any:
     forbidden_keys = {
+        "path",
         "source_file",
         "source_file_path",
+        "source_path",
         "internal_path",
+        "local_path",
+        "absolute_path",
         "cache_file",
         "cache_path",
         "raw_file_path",
         "upload_dir",
         "saved_file",
         "error_report_file",
+        "export_path",
+        "zip_path",
+        "download_path",
+        "package_path",
+        "package_dir",
+        "viewer_dir",
+        "index_path",
+        "data_path",
+        "assets_dir",
         "debug_traceback",
+        "traceback",
         "raw_record",
         "raw_records",
         "raw_row",
@@ -3500,18 +3718,91 @@ def remove_snapshot_internal_keys(payload: Any) -> Any:
     }
 
     if isinstance(payload, dict):
-        return {
-            key: remove_snapshot_internal_keys(value)
-            for key, value in payload.items()
-            if clean_text_lower(key) not in forbidden_keys
-        }
+        result: Dict[
+            str,
+            Any,
+        ] = {}
+
+        for key, value in payload.items():
+            normalized_key = (
+                clean_text_lower(
+                    key
+                ).replace(
+                    " ",
+                    "_",
+                )
+            )
+
+            if (
+                normalized_key
+                in forbidden_keys
+            ):
+                continue
+
+            cleaned = (
+                remove_snapshot_internal_keys(
+                    value
+                )
+            )
+
+            if cleaned in (
+                {},
+                [],
+                "",
+                None,
+            ):
+                continue
+
+            result[key] = cleaned
+
+        return result
 
     if isinstance(payload, list):
         return [
             item
-            for item in (remove_snapshot_internal_keys(item) for item in payload)
-            if item not in ({}, [], "", None)
+            for item in (
+                remove_snapshot_internal_keys(
+                    item
+                )
+                for item in payload
+            )
+            if item not in (
+                {},
+                [],
+                "",
+                None,
+            )
         ]
+
+    text = clean_text(
+        payload
+    )
+    normalized = (
+        text
+        .replace("\\", "/")
+        .lower()
+    )
+
+    if (
+        normalized.startswith(
+            (
+                "file://",
+                "/mnt/",
+                "/tmp/",
+                "/home/",
+                "/users/",
+                "/var/",
+                "/etc/",
+                "/opt/",
+                "/app/",
+                "/workspace/",
+                "/backend/",
+                "/sandbox/",
+            )
+        )
+        or "c:/users/" in normalized
+    ):
+        return ""
 
     return payload
 
@@ -3696,23 +3987,38 @@ def normalize_cache_payload_to_records(payload: Any, source_name: Optional[str] 
 
 extract_records_from_payload = normalize_cache_payload_to_records
 
-
 def _cache_dir() -> Path:
-    return Path(__file__).resolve().parent / "cache"
+    return Path(
+        getattr(
+            config,
+            "CACHE_DIR",
+            Path(OUTPUT_DIR) / "cache",
+        )
+    )
 
 
-def _load_cache_payload(cache_key: str) -> Any:
-    candidates = [
-        _cache_dir() / f"{cache_key}.json",
-        _cache_dir() / cache_key / "data.json",
-        Path(OUTPUT_DIR) / "cache" / f"{cache_key}.json",
-    ]
-    for candidate in candidates:
-        payload = read_json_file_safe(candidate, default=None)
-        if payload is not None:
-            return payload
-    return None
+def _load_cache_payload(
+    cache_key: str,
+) -> Any:
+    try:
+        cache_path = Path(
+            get_cache_file_path(
+                cache_key
+            )
+        )
+    except Exception:
+        cache_path = (
+            _cache_dir()
+            / (
+                f"{safe_slug(cache_key, 'cache')}"
+                ".json"
+            )
+        )
 
+    return read_json_file_safe(
+        cache_path,
+        default=None,
+    )
 
 def load_company_records() -> List[Dict[str, Any]]:
     records = normalize_cache_payload_to_records(_load_cache_payload("company_unified_master"), "company_unified_master")
@@ -3925,16 +4231,49 @@ def build_top_prediction_risk_provinces(records: List[Dict[str, Any]], limit: in
 
     return json_safe(result[:limit])
 
+def call_dashboard_service_records(
+    function_ref: Any,
+    context: Optional[
+        Dict[str, Any]
+    ],
+    cache_key: str,
+    source_name: str,
+) -> List[Dict[str, Any]]:
+    ctx = normalize_context(
+        context
+    )
 
-def call_dashboard_service_records(function_ref: Any, context: Optional[Dict[str, Any]], cache_key: str, source_name: str) -> List[Dict[str, Any]]:
+    cached_records = (
+        normalize_cache_payload_to_records(
+            _load_cache_payload(
+                cache_key
+            ),
+            source_name=source_name,
+        )
+    )
+
+    if cached_records:
+        return cached_records
+
+    if ctx.get("snapshot_only"):
+        return []
+
     if function_ref is not None:
-        payload = safe_call_service(function_ref, fallback={}, context=context or {})
-        records = extract_records_any(payload, source_name=source_name)
+        payload = safe_call_service(
+            function_ref,
+            fallback={},
+            context=ctx,
+        )
+
+        records = extract_records_any(
+            payload,
+            source_name=source_name,
+        )
+
         if records:
             return records
 
-    return normalize_cache_payload_to_records(_load_cache_payload(cache_key), source_name=source_name)
-
+    return []
 
 def load_rainfall_latest_records(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     return call_dashboard_service_records(get_latest_rainfall, context, "flood_rainfall_latest", "flood_rainfall_latest")
@@ -3959,42 +4298,121 @@ def load_prediction_latest_records(context: Optional[Dict[str, Any]] = None) -> 
     return call_dashboard_service_records(get_latest_flood_predictions, context, "flood_prediction_latest", "flood_prediction_latest")
 
 
-def load_uploaded_entity_records(context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def load_uploaded_entity_records(
+    context: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> List[Dict[str, Any]]:
+    ctx = normalize_context(
+        context
+    )
+
+    cached_records = (
+        normalize_cache_payload_to_records(
+            _load_cache_payload(
+                "uploaded_entity_latest"
+            ),
+            "uploaded_entity_latest",
+        )
+    )
+
+    if (
+        cached_records
+        or ctx.get("snapshot_only")
+    ):
+        return cached_records
+
     try:
         import entity_upload_service
 
-        payload = entity_upload_service.get_latest_entity_records(context=context or {}, limit=10000, offset=0)
-        records = extract_records_any(payload, source_name="uploaded_entity_latest")
-        if records:
-            return records
+        payload = (
+            entity_upload_service
+            .get_latest_entity_records(
+                context=ctx,
+                limit=10000,
+                offset=0,
+            )
+        )
+
+        return extract_records_any(
+            payload,
+            source_name=(
+                "uploaded_entity_latest"
+            ),
+        )
+
     except Exception:
-        pass
+        return []
 
-    return normalize_cache_payload_to_records(_load_cache_payload("uploaded_entity_latest"), "uploaded_entity_latest")
 
-def load_prediction_map_payload(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    payload = safe_call_service(
-        get_flood_prediction_map,
-        fallback={},
-        context=context or {},
-    ) if get_flood_prediction_map else {}
+def load_prediction_map_payload(
+    context: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    ctx = normalize_context(
+        context
+    )
 
-    data = extract_payload_data(payload, payload)
+    cached = _load_cache_payload(
+        "flood_prediction_map"
+    )
 
-    if isinstance(data, dict) and data:
+    if (
+        isinstance(cached, dict)
+        and cached
+    ):
+        return json_safe(
+            extract_payload_data(
+                cached,
+                cached,
+            )
+        )
+
+    if ctx.get("snapshot_only"):
+        return {
+            "type": "FeatureCollection",
+            "features": [],
+            "total": 0,
+            "meta": {
+                "degraded": True,
+                "source": "cache_missing",
+                "snapshot_only": True,
+            },
+        }
+
+    payload = (
+        safe_call_service(
+            get_flood_prediction_map,
+            fallback={},
+            context=ctx,
+        )
+        if get_flood_prediction_map
+        else {}
+    )
+
+    data = extract_payload_data(
+        payload,
+        payload,
+    )
+
+    if (
+        isinstance(data, dict)
+        and data
+    ):
         return json_safe(data)
 
-    cached = _load_cache_payload("flood_prediction_map") or {
+    return {
         "type": "FeatureCollection",
         "features": [],
         "total": 0,
         "meta": {
             "degraded": True,
-            "source": "cache_fallback",
+            "source": (
+                "service_unavailable"
+            ),
         },
     }
-
-    return json_safe(cached if isinstance(cached, dict) else {})
 
 def load_linkage_records() -> Dict[str, List[Dict[str, Any]]]:
     graph_payload = _load_cache_payload("linkage_graph_payload") or _load_cache_payload("linkage_graph") or safe_call_service(get_linkage_graph, fallback={})
@@ -4014,11 +4432,22 @@ def load_flood_records() -> List[Dict[str, Any]]:
         return records
     return normalize_cache_payload_to_records(safe_call_service(get_flood_computed_risk, fallback=[]), "flood_computed_risk")
 
+def load_map_payload(
+    context: Optional[
+        Dict[str, Any]
+    ] = None,
+    public: bool = False,
+) -> Dict[str, Any]:
+    ctx = normalize_context(
+        context
+    )
 
-def load_map_payload(context: Optional[Dict[str, Any]] = None, public: bool = False) -> Dict[str, Any]:
     fallback = {
         "map": {
-            "center": [100.5018, 13.7563],
+            "center": [
+                100.5018,
+                13.7563,
+            ],
             "zoom": 6,
         },
         "layers": {},
@@ -4036,50 +4465,165 @@ def load_map_payload(context: Optional[Dict[str, Any]] = None, public: bool = Fa
         "meta": {
             "degraded": True,
             "source": "fallback",
-            "snapshot_only": bool(public),
+            "snapshot_only": bool(
+                public
+                or ctx.get(
+                    "snapshot_only"
+                )
+            ),
         },
     }
 
-    if public and get_external_viewer_map_payload:
-        payload = safe_call_service(get_external_viewer_map_payload, fallback=fallback, context=context or {})
-    elif get_map_layers:
-        payload = safe_call_service(get_map_layers, fallback=fallback, context=context or {})
-    else:
-        payload = _load_cache_payload("map_layers") or fallback
+    cached = _load_cache_payload(
+        "map_layers"
+    )
 
-    payload = extract_payload_data(payload, fallback)
+    if (
+        isinstance(cached, dict)
+        and cached
+    ):
+        payload = extract_payload_data(
+            cached,
+            cached,
+        )
+
+    elif ctx.get("snapshot_only"):
+        payload = fallback
+
+    elif (
+        public
+        and get_external_viewer_map_payload
+    ):
+        payload = safe_call_service(
+            get_external_viewer_map_payload,
+            fallback=fallback,
+            context=ctx,
+        )
+        payload = extract_payload_data(
+            payload,
+            fallback,
+        )
+
+    elif get_map_layers:
+        payload = safe_call_service(
+            get_map_layers,
+            fallback=fallback,
+            context=ctx,
+        )
+        payload = extract_payload_data(
+            payload,
+            fallback,
+        )
+
+    else:
+        payload = fallback
 
     if not isinstance(payload, dict):
         payload = fallback
 
-    if isinstance(payload.get("layers"), list):
-        layer_list = payload.get("layers", [])
+    if isinstance(
+        payload.get("layers"),
+        list,
+    ):
+        layer_list = payload.get(
+            "layers",
+            [],
+        )
+
         layers_by_id = {
-            clean_text(layer.get("layer_id"), default=f"layer_{idx}"): layer
-            for idx, layer in enumerate(layer_list)
+            clean_text(
+                layer.get("layer_id"),
+                default=(
+                    f"layer_{index}"
+                ),
+            ): layer
+            for index, layer
+            in enumerate(layer_list)
             if isinstance(layer, dict)
         }
-        payload["layers"] = layers_by_id
-        payload["layers_by_id"] = layers_by_id
-        payload["layer_list"] = layer_list
-        payload["layers_list"] = layer_list
-        payload["legacy_layers"] = layer_list
 
-    if isinstance(payload.get("layers"), dict):
-        payload.setdefault("layers_by_id", payload.get("layers", {}))
-        payload.setdefault("layer_order", list(payload["layers"].keys()))
-        payload.setdefault("layer_list", [payload["layers"][key] for key in payload["layer_order"] if key in payload["layers"]])
-        payload.setdefault("layers_list", payload.get("layer_list", []))
-        payload.setdefault("legacy_layers", payload.get("layer_list", []))
+        payload["layers"] = (
+            layers_by_id
+        )
+        payload["layers_by_id"] = (
+            layers_by_id
+        )
+        payload["layer_list"] = (
+            layer_list
+        )
+        payload["layers_list"] = (
+            layer_list
+        )
+        payload["legacy_layers"] = (
+            layer_list
+        )
 
-    payload.setdefault("map", {})
-    payload.setdefault("summary", {})
-    payload.setdefault("meta", {})
-    payload["meta"]["snapshot_only"] = bool(public)
-    payload["meta"]["public_viewer_source"] = "public_data_json_only" if public else "cache_snapshot"
+    if isinstance(
+        payload.get("layers"),
+        dict,
+    ):
+        payload.setdefault(
+            "layers_by_id",
+            payload["layers"],
+        )
+        payload.setdefault(
+            "layer_order",
+            list(payload["layers"]),
+        )
+        payload.setdefault(
+            "layer_list",
+            [
+                payload["layers"][key]
+                for key
+                in payload["layer_order"]
+                if key
+                in payload["layers"]
+            ],
+        )
+        payload.setdefault(
+            "layers_list",
+            payload["layer_list"],
+        )
+        payload.setdefault(
+            "legacy_layers",
+            payload["layer_list"],
+        )
 
-    return normalize_public_map_payload(payload) if public else json_safe(payload)
+    payload.setdefault(
+        "map",
+        {},
+    )
+    payload.setdefault(
+        "summary",
+        {},
+    )
+    payload.setdefault(
+        "meta",
+        {},
+    )
 
+    payload["meta"][
+        "snapshot_only"
+    ] = bool(
+        public
+        or ctx.get("snapshot_only")
+    )
+
+    payload["meta"][
+        "public_viewer_source"
+    ] = (
+        "public_data_json_only"
+        if public
+        else "cache_snapshot"
+    )
+
+    return (
+        normalize_public_map_payload(
+            payload
+        )
+        if public
+        else json_safe(payload)
+    )
 
 def get_data_quality_dashboard_function() -> Any:
     if build_data_quality_dashboard_payload is not None:
@@ -4102,113 +4646,560 @@ def get_data_quality_dashboard_function() -> Any:
 
     return get_data_quality_summary
 
-def load_data_quality_payload(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    function_ref = get_data_quality_dashboard_function()
+def load_data_quality_payload(
+    context: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    ctx = normalize_context(
+        context
+    )
 
-    payload = safe_call_service(
-        function_ref,
-        fallback={},
-        context=context or {},
-    ) if function_ref is not None else {}
+    cached = _load_cache_payload(
+        "data_quality_summary"
+    )
 
-    if isinstance(payload, dict) and {"success", "data"}.issubset(payload.keys()):
-        data = payload.get("data", {})
-        return json_safe(data if isinstance(data, dict) else {})
+    if (
+        isinstance(cached, dict)
+        and cached
+    ):
+        return json_safe(
+            extract_payload_data(
+                cached,
+                cached,
+            )
+        )
 
-    if isinstance(payload, dict) and payload:
+    if ctx.get("snapshot_only"):
+        return {
+            "summary": {},
+            "cards": [],
+            "issues": [],
+            "charts": {},
+            "meta": {
+                "degraded": True,
+                "source": "cache_missing",
+                "snapshot_only": True,
+            },
+        }
+
+    function_ref = (
+        get_data_quality_dashboard_function()
+    )
+
+    payload = (
+        safe_call_service(
+            function_ref,
+            fallback={},
+            context=ctx,
+        )
+        if function_ref is not None
+        else {}
+    )
+
+    if (
+        isinstance(payload, dict)
+        and {
+            "success",
+            "data",
+        }.issubset(payload)
+    ):
+        data = payload.get(
+            "data",
+            {},
+        )
+
+        return json_safe(
+            data
+            if isinstance(data, dict)
+            else {}
+        )
+
+    if (
+        isinstance(payload, dict)
+        and payload
+    ):
         return json_safe(payload)
 
-    cached = _load_cache_payload("data_quality_summary") or {
+    return {
         "summary": {},
         "cards": [],
         "issues": [],
         "charts": {},
         "meta": {
             "degraded": True,
-            "source": "cache_fallback",
-            "post_rebuild_validator": True,
+            "source": (
+                "service_unavailable"
+            ),
         },
     }
 
-    return json_safe(cached if isinstance(cached, dict) else {})
 
+def load_filter_context(
+    context: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    ctx = normalize_context(
+        context
+    )
 
-def load_filter_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    cached = _load_cache_payload(
+        "filter_context"
+    )
+
+    if (
+        isinstance(cached, dict)
+        and cached
+    ):
+        return json_safe(
+            extract_payload_data(
+                cached,
+                cached,
+            )
+        )
+
+    if ctx.get("snapshot_only"):
+        return {
+            "filters": ctx.get(
+                "filters",
+                {},
+            ),
+            "snapshot_only": True,
+        }
+
     if build_filter_context_for_package:
-        payload = safe_call_service(build_filter_context_for_package, fallback={}, context=context or {})
-        return json_safe(payload if isinstance(payload, dict) else {})
-    return {"filters": (context or {}).get("filters", {}) if isinstance(context, dict) else {}}
+        payload = safe_call_service(
+            build_filter_context_for_package,
+            fallback={},
+            context=ctx,
+        )
 
+        return json_safe(
+            payload
+            if isinstance(payload, dict)
+            else {}
+        )
 
-def load_dashboard_source_bundle(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    ctx = normalize_context(context)
-    errors: List[Dict[str, Any]] = []
-    sources: Dict[str, Dict[str, Any]] = {}
+    return {
+        "filters": ctx.get(
+            "filters",
+            {},
+        )
+    }
 
-    def load_source(name: str, loader: Any, empty: Any) -> Any:
+def load_dashboard_source_bundle(
+    context: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    ctx = normalize_context(
+        context
+    )
+
+    snapshot_only = bool(
+        ctx.get("snapshot_only")
+    )
+
+    errors: List[
+        Dict[str, Any]
+    ] = []
+
+    sources: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
+
+    def load_source(
+        name: str,
+        loader: Any,
+        empty: Any,
+    ) -> Any:
         try:
             value = loader()
-            status = "loaded" if safe_count(value) else "empty"
-            sources[name] = {"status": status, "record_count": safe_count(value)}
+
+            status = (
+                "loaded"
+                if safe_count(value)
+                else "empty"
+            )
+
+            sources[name] = {
+                "status": status,
+                "record_count": (
+                    safe_count(value)
+                ),
+            }
+
             return value
+
         except Exception as exc:
-            sources[name] = {"status": "error", "record_count": 0}
-            errors.append({"source": name, "type": exc.__class__.__name__, "message": str(exc)})
+            sources[name] = {
+                "status": "error",
+                "record_count": 0,
+            }
+
+            errors.append(
+                {
+                    "source": name,
+                    "type": (
+                        exc.__class__.__name__
+                    ),
+                    "message": (
+                        str(exc)
+                        if bool(
+                            getattr(
+                                config,
+                                "DEBUG",
+                                False,
+                            )
+                        )
+                        else "source_load_failed"
+                    ),
+                }
+            )
+
             return empty
 
-    linkage = load_source("linkage", load_linkage_records, {"nodes": [], "edges": []})
-    companies = load_source("companies", load_company_records, [])
-    policy = load_source("policy", load_policy_records, [])
-    flood = load_source("flood", load_flood_records, [])
-    rainfall = load_source("flood_rainfall_latest", lambda: load_rainfall_latest_records(ctx), [])
-    waterlevel = load_source("flood_waterlevel_latest", lambda: load_waterlevel_latest_records(ctx), [])
-    dam = load_source("flood_dam_latest", lambda: load_dam_latest_records(ctx), [])
-    prediction = load_source("flood_prediction_latest", lambda: load_prediction_latest_records(ctx), [])
-    prediction_map = load_source("flood_prediction_map", lambda: load_prediction_map_payload(ctx), {})
-    entity = load_source("uploaded_entity_latest", lambda: load_uploaded_entity_records(ctx), [])
+    def cached_records(
+        cache_key: str,
+        source_name: str,
+    ) -> List[Dict[str, Any]]:
+        return (
+            normalize_cache_payload_to_records(
+                _load_cache_payload(
+                    cache_key
+                ),
+                source_name,
+            )
+        )
 
-    spatial = normalize_cache_payload_to_records(_load_cache_payload("spatial_join_result"), "spatial_join_result")
-    sources["spatial"] = {"status": "loaded" if spatial else "empty", "record_count": len(spatial)}
+    if snapshot_only:
+        linkage_payload = (
+            _load_cache_payload(
+                "linkage_graph_payload"
+            )
+            or {}
+        )
 
-    map_payload = load_map_payload(ctx)
-    map_layers = map_payload.get("layers", {}) if isinstance(map_payload, dict) else {}
-    sources["map_layers"] = {"status": "loaded" if map_layers else "empty", "record_count": safe_count(map_layers)}
+        linkage_data = (
+            extract_payload_data(
+                linkage_payload,
+                linkage_payload,
+            )
+        )
 
-    data_quality_payload = load_data_quality_payload(ctx)
-    sources["data_quality"] = {"status": "loaded" if data_quality_payload else "empty", "record_count": safe_count(data_quality_payload)}
+        linkage = {
+            "nodes": (
+                normalize_cache_payload_to_records(
+                    linkage_data.get(
+                        "nodes",
+                        [],
+                    )
+                    if isinstance(
+                        linkage_data,
+                        dict,
+                    )
+                    else [],
+                    "linkage_nodes",
+                )
+            ),
+            "edges": (
+                normalize_cache_payload_to_records(
+                    linkage_data.get(
+                        "edges",
+                        [],
+                    )
+                    if isinstance(
+                        linkage_data,
+                        dict,
+                    )
+                    else [],
+                    "linkage_edges",
+                )
+            ),
+        }
 
-    degraded = any(item.get("status") in {"empty", "error"} for item in sources.values())
+        companies_loader = (
+            lambda: cached_records(
+                "company_unified_master",
+                "company_unified_master",
+            )
+        )
+
+        policy_loader = (
+            lambda: cached_records(
+                "policy_fact",
+                "policy_fact",
+            )
+        )
+
+        flood_loader = (
+            lambda: cached_records(
+                "flood_computed_risk",
+                "flood_computed_risk",
+            )
+        )
+
+        linkage_count = (
+            len(linkage["nodes"])
+            + len(linkage["edges"])
+        )
+
+        sources["linkage"] = {
+            "status": (
+                "loaded"
+                if linkage_count
+                else "empty"
+            ),
+            "record_count": (
+                linkage_count
+            ),
+        }
+
+    else:
+        linkage = load_source(
+            "linkage",
+            load_linkage_records,
+            {
+                "nodes": [],
+                "edges": [],
+            },
+        )
+
+        companies_loader = (
+            load_company_records
+        )
+        policy_loader = (
+            load_policy_records
+        )
+        flood_loader = (
+            load_flood_records
+        )
+
+    companies = load_source(
+        "companies",
+        companies_loader,
+        [],
+    )
+
+    policy = load_source(
+        "policy",
+        policy_loader,
+        [],
+    )
+
+    flood = load_source(
+        "flood",
+        flood_loader,
+        [],
+    )
+
+    rainfall = load_source(
+        "flood_rainfall_latest",
+        lambda: (
+            load_rainfall_latest_records(
+                ctx
+            )
+        ),
+        [],
+    )
+
+    waterlevel = load_source(
+        "flood_waterlevel_latest",
+        lambda: (
+            load_waterlevel_latest_records(
+                ctx
+            )
+        ),
+        [],
+    )
+
+    dam = load_source(
+        "flood_dam_latest",
+        lambda: (
+            load_dam_latest_records(
+                ctx
+            )
+        ),
+        [],
+    )
+
+    prediction = load_source(
+        "flood_prediction_latest",
+        lambda: (
+            load_prediction_latest_records(
+                ctx
+            )
+        ),
+        [],
+    )
+
+    prediction_map = load_source(
+        "flood_prediction_map",
+        lambda: (
+            load_prediction_map_payload(
+                ctx
+            )
+        ),
+        {},
+    )
+
+    entity = load_source(
+        "uploaded_entity_latest",
+        lambda: (
+            load_uploaded_entity_records(
+                ctx
+            )
+        ),
+        [],
+    )
+
+    spatial = cached_records(
+        "spatial_join_result",
+        "spatial_join_result",
+    )
+
+    sources["spatial"] = {
+        "status": (
+            "loaded"
+            if spatial
+            else "empty"
+        ),
+        "record_count": len(
+            spatial
+        ),
+    }
+
+    map_payload = load_map_payload(
+        ctx
+    )
+
+    map_layers = (
+        map_payload.get(
+            "layers",
+            {},
+        )
+        if isinstance(
+            map_payload,
+            dict,
+        )
+        else {}
+    )
+
+    sources["map_layers"] = {
+        "status": (
+            "loaded"
+            if map_layers
+            else "empty"
+        ),
+        "record_count": (
+            safe_count(map_layers)
+        ),
+    }
+
+    data_quality_payload = (
+        load_data_quality_payload(
+            ctx
+        )
+    )
+
+    sources["data_quality"] = {
+        "status": (
+            "loaded"
+            if data_quality_payload
+            else "empty"
+        ),
+        "record_count": (
+            safe_count(
+                data_quality_payload
+            )
+        ),
+    }
+
+    degraded = any(
+        item.get("status")
+        in {
+            "empty",
+            "error",
+        }
+        for item in sources.values()
+    )
 
     return json_safe(
         {
             "companies": companies,
             "policy": policy,
-            "policy_company_summary": normalize_cache_payload_to_records(_load_cache_payload("policy_company_summary"), "policy_company_summary"),
-            "linkage_nodes": linkage.get("nodes", []),
-            "linkage_edges": linkage.get("edges", []),
-            "directors": normalize_cache_payload_to_records(_load_cache_payload("director_master"), "director_master"),
+            "policy_company_summary": (
+                cached_records(
+                    "policy_company_summary",
+                    "policy_company_summary",
+                )
+            ),
+            "linkage_nodes": (
+                linkage.get(
+                    "nodes",
+                    [],
+                )
+            ),
+            "linkage_edges": (
+                linkage.get(
+                    "edges",
+                    [],
+                )
+            ),
+            "directors": cached_records(
+                "director_master",
+                "director_master",
+            ),
             "flood": flood,
-            "flood_rainfall_latest": rainfall,
-            "flood_waterlevel_latest": waterlevel,
+            "flood_rainfall_latest": (
+                rainfall
+            ),
+            "flood_waterlevel_latest": (
+                waterlevel
+            ),
             "flood_dam_latest": dam,
-            "flood_prediction_latest": prediction,
-            "flood_prediction_map": prediction_map,
-            "uploaded_entity_latest": entity,
+            "flood_prediction_latest": (
+                prediction
+            ),
+            "flood_prediction_map": (
+                prediction_map
+            ),
+            "uploaded_entity_latest": (
+                entity
+            ),
             "spatial": spatial,
             "map_layers": map_layers,
             "map": map_payload,
-            "data_quality": data_quality_payload,
-            "filter_context": load_filter_context(ctx),
+            "data_quality": (
+                data_quality_payload
+            ),
+            "filter_context": (
+                load_filter_context(
+                    ctx
+                )
+            ),
             "meta": {
                 "sources": sources,
                 "degraded": degraded,
                 "errors": errors,
                 "generated_at": now_iso(),
-                "source": "excel" if getattr(config, "USE_EXCEL_DATA_SOURCE", True) else "mysql",
+                "source": (
+                    "excel"
+                    if getattr(
+                        config,
+                        "USE_EXCEL_DATA_SOURCE",
+                        True,
+                    )
+                    else "mysql"
+                ),
+                "snapshot_only": (
+                    snapshot_only
+                ),
             },
         }
     )
-
 
 def build_dashboard_kpis(bundle: Dict[str, Any]) -> Dict[str, Any]:
     companies = bundle.get("companies", [])
@@ -4279,40 +5270,161 @@ def build_dashboard_tables(bundle: Dict[str, Any]) -> Dict[str, Any]:
 
     return {"tables": json_safe(tables), "meta": {"table_count": len(tables)}}
 
-def build_dashboard_summary(context: Optional[Dict[str, Any]] = None, force_refresh: bool = False) -> Dict[str, Any]:
-    bundle = load_dashboard_source_bundle(context)
-    kpis = build_dashboard_kpis(bundle)
-    cards = build_dashboard_cards(bundle)
-    alerts = build_dashboard_alerts(bundle)
-    province_insights = build_dashboard_province_insights(context)
+def build_dashboard_summary(
+    context: Optional[
+        Dict[str, Any]
+    ] = None,
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    ctx = normalize_context(
+        context
+    )
 
-    prediction_records = bundle.get("flood_prediction_latest", [])
-    entity_records = bundle.get("uploaded_entity_latest", [])
+    if force_refresh:
+        ctx["force_refresh"] = True
+
+    bundle = load_dashboard_source_bundle(
+        ctx
+    )
+
+    kpis = build_dashboard_kpis(
+        bundle
+    )
+    cards = build_dashboard_cards(
+        bundle
+    )
+    alerts = build_dashboard_alerts(
+        bundle
+    )
+    province_insights = (
+        build_dashboard_province_insights(
+            ctx
+        )
+    )
+
+    prediction_records = bundle.get(
+        "flood_prediction_latest",
+        [],
+    )
+
+    entity_records = bundle.get(
+        "uploaded_entity_latest",
+        [],
+    )
 
     runtime_counts = {
-        "rainfall_latest": len(bundle.get("flood_rainfall_latest", [])),
-        "waterlevel_latest": len(bundle.get("flood_waterlevel_latest", [])),
-        "dam_latest": len(bundle.get("flood_dam_latest", [])),
-        "prediction_latest": len(prediction_records),
-        "uploaded_entity_latest": len(entity_records),
+        "rainfall_latest": len(
+            bundle.get(
+                "flood_rainfall_latest",
+                [],
+            )
+        ),
+        "waterlevel_latest": len(
+            bundle.get(
+                "flood_waterlevel_latest",
+                [],
+            )
+        ),
+        "dam_latest": len(
+            bundle.get(
+                "flood_dam_latest",
+                [],
+            )
+        ),
+        "prediction_latest": len(
+            prediction_records
+        ),
+        "uploaded_entity_latest": len(
+            entity_records
+        ),
     }
 
     cards.extend(
         [
-            {"card_id": "prediction_latest", "label": "Flood Predictions", "value": runtime_counts["prediction_latest"], "status": "Normal"},
-            {"card_id": "uploaded_entities", "label": "Uploaded Entities", "value": runtime_counts["uploaded_entity_latest"], "status": "Normal"},
+            {
+                "card_id": (
+                    "prediction_latest"
+                ),
+                "label": (
+                    "Flood Predictions"
+                ),
+                "value": runtime_counts[
+                    "prediction_latest"
+                ],
+                "status": "Normal",
+            },
+            {
+                "card_id": (
+                    "uploaded_entities"
+                ),
+                "label": (
+                    "Uploaded Entities"
+                ),
+                "value": runtime_counts[
+                    "uploaded_entity_latest"
+                ],
+                "status": "Normal",
+            },
         ]
     )
+
+    if ctx.get("snapshot_only"):
+        prediction_summary = (
+            extract_payload_data(
+                _load_cache_payload(
+                    "flood_prediction_summary"
+                )
+                or {},
+                {},
+            )
+        )
+    else:
+        prediction_summary = (
+            safe_call_service(
+                get_flood_prediction_summary,
+                fallback={},
+                context=ctx,
+            )
+            if get_flood_prediction_summary
+            else {}
+        )
+
+        prediction_summary = (
+            extract_payload_data(
+                prediction_summary,
+                prediction_summary,
+            )
+        )
 
     return json_safe(
         {
             "summary_cards": cards,
             "record_counts": {
-                "companies": kpis["company_count"],
-                "policy": kpis["policy_record_count"],
-                "linkage_nodes": kpis["linkage_node_count"],
-                "linkage_edges": kpis["linkage_edge_count"],
-                "flood": kpis["flood_record_count"],
+                "companies": (
+                    kpis[
+                        "company_count"
+                    ]
+                ),
+                "policy": (
+                    kpis[
+                        "policy_record_count"
+                    ]
+                ),
+                "linkage_nodes": (
+                    kpis[
+                        "linkage_node_count"
+                    ]
+                ),
+                "linkage_edges": (
+                    kpis[
+                        "linkage_edge_count"
+                    ]
+                ),
+                "flood": (
+                    kpis[
+                        "flood_record_count"
+                    ]
+                ),
                 **runtime_counts,
             },
             "kpis": {
@@ -4320,15 +5432,65 @@ def build_dashboard_summary(context: Optional[Dict[str, Any]] = None, force_refr
                 **runtime_counts,
             },
             "alerts": alerts,
-            "province_insights": province_insights,
-            "prediction_summary": safe_call_service(get_flood_prediction_summary, fallback={}, context=context or {}) if get_flood_prediction_summary else {},
-            "overall_status": "Warning" if any(alert.get("severity") in {"critical", "high"} for alert in alerts) else "Normal",
-            "freshness": build_dashboard_freshness(context),
+            "province_insights": (
+                province_insights
+            ),
+            "prediction_summary": (
+                prediction_summary
+            ),
+            "overall_status": (
+                "Warning"
+                if any(
+                    alert.get(
+                        "severity"
+                    )
+                    in {
+                        "critical",
+                        "high",
+                    }
+                    for alert in alerts
+                )
+                else "Normal"
+            ),
+            "freshness": (
+                build_dashboard_freshness(
+                    ctx
+                )
+            ),
             "meta": {
                 "generated_at": now_iso(),
-                "degraded": bundle.get("meta", {}).get("degraded", False),
-                "errors": bundle.get("meta", {}).get("errors", []),
-                "source": "excel" if getattr(config, "USE_EXCEL_DATA_SOURCE", True) else "mysql",
+                "degraded": (
+                    bundle.get(
+                        "meta",
+                        {},
+                    ).get(
+                        "degraded",
+                        False,
+                    )
+                ),
+                "errors": (
+                    bundle.get(
+                        "meta",
+                        {},
+                    ).get(
+                        "errors",
+                        [],
+                    )
+                ),
+                "source": (
+                    "excel"
+                    if getattr(
+                        config,
+                        "USE_EXCEL_DATA_SOURCE",
+                        True,
+                    )
+                    else "mysql"
+                ),
+                "snapshot_only": bool(
+                    ctx.get(
+                        "snapshot_only"
+                    )
+                ),
             },
         }
     )
@@ -4825,24 +5987,139 @@ def build_package_scope(payload: Optional[Dict[str, Any]] = None) -> Dict[str, A
         "filters": scope.get("filters") if isinstance(scope.get("filters"), dict) else request.get("filters", {}) if isinstance(request.get("filters"), dict) else {},
     }
 
-
-def _apply_package_scope(records: List[Dict[str, Any]], scope: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _apply_package_scope(
+    records: List[
+        Dict[str, Any]
+    ],
+    scope: Dict[str, Any],
+) -> List[Dict[str, Any]]:
     if not records:
         return []
-    provinces = {clean_text_lower(value) for value in scope.get("provinces", []) if clean_text(value)}
-    tax_ids = {normalize_tax_id(value) for value in scope.get("tax_ids", []) if clean_text(value)}
-    company_names = {clean_text_lower(value) for value in scope.get("companies", []) if clean_text(value)}
-    filtered = []
-    for record in records:
-        if provinces and clean_text_lower(record.get("province")) not in provinces:
-            continue
-        if tax_ids and normalize_tax_id(record.get("tax_id_norm") or record.get("tax_id")) not in tax_ids:
-            continue
-        if company_names and clean_text_lower(record.get("company_name")) not in company_names:
-            continue
-        filtered.append(record)
-    return filtered
 
+    provinces = {
+        clean_text_lower(value)
+        for value
+        in scope.get(
+            "provinces",
+            [],
+        )
+        if clean_text(value)
+    }
+
+    tax_ids = {
+        normalize_tax_id(value)
+        for value
+        in scope.get(
+            "tax_ids",
+            [],
+        )
+        if normalize_tax_id(value)
+    }
+
+    company_names = {
+        clean_text_lower(value)
+        for value
+        in scope.get(
+            "companies",
+            [],
+        )
+        if clean_text(value)
+    }
+
+    if (
+        not provinces
+        and not tax_ids
+        and not company_names
+    ):
+        return list(records)
+
+    filtered: List[
+        Dict[str, Any]
+    ] = []
+
+    for record in records:
+        if not isinstance(
+            record,
+            dict,
+        ):
+            continue
+
+        record_provinces = {
+            clean_text_lower(
+                record.get(key)
+            )
+            for key in [
+                "province",
+                "province_model",
+                "province_name_th",
+                "company_province",
+                "source_province",
+                "target_province",
+            ]
+            if clean_text(
+                record.get(key)
+            )
+        }
+
+        record_tax_ids = {
+            normalize_tax_id(
+                record.get(key)
+            )
+            for key in [
+                "tax_id_norm",
+                "tax_id",
+                "company_tax_id",
+                "source_tax_id",
+                "target_tax_id",
+            ]
+            if normalize_tax_id(
+                record.get(key)
+            )
+        }
+
+        record_company_names = {
+            clean_text_lower(
+                record.get(key)
+            )
+            for key in [
+                "company_name",
+                "name_th",
+                "source_company_name",
+                "target_company_name",
+                "entity_name_th",
+            ]
+            if clean_text(
+                record.get(key)
+            )
+        }
+
+        if (
+            provinces
+            and provinces.isdisjoint(
+                record_provinces
+            )
+        ):
+            continue
+
+        if (
+            tax_ids
+            and tax_ids.isdisjoint(
+                record_tax_ids
+            )
+        ):
+            continue
+
+        if (
+            company_names
+            and company_names.isdisjoint(
+                record_company_names
+            )
+        ):
+            continue
+
+        filtered.append(record)
+
+    return filtered
 
 def build_package_preview(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     request = normalize_package_request(payload)
@@ -4909,370 +6186,1908 @@ def build_package_id(payload: Optional[Dict[str, Any]] = None) -> str:
     except Exception:
         return f"PKG_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
+def build_package_meta(
+    package_id: str,
+    request: Dict[str, Any],
+    snapshot: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    snapshot_payload = (
+        snapshot
+        if isinstance(snapshot, dict)
+        else {}
+    )
 
-def build_package_meta(package_id: str, request: Dict[str, Any], snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    created_at = now_iso()
-    expires_at = (datetime.now() + timedelta(days=to_int(request.get("expires_days"), PACKAGE_DEFAULT_EXPIRE_DAYS))).isoformat(timespec="seconds")
-    record_counts = collect_record_counts_from_snapshot(snapshot or {})
-    return sanitize_public_payload(
+    meta = build_security_package_meta(
+        package_id,
+        request,
+        snapshot_payload,
+    )
+
+    if not isinstance(meta, dict):
+        meta = {}
+
+    created_at = clean_text(
+        meta.get("created_at"),
+        default=now_iso(),
+    )
+
+    meta.update(
         {
             "package_id": package_id,
-            "name": request.get("package_name", package_id),
-            "description": request.get("description", ""),
+            "package_name": (
+                request.get(
+                    "package_name",
+                    package_id,
+                )
+            ),
+            "name": request.get(
+                "package_name",
+                package_id,
+            ),
+            "description": (
+                request.get(
+                    "description",
+                    "",
+                )
+            ),
             "created_at": created_at,
             "updated_at": created_at,
             "status": "active",
             "enabled": True,
-            "public": request.get("public", True),
-            "expires_at": expires_at,
-            "components": request.get("components", []),
-            "record_counts": record_counts,
-            "security": request.get("security", {}),
-            "checksum": create_package_checksum(snapshot or {}),
-            "public_url_meta": build_public_package_url_meta(package_id),
-        },
-        {"public": True, "hide_financial_fields": False},
+            "public": bool(
+                request.get(
+                    "public",
+                    True,
+                )
+            ),
+            "components": list(
+                request.get(
+                    "components",
+                    [],
+                )
+            ),
+            "record_counts": (
+                collect_record_counts_from_snapshot(
+                    snapshot_payload
+                )
+            ),
+            "snapshot_id": (
+                snapshot_payload.get(
+                    "snapshot_id"
+                )
+            ),
+            "checksum": (
+                snapshot_payload.get(
+                    "checksum",
+                    "",
+                )
+            ),
+            "checksum_components": list(
+                PACKAGE_CHECKSUM_COMPONENT_KEYS
+            ),
+            "snapshot_policy": dict(
+                SNAPSHOT_ONLY_PACKAGE_POLICY
+            ),
+        }
     )
 
-def build_package_snapshot(package_id: str, request: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    req = request or normalize_package_request(context or {})
-    ctx = normalize_context(context or {"filters": req.get("filters", {})})
+    return json_safe(meta)
 
-    if isinstance(req.get("filters"), dict):
-        ctx["filters"] = req.get("filters", {})
+def build_package_snapshot(
+    package_id: str,
+    request: Optional[
+        Dict[str, Any]
+    ] = None,
+    context: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    req = (
+        normalize_package_request(
+            request
+        )
+        if isinstance(request, dict)
+        else normalize_package_request(
+            context or {}
+        )
+    )
 
-    rebuild_result = rebuild_all_runtime_cache(force_refresh=to_bool(req.get("force_refresh"), False))
+    ctx = normalize_context(
+        context or {}
+    )
 
-    bundle = load_dashboard_source_bundle(ctx)
-    summary = build_dashboard_summary(ctx)
-    dashboard = build_executive_dashboard(ctx)
-    overview = build_dashboard_overview(ctx)
-    charts = build_chart_summary(ctx)
-    tables = build_dashboard_tables(bundle)
-    map_payload = load_map_payload(ctx, public=False)
-    public_map_payload = load_map_payload({**ctx, "package_id": package_id}, public=True)
-    data_quality_payload = load_data_quality_payload(ctx)
-    province_insights = build_dashboard_province_insights(ctx)
+    ctx["filters"] = dict(
+        req.get(
+            "filters",
+            {},
+        )
+    )
+    ctx["snapshot_only"] = True
+    ctx["force_refresh"] = False
 
-    prediction_records = bundle.get("flood_prediction_latest", [])
-    prediction_map = bundle.get("flood_prediction_map", {})
-    entity_records = bundle.get("uploaded_entity_latest", [])
+    if req.get("force_refresh"):
+        rebuild_result = (
+            rebuild_all_runtime_cache(
+                force_refresh=True
+            )
+        )
+    else:
+        rebuild_result = {
+            "rebuilt": False,
+            "status": "skipped",
+            "reason": (
+                "force_refresh_false"
+            ),
+            "finished_at": now_iso(),
+        }
 
-    prediction_payload = normalize_public_prediction_payload(prediction_records, prediction_map)
-    entity_payload = normalize_public_entity_payload(entity_records)
+    bundle = (
+        load_dashboard_source_bundle(
+            ctx
+        )
+    )
 
-    filter_options = bundle.get("filter_context", {})
+    scope = (
+        req.get("scope", {})
+        if isinstance(
+            req.get("scope"),
+            dict,
+        )
+        else {}
+    )
 
-    data = {
-        "summary": summary,
-        "dashboard": dashboard,
-        "overview": overview,
-        "province_insights": province_insights,
-        "map": public_map_payload,
-        "map_layers": map_payload,
-        "charts": charts,
-        "tables": tables,
-        "data_quality": data_quality_payload,
-        "filter_options": filter_options,
-        "prediction": prediction_payload.get("records", []),
-        "flood_prediction": prediction_payload.get("records", []),
-        "flood_prediction_latest": prediction_payload.get("records", []),
-        "flood_prediction_map": prediction_payload.get("map", {}),
-        "entity": entity_payload.get("records", []),
-        "uploaded_entity": entity_payload.get("records", []),
-        "uploaded_entity_latest": entity_payload.get("records", []),
+    for scoped_key in [
+        "companies",
+        "policy",
+        "policy_company_summary",
+        "linkage_edges",
+        "flood",
+        "flood_rainfall_latest",
+        "flood_waterlevel_latest",
+        "flood_dam_latest",
+        "flood_prediction_latest",
+        "uploaded_entity_latest",
+        "spatial",
+    ]:
+        if isinstance(
+            bundle.get(scoped_key),
+            list,
+        ):
+            bundle[scoped_key] = (
+                _apply_package_scope(
+                    bundle[scoped_key],
+                    scope,
+                )
+            )
+
+    selected_components = set(
+        req.get(
+            "components",
+            [],
+        )
+    )
+
+    def selected(
+        *component_names: str,
+    ) -> bool:
+        return any(
+            component_name
+            in selected_components
+            for component_name
+            in component_names
+        )
+
+    summary = build_dashboard_summary(
+        ctx
+    )
+    dashboard = (
+        build_executive_dashboard(
+            ctx
+        )
+    )
+    overview = (
+        build_dashboard_overview(
+            ctx
+        )
+    )
+    province_insights = (
+        build_dashboard_province_insights(
+            ctx
+        )
+    )
+    charts = build_chart_summary(
+        ctx
+    )
+    tables = build_dashboard_tables(
+        bundle
+    )
+    map_payload = load_map_payload(
+        ctx,
+        public=False,
+    )
+    public_map_payload = (
+        load_map_payload(
+            ctx,
+            public=True,
+        )
+    )
+    data_quality_payload = (
+        load_data_quality_payload(
+            ctx
+        )
+    )
+
+    linkage_graph = {
+        "nodes": bundle.get(
+            "linkage_nodes",
+            [],
+        ),
+        "edges": bundle.get(
+            "linkage_edges",
+            [],
+        ),
+        "summary": {
+            "node_count": len(
+                bundle.get(
+                    "linkage_nodes",
+                    [],
+                )
+            ),
+            "edge_count": len(
+                bundle.get(
+                    "linkage_edges",
+                    [],
+                )
+            ),
+        },
     }
+
+    if ctx.get("snapshot_only"):
+        flood_summary = (
+            extract_payload_data(
+                _load_cache_payload(
+                    "flood_summary"
+                )
+                or {},
+                {},
+            )
+        )
+    else:
+        flood_summary = (
+            unwrap_service_payload(
+                safe_call_service(
+                    get_flood_summary,
+                    fallback={},
+                    context=ctx,
+                ),
+                {},
+            )
+        )
+
+    prediction_records = (
+        bundle.get(
+            "flood_prediction_latest",
+            [],
+        )
+    )
+    prediction_map = bundle.get(
+        "flood_prediction_map",
+        {},
+    )
+    entity_records = bundle.get(
+        "uploaded_entity_latest",
+        [],
+    )
+
+    prediction_payload = (
+        normalize_public_prediction_payload(
+            prediction_records,
+            prediction_map,
+        )
+    )
+    entity_payload = (
+        normalize_public_entity_payload(
+            entity_records
+        )
+    )
+
+    data: Dict[
+        str,
+        Any,
+    ] = {}
+
+    if selected("summary"):
+        data.update(
+            {
+                "summary": summary,
+                "dashboard": dashboard,
+                "overview": overview,
+                "province_insights": (
+                    province_insights
+                ),
+            }
+        )
+
+    if selected("companies"):
+        data["companies"] = (
+            bundle.get(
+                "companies",
+                [],
+            )
+        )
+
+    if selected(
+        "policy_summary"
+    ):
+        data["policy_summary"] = (
+            bundle.get(
+                "policy_company_summary",
+                [],
+            )
+        )
+
+    if selected(
+        "policy_table"
+    ):
+        data["policy_table"] = (
+            bundle.get(
+                "policy",
+                [],
+            )
+        )
+
+    if selected(
+        "linkage_graph"
+    ):
+        data["linkage_graph"] = (
+            linkage_graph
+        )
+
+    if selected(
+        "linkage_lines"
+    ):
+        data["linkage_lines"] = (
+            bundle.get(
+                "linkage_edges",
+                [],
+            )
+        )
+
+    if selected(
+        "flood_summary"
+    ):
+        data["flood_summary"] = (
+            flood_summary
+        )
+
+    if selected(
+        "map",
+        "map_layers",
+    ):
+        data["map"] = (
+            public_map_payload
+        )
+        data["map_layers"] = (
+            map_payload
+        )
+
+    if selected("charts"):
+        data["charts"] = charts
+
+    if selected("tables"):
+        data["tables"] = tables
+
+    if selected(
+        "data_quality"
+    ):
+        data["data_quality"] = (
+            data_quality_payload
+        )
+
+    if selected(
+        "filter_options"
+    ):
+        data["filter_options"] = (
+            bundle.get(
+                "filter_context",
+                {},
+            )
+        )
+
+    if selected(
+        "prediction",
+        "flood_prediction",
+        "flood_prediction_latest",
+        "flood_prediction_map",
+    ):
+        data["prediction"] = (
+            prediction_payload.get(
+                "records",
+                [],
+            )
+        )
+        data["flood_prediction"] = (
+            prediction_payload.get(
+                "records",
+                [],
+            )
+        )
+        data[
+            "flood_prediction_latest"
+        ] = prediction_payload.get(
+            "records",
+            [],
+        )
+        data[
+            "flood_prediction_map"
+        ] = prediction_payload.get(
+            "map",
+            {},
+        )
+
+    if selected(
+        "entity",
+        "uploaded_entity",
+        "uploaded_entity_latest",
+    ):
+        data["entity"] = (
+            entity_payload.get(
+                "records",
+                [],
+            )
+        )
+        data["uploaded_entity"] = (
+            entity_payload.get(
+                "records",
+                [],
+            )
+        )
+        data[
+            "uploaded_entity_latest"
+        ] = entity_payload.get(
+            "records",
+            [],
+        )
 
     snapshot = {
         "package_id": package_id,
-        "snapshot_id": f"{package_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        "snapshot_id": (
+            f"{package_id}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        ),
         "request": req,
         "data": data,
-        "summary": summary,
-        "dashboard": dashboard,
-        "overview": overview,
-        "province_insights": province_insights,
-        "map": public_map_payload,
-        "map_layers": map_payload,
-        "charts": charts,
-        "tables": tables,
-        "data_quality": data_quality_payload,
-        "prediction": prediction_payload,
-        "entity": entity_payload,
         "sources": {
-            "cache_keys": SOURCE_CACHE_KEYS,
-            "bundle_meta": bundle.get("meta", {}),
+            "cache_keys": (
+                SOURCE_CACHE_KEYS
+            ),
+            "bundle_meta": (
+                bundle.get(
+                    "meta",
+                    {},
+                )
+            ),
             "rebuild": rebuild_result,
         },
         "created_at": now_iso(),
-        "snapshot_policy": dict(SNAPSHOT_ONLY_PACKAGE_POLICY),
-        "checksum_components": PACKAGE_CHECKSUM_COMPONENT_KEYS,
+        "snapshot_policy": dict(
+            SNAPSHOT_ONLY_PACKAGE_POLICY
+        ),
+        "checksum_components": list(
+            PACKAGE_CHECKSUM_COMPONENT_KEYS
+        ),
     }
+
+    for key in [
+        "summary",
+        "dashboard",
+        "overview",
+        "province_insights",
+        "map",
+        "map_layers",
+        "charts",
+        "tables",
+        "data_quality",
+        "prediction",
+        "entity",
+    ]:
+        if key in data:
+            snapshot[key] = data[key]
 
     checksum_payload = {
         key: data.get(key)
-        for key in PACKAGE_CHECKSUM_COMPONENT_KEYS
+        for key
+        in PACKAGE_CHECKSUM_COMPONENT_KEYS
         if key in data
     }
 
-    snapshot["checksum"] = create_package_checksum(
-        {
-            "package_id": package_id,
-            "data": checksum_payload,
-            "created_at": snapshot["created_at"],
-        }
+    snapshot["checksum"] = (
+        create_package_checksum(
+            {
+                "package_id": (
+                    package_id
+                ),
+                "data": (
+                    checksum_payload
+                ),
+                "created_at": (
+                    snapshot[
+                        "created_at"
+                    ]
+                ),
+            }
+        )
     )
 
     return json_safe(snapshot)
 
+def build_public_data(
+    snapshot: Dict[str, Any],
+    policy: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    active_policy = dict(
+        PACKAGE_SECURITY_OPTIONS
+    )
 
-def build_public_data(snapshot: Dict[str, Any], policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    active_policy = dict(PACKAGE_SECURITY_OPTIONS)
     if isinstance(policy, dict):
-        active_policy.update(policy)
+        active_policy.update(
+            policy
+        )
 
     active_policy["public"] = True
-    active_policy["remove_internal_paths"] = True
-    active_policy["remove_debug_fields"] = True
+    active_policy[
+        "remove_internal_paths"
+    ] = True
+    active_policy[
+        "remove_debug_fields"
+    ] = True
 
-    data = snapshot.get("data", {}) if isinstance(snapshot.get("data"), dict) else {}
+    data = (
+        snapshot.get(
+            "data",
+            {},
+        )
+        if isinstance(
+            snapshot.get("data"),
+            dict,
+        )
+        else {}
+    )
 
-    prediction_records = data.get("prediction") or data.get("flood_prediction_latest") or snapshot.get("prediction", {}).get("records", [])
-    prediction_map = data.get("flood_prediction_map") or snapshot.get("prediction", {}).get("map", {})
-    entity_records = data.get("entity") or data.get("uploaded_entity_latest") or snapshot.get("entity", {}).get("records", [])
+    selected_components = set(
+        (
+            snapshot.get(
+                "request",
+                {},
+            )
+            if isinstance(
+                snapshot.get("request"),
+                dict,
+            )
+            else {}
+        ).get(
+            "components",
+            [],
+        )
+        or []
+    )
 
-    prediction_payload = normalize_public_prediction_payload(prediction_records if isinstance(prediction_records, list) else [], prediction_map)
-    entity_payload = normalize_public_entity_payload(entity_records if isinstance(entity_records, list) else [])
+    def selected(
+        *component_names: str,
+    ) -> bool:
+        return any(
+            component_name
+            in selected_components
+            for component_name
+            in component_names
+        )
 
-    public_data_section = {
-        "summary": data.get("summary", snapshot.get("summary", {})),
-        "dashboard": data.get("dashboard", snapshot.get("dashboard", {})),
-        "overview": data.get("overview", snapshot.get("overview", {})),
-        "province_insights": data.get("province_insights", snapshot.get("province_insights", {})),
-        "map": normalize_public_map_payload(data.get("map") or snapshot.get("map", {})),
-        "map_layers": normalize_public_map_payload(data.get("map_layers") or snapshot.get("map_layers", snapshot.get("map", {}))),
-        "charts": data.get("charts", snapshot.get("charts", {})),
-        "tables": data.get("tables", snapshot.get("tables", {})),
-        "data_quality": data.get("data_quality", snapshot.get("data_quality", {})),
-        "filter_options": data.get("filter_options", {}),
-        "prediction": prediction_payload.get("records", []),
-        "flood_prediction": prediction_payload.get("records", []),
-        "flood_prediction_latest": prediction_payload.get("records", []),
-        "flood_prediction_map": prediction_payload.get("map", {}),
-        "entity": entity_payload.get("records", []),
-        "uploaded_entity": entity_payload.get("records", []),
-        "uploaded_entity_latest": entity_payload.get("records", []),
-    }
+    public_data_section: Dict[
+        str,
+        Any,
+    ] = {}
 
-    public_payload = {
+    for key, aliases in {
+        "summary": (
+            "summary",
+        ),
+        "companies": (
+            "companies",
+        ),
+        "policy_summary": (
+            "policy_summary",
+        ),
+        "policy_table": (
+            "policy_table",
+        ),
+        "linkage_graph": (
+            "linkage_graph",
+        ),
+        "linkage_lines": (
+            "linkage_lines",
+        ),
+        "flood_summary": (
+            "flood_summary",
+        ),
+        "charts": (
+            "charts",
+        ),
+        "tables": (
+            "tables",
+        ),
+        "data_quality": (
+            "data_quality",
+        ),
+        "filter_options": (
+            "filter_options",
+        ),
+    }.items():
+        if (
+            selected(*aliases)
+            and key in data
+        ):
+            public_data_section[
+                key
+            ] = data[key]
+
+    if selected("summary"):
+        for key in [
+            "dashboard",
+            "overview",
+            "province_insights",
+        ]:
+            if key in data:
+                public_data_section[
+                    key
+                ] = data[key]
+
+    if selected(
+        "map",
+        "map_layers",
+    ):
+        public_data_section[
+            "map"
+        ] = normalize_public_map_payload(
+            data.get(
+                "map",
+                {},
+            )
+        )
+
+        public_data_section[
+            "map_layers"
+        ] = normalize_public_map_payload(
+            data.get(
+                "map_layers",
+                data.get(
+                    "map",
+                    {},
+                ),
+            )
+        )
+
+    if selected(
+        "prediction",
+        "flood_prediction",
+        "flood_prediction_latest",
+        "flood_prediction_map",
+    ):
+        prediction_payload = (
+            normalize_public_prediction_payload(
+                data.get(
+                    "prediction",
+                    [],
+                ),
+                data.get(
+                    "flood_prediction_map",
+                    {},
+                ),
+            )
+        )
+
+        public_data_section[
+            "prediction"
+        ] = prediction_payload.get(
+            "records",
+            [],
+        )
+        public_data_section[
+            "flood_prediction"
+        ] = prediction_payload.get(
+            "records",
+            [],
+        )
+        public_data_section[
+            "flood_prediction_latest"
+        ] = prediction_payload.get(
+            "records",
+            [],
+        )
+        public_data_section[
+            "flood_prediction_map"
+        ] = prediction_payload.get(
+            "map",
+            {},
+        )
+
+    if selected(
+        "entity",
+        "uploaded_entity",
+        "uploaded_entity_latest",
+    ):
+        entity_payload = (
+            normalize_public_entity_payload(
+                data.get(
+                    "entity",
+                    [],
+                )
+            )
+        )
+
+        public_data_section[
+            "entity"
+        ] = entity_payload.get(
+            "records",
+            [],
+        )
+        public_data_section[
+            "uploaded_entity"
+        ] = entity_payload.get(
+            "records",
+            [],
+        )
+        public_data_section[
+            "uploaded_entity_latest"
+        ] = entity_payload.get(
+            "records",
+            [],
+        )
+
+    public_payload: Dict[
+        str,
+        Any,
+    ] = {
         "package_meta": {
-            "package_id": snapshot.get("package_id"),
-            "snapshot_id": snapshot.get("snapshot_id"),
-            "checksum": snapshot.get("checksum"),
-            "checksum_components": PACKAGE_CHECKSUM_COMPONENT_KEYS,
+            "package_id": (
+                snapshot.get(
+                    "package_id"
+                )
+            ),
+            "snapshot_id": (
+                snapshot.get(
+                    "snapshot_id"
+                )
+            ),
+            "checksum": (
+                snapshot.get(
+                    "checksum"
+                )
+            ),
+            "checksum_components": list(
+                PACKAGE_CHECKSUM_COMPONENT_KEYS
+            ),
+            "components": sorted(
+                selected_components
+            ),
         },
-        "data": public_data_section,
-        "summary": public_data_section["summary"],
-        "dashboard": public_data_section["dashboard"],
-        "province_insights": public_data_section["province_insights"],
-        "map": public_data_section["map"],
-        "map_layers": public_data_section["map_layers"],
-        "charts": public_data_section["charts"],
-        "tables": public_data_section["tables"],
-        "data_quality": public_data_section["data_quality"],
-        "prediction": public_data_section["prediction"],
-        "entity": public_data_section["entity"],
+        "data": (
+            public_data_section
+        ),
         "meta": {
-            "package_id": snapshot.get("package_id"),
-            "snapshot_id": snapshot.get("snapshot_id"),
+            "package_id": (
+                snapshot.get(
+                    "package_id"
+                )
+            ),
+            "snapshot_id": (
+                snapshot.get(
+                    "snapshot_id"
+                )
+            ),
             "generated_at": now_iso(),
             "read_only": True,
             "snapshot_only": True,
-            "source": "package_snapshot",
-            "public_viewer_source": "public_data_json_only",
-            "package_reads_live_excel": False,
-            "public_viewer_reads_raw_cache": False,
-            "public_viewer_reads_raw_excel": False,
+            "source": (
+                "package_snapshot"
+            ),
+            "public_viewer_source": (
+                "public_data_json_only"
+            ),
+            "package_reads_live_excel": (
+                False
+            ),
+            "public_viewer_reads_raw_cache": (
+                False
+            ),
+            "public_viewer_reads_raw_excel": (
+                False
+            ),
         },
     }
 
-    return sanitize_public_payload(remove_snapshot_internal_keys(public_payload), active_policy)
+    for key, value in (
+        public_data_section.items()
+    ):
+        public_payload[key] = value
 
-def write_package_files(package_id: str, meta: Dict[str, Any], snapshot: Dict[str, Any], public_data: Dict[str, Any]) -> Dict[str, Any]:
-    folder = ensure_package_dir(package_id)
-    data_section = public_data.get("data", {}) if isinstance(public_data.get("data"), dict) else {}
+    cleaned_payload = (
+        remove_snapshot_internal_keys(
+            public_payload
+        )
+    )
 
-    results = {
-        "meta": write_json_file_safe(folder / PACKAGE_META_FILENAME, meta),
-        "snapshot": write_json_file_safe(folder / PACKAGE_SNAPSHOT_FILENAME, snapshot),
-        "public_data": write_json_file_safe(folder / PACKAGE_PUBLIC_DATA_FILENAME, public_data),
-        "summary": write_json_file_safe(folder / "summary.json", data_section.get("summary", public_data.get("summary", {}))),
-        "map": write_json_file_safe(folder / "map.json", data_section.get("map", public_data.get("map", {}))),
-        "charts": write_json_file_safe(folder / "charts.json", data_section.get("charts", public_data.get("charts", {}))),
-        "tables": write_json_file_safe(folder / "tables.json", data_section.get("tables", public_data.get("tables", {}))),
-        "data_quality": write_json_file_safe(folder / "data_quality.json", data_section.get("data_quality", public_data.get("data_quality", {}))),
-        "prediction": write_json_file_safe(
-            folder / "prediction.json",
-            {
-                "records": data_section.get("prediction", public_data.get("prediction", [])),
-                "map": data_section.get("flood_prediction_map", {}),
-                "meta": {
-                    "generated_at": now_iso(),
-                    "snapshot_only": True,
-                },
-            },
-        ),
-        "prediction_map": write_json_file_safe(folder / "prediction_map.json", data_section.get("flood_prediction_map", {})),
-        "entity": write_json_file_safe(
-            folder / "entity.json",
-            {
-                "records": data_section.get("entity", public_data.get("entity", [])),
-                "meta": {
-                    "generated_at": now_iso(),
-                    "snapshot_only": True,
-                    "displayable_only": True,
-                },
-            },
-        ),
-    }
+    return sanitize_public_payload(
+        cleaned_payload,
+        active_policy,
+    )
 
-    viewer_dir = ensure_dir(folder / PACKAGE_EXTERNAL_VIEWER_DIRNAME)
-    viewer_data_dir = ensure_dir(viewer_dir / "data")
-    results["external_viewer_index"] = write_json_file_safe(viewer_data_dir / PACKAGE_PUBLIC_DATA_FILENAME, public_data)
+def write_package_files(
+    package_id: str,
+    meta: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    public_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    clean_id = _safe_package_id(
+        package_id
+    )
+
+    if not clean_id:
+        raise ValueError(
+            "Invalid package_id"
+        )
+
+    root = ensure_package_dir()
+
+    final_folder = (
+        get_package_folder(
+            clean_id
+        )
+    )
+
+    staging_folder = (
+        root
+        / f".{clean_id}.staging"
+    )
+
+    if final_folder.exists():
+        raise FileExistsError(
+            (
+                "Package already exists: "
+                f"{clean_id}"
+            )
+        )
+
+    if staging_folder.exists():
+        shutil.rmtree(
+            staging_folder
+        )
+
+    staging_folder.mkdir(
+        parents=True,
+        exist_ok=False,
+    )
+
+    data_section = (
+        public_data.get(
+            "data",
+            {},
+        )
+        if isinstance(
+            public_data.get("data"),
+            dict,
+        )
+        else {}
+    )
+
+    selected_components = set(
+        meta.get(
+            "components",
+            [],
+        )
+        or []
+    )
+
+    results: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
+
+    def selected(
+        *component_names: str,
+    ) -> bool:
+        return any(
+            component_name
+            in selected_components
+            for component_name
+            in component_names
+        )
+
+    def write_component(
+        result_key: str,
+        filename: str,
+        component_payload: Any,
+    ) -> None:
+        result = (
+            write_json_file_safe(
+                staging_folder
+                / filename,
+                component_payload,
+            )
+        )
+
+        results[
+            result_key
+        ] = result
+
+        if not result.get(
+            "written"
+        ):
+            raise OSError(
+                (
+                    "Failed to write "
+                    "package file: "
+                    f"{filename}"
+                )
+            )
 
     try:
-        write_text(viewer_dir / "index.html", build_external_viewer_html(meta))
-        results["external_viewer_html"] = {"path": str(viewer_dir / "index.html"), "exists": True}
-    except Exception as exc:
-        results["external_viewer_html"] = {"path": str(viewer_dir / "index.html"), "exists": False, "error": str(exc)}
+        write_component(
+            "meta",
+            PACKAGE_META_FILENAME,
+            meta,
+        )
+        write_component(
+            "snapshot",
+            PACKAGE_SNAPSHOT_FILENAME,
+            snapshot,
+        )
+        write_component(
+            "public_data",
+            PACKAGE_PUBLIC_DATA_FILENAME,
+            public_data,
+        )
 
-    access_log = folder / "access_log.json"
+        component_files = [
+            (
+                "summary",
+                (
+                    "summary",
+                ),
+                "summary.json",
+                data_section.get(
+                    "summary",
+                    {},
+                ),
+            ),
+            (
+                "map",
+                (
+                    "map",
+                    "map_layers",
+                ),
+                "map.json",
+                data_section.get(
+                    "map",
+                    data_section.get(
+                        "map_layers",
+                        {},
+                    ),
+                ),
+            ),
+            (
+                "charts",
+                (
+                    "charts",
+                ),
+                "charts.json",
+                data_section.get(
+                    "charts",
+                    {},
+                ),
+            ),
+            (
+                "tables",
+                (
+                    "tables",
+                ),
+                "tables.json",
+                data_section.get(
+                    "tables",
+                    {},
+                ),
+            ),
+            (
+                "data_quality",
+                (
+                    "data_quality",
+                ),
+                "data_quality.json",
+                data_section.get(
+                    "data_quality",
+                    {},
+                ),
+            ),
+        ]
 
-    if not access_log.exists():
-        results["access_log"] = write_json_file_safe(access_log, [])
+        for (
+            result_key,
+            aliases,
+            filename,
+            component_payload,
+        ) in component_files:
+            if selected(
+                *aliases
+            ):
+                write_component(
+                    result_key,
+                    filename,
+                    component_payload,
+                )
 
-    return results
+        if selected(
+            "prediction",
+            "flood_prediction",
+            "flood_prediction_latest",
+            "flood_prediction_map",
+        ):
+            write_component(
+                "prediction",
+                "prediction.json",
+                {
+                    "records": (
+                        data_section.get(
+                            "prediction",
+                            [],
+                        )
+                    ),
+                    "map": (
+                        data_section.get(
+                            "flood_prediction_map",
+                            {},
+                        )
+                    ),
+                    "meta": {
+                        "generated_at": (
+                            now_iso()
+                        ),
+                        "snapshot_only": (
+                            True
+                        ),
+                    },
+                },
+            )
 
+            write_component(
+                "prediction_map",
+                "prediction_map.json",
+                data_section.get(
+                    "flood_prediction_map",
+                    {},
+                ),
+            )
+
+        if selected(
+            "entity",
+            "uploaded_entity",
+            "uploaded_entity_latest",
+        ):
+            write_component(
+                "entity",
+                "entity.json",
+                {
+                    "records": (
+                        data_section.get(
+                            "entity",
+                            [],
+                        )
+                    ),
+                    "meta": {
+                        "generated_at": (
+                            now_iso()
+                        ),
+                        "snapshot_only": (
+                            True
+                        ),
+                        "displayable_only": (
+                            True
+                        ),
+                    },
+                },
+            )
+
+        viewer_dir = ensure_dir(
+            staging_folder
+            / PACKAGE_EXTERNAL_VIEWER_DIRNAME
+        )
+
+        viewer_data_dir = (
+            ensure_dir(
+                viewer_dir / "data"
+            )
+        )
+
+        viewer_data_result = (
+            write_json_file_safe(
+                viewer_data_dir
+                / PACKAGE_PUBLIC_DATA_FILENAME,
+                public_data,
+            )
+        )
+
+        results[
+            "external_viewer_data"
+        ] = viewer_data_result
+
+        if not viewer_data_result.get(
+            "written"
+        ):
+            raise OSError(
+                (
+                    "Failed to write "
+                    "external viewer data"
+                )
+            )
+
+        write_text(
+            viewer_dir
+            / "index.html",
+            build_external_viewer_html(
+                meta
+            ),
+        )
+
+        results[
+            "external_viewer_html"
+        ] = {
+            "written": True,
+            "name": (
+                f"{PACKAGE_EXTERNAL_VIEWER_DIRNAME}"
+                "/index.html"
+            ),
+        }
+
+        access_log_path = (
+            staging_folder
+            / "access_log.jsonl"
+        )
+
+        write_text(
+            access_log_path,
+            "",
+        )
+
+        results["access_log"] = {
+            "written": True,
+            "name": (
+                access_log_path.name
+            ),
+            "size": 0,
+        }
+
+        if selected(
+            "tables",
+            "companies",
+            "policy_summary",
+            "policy_table",
+            "linkage_lines",
+        ):
+            exports_dir = ensure_dir(
+                staging_folder
+                / PACKAGE_EXPORT_DIRNAME
+            )
+
+            tables_payload = (
+                snapshot.get(
+                    "data",
+                    {},
+                ).get(
+                    "tables",
+                    {},
+                )
+            )
+
+            table_items = (
+                tables_payload.get(
+                    "tables",
+                    [],
+                )
+                if (
+                    isinstance(
+                        tables_payload,
+                        dict,
+                    )
+                    and isinstance(
+                        tables_payload.get(
+                            "tables"
+                        ),
+                        list,
+                    )
+                )
+                else []
+            )
+
+            export_files: List[
+                str
+            ] = []
+
+            for table in table_items:
+                if not isinstance(
+                    table,
+                    dict,
+                ):
+                    continue
+
+                table_id = safe_slug(
+                    table.get(
+                        "table_id"
+                    ),
+                    "table",
+                )
+
+                records = (
+                    table.get(
+                        "records",
+                        [],
+                    )
+                    if isinstance(
+                        table.get(
+                            "records"
+                        ),
+                        list,
+                    )
+                    else []
+                )
+
+                records = (
+                    apply_export_field_policy_to_records(
+                        records,
+                        security_options=(
+                            meta.get(
+                                "security",
+                                {},
+                            )
+                        ),
+                    )
+                )
+
+                export_path = (
+                    exports_dir
+                    / f"{table_id}.xlsx"
+                )
+
+                write_excel(
+                    export_path,
+                    {
+                        table_id[:31]: (
+                            pd.DataFrame(
+                                records
+                            )
+                        ),
+                    },
+                )
+
+                export_files.append(
+                    (
+                        f"{PACKAGE_EXPORT_DIRNAME}"
+                        f"/{export_path.name}"
+                    )
+                )
+
+            results["exports"] = {
+                "written": True,
+                "name": (
+                    PACKAGE_EXPORT_DIRNAME
+                ),
+                "count": len(
+                    export_files
+                ),
+                "files": export_files,
+            }
+
+        os.replace(
+            staging_folder,
+            final_folder,
+        )
+
+        return results
+
+    except Exception:
+        if staging_folder.exists():
+            shutil.rmtree(
+                staging_folder,
+                ignore_errors=True,
+            )
+
+        raise
 
 def write_package_index(index: Dict[str, Any]) -> Path:
     return write_json(_package_root() / PACKAGE_INDEX_FILENAME, json_safe(index))
 
+def update_export_history(
+    meta: Dict[str, Any],
+    files: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    coordination_lock = (
+        _package_root()
+        / (
+            f".{PACKAGE_INDEX_FILENAME}"
+            ".update"
+        )
+    )
 
-def update_export_history(meta: Dict[str, Any], files: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    index = load_package_index()
-    packages = [pkg for pkg in index.get("packages", []) if pkg.get("package_id") != meta.get("package_id")]
-    entry = {
-        "package_id": meta.get("package_id"),
-        "name": meta.get("name"),
-        "status": meta.get("status", "active"),
-        "enabled": meta.get("enabled", True),
-        "created_at": meta.get("created_at"),
-        "updated_at": meta.get("updated_at"),
-        "expires_at": meta.get("expires_at"),
-        "record_counts": meta.get("record_counts", {}),
-        "files": {key: value.get("name") for key, value in (files or {}).items() if isinstance(value, dict)},
-    }
-    packages.insert(0, entry)
-    index = {"packages": packages, "updated_at": now_iso(), "total": len(packages)}
-    write_package_index(index)
-    return index
+    with file_write_lock(
+        coordination_lock,
+        timeout_seconds=30.0,
+        stale_seconds=300.0,
+    ):
+        index = load_package_index()
 
-def build_download_info(package_id: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    folder = get_package_folder(package_id)
-    files = []
-
-    allowed_names = set(PACKAGE_FILE_NAMES.values()) | {
-        "access_log.json",
-        "access_log.jsonl",
-        "prediction.json",
-        "prediction_map.json",
-        "entity.json",
-    }
-
-    if folder.exists():
-        for item in folder.iterdir():
-            if item.is_file() and item.name in allowed_names:
-                files.append(
-                    {
-                        "name": item.name,
-                        "size": item.stat().st_size,
-                        "path": str(item),
-                    }
+        existing_packages = (
+            index.get(
+                "packages",
+                [],
+            )
+            if (
+                isinstance(index, dict)
+                and isinstance(
+                    index.get(
+                        "packages"
+                    ),
+                    list,
                 )
+            )
+            else []
+        )
 
-        viewer_data = folder / PACKAGE_EXTERNAL_VIEWER_DIRNAME / "data" / PACKAGE_PUBLIC_DATA_FILENAME
-        viewer_index = folder / PACKAGE_EXTERNAL_VIEWER_DIRNAME / "index.html"
+        packages = [
+            package
+            for package
+            in existing_packages
+            if (
+                isinstance(
+                    package,
+                    dict,
+                )
+                and package.get(
+                    "package_id"
+                )
+                != meta.get(
+                    "package_id"
+                )
+            )
+        ]
 
-        if viewer_data.exists():
-            files.append({"name": f"{PACKAGE_EXTERNAL_VIEWER_DIRNAME}/data/{PACKAGE_PUBLIC_DATA_FILENAME}", "size": viewer_data.stat().st_size, "path": str(viewer_data)})
+        file_summary: Dict[
+            str,
+            Any,
+        ] = {}
 
-        if viewer_index.exists():
-            files.append({"name": f"{PACKAGE_EXTERNAL_VIEWER_DIRNAME}/index.html", "size": viewer_index.stat().st_size, "path": str(viewer_index)})
+        for key, value in (
+            files
+            or {}
+        ).items():
+            if not isinstance(
+                value,
+                dict,
+            ):
+                continue
+
+            file_summary[key] = {
+                summary_key: value.get(
+                    summary_key
+                )
+                for summary_key in [
+                    "name",
+                    "size",
+                    "count",
+                    "files",
+                ]
+                if value.get(
+                    summary_key
+                )
+                is not None
+            }
+
+        entry = {
+            "package_id": (
+                meta.get(
+                    "package_id"
+                )
+            ),
+            "name": meta.get(
+                "name"
+            ),
+            "status": meta.get(
+                "status",
+                "active",
+            ),
+            "enabled": meta.get(
+                "enabled",
+                True,
+            ),
+            "created_at": (
+                meta.get(
+                    "created_at"
+                )
+            ),
+            "updated_at": (
+                meta.get(
+                    "updated_at"
+                )
+            ),
+            "expires_at": (
+                meta.get(
+                    "expires_at"
+                )
+            ),
+            "components": (
+                meta.get(
+                    "components",
+                    [],
+                )
+            ),
+            "record_counts": (
+                meta.get(
+                    "record_counts",
+                    {},
+                )
+            ),
+            "files": file_summary,
+        }
+
+        packages.insert(
+            0,
+            entry,
+        )
+
+        updated_index = {
+            "packages": packages,
+            "updated_at": now_iso(),
+            "total": len(packages),
+        }
+
+        write_package_index(
+            updated_index
+        )
+
+        return updated_index
+    
+def build_download_info(
+    package_id: str,
+    context: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    clean_id = _safe_package_id(
+        package_id
+    )
+
+    if not clean_id:
+        return {
+            "package_id": "",
+            "download_available": False,
+            "download_ready": False,
+            "file_path": None,
+            "zip_path": None,
+            "files": [],
+            "meta": {
+                "file_count": 0,
+                "snapshot_only": True,
+                "reason": (
+                    "invalid_package_id"
+                ),
+            },
+        }
+
+    folder = get_package_folder(
+        clean_id
+    )
+    zip_path = get_package_zip_path(
+        clean_id
+    )
+
+    files: List[
+        Dict[str, Any]
+    ] = []
+
+    if (
+        not folder.exists()
+        or not folder.is_dir()
+    ):
+        return {
+            "package_id": clean_id,
+            "download_available": False,
+            "download_ready": False,
+            "file_path": None,
+            "zip_path": str(
+                zip_path
+            ),
+            "files": [],
+            "meta": {
+                "file_count": 0,
+                "snapshot_only": True,
+                "reason": (
+                    "package_not_found"
+                ),
+            },
+        }
+
+    for item in sorted(
+        folder.rglob("*")
+    ):
+        if not item.is_file():
+            continue
+
+        files.append(
+            {
+                "name": (
+                    item.relative_to(
+                        folder
+                    ).as_posix()
+                ),
+                "size": (
+                    item.stat().st_size
+                ),
+            }
+        )
+
+    latest_package_mtime = max(
+        (
+            item.stat().st_mtime
+            for item
+            in folder.rglob("*")
+            if item.is_file()
+        ),
+        default=0,
+    )
+
+    if (
+        not zip_path.exists()
+        or zip_path.stat().st_mtime
+        < latest_package_mtime
+    ):
+        create_zip_from_folder(
+            folder=folder,
+            zip_path=zip_path,
+            include_root_folder=True,
+        )
+
+    download_ready = bool(
+        zip_path.exists()
+        and zip_path.is_file()
+    )
 
     return {
-        "package_id": _safe_package_id(package_id),
-        "download_available": bool(files),
+        "package_id": clean_id,
+        "download_available": (
+            download_ready
+        ),
+        "download_ready": (
+            download_ready
+        ),
+        "file_path": (
+            str(zip_path)
+            if download_ready
+            else None
+        ),
+        "path": (
+            str(zip_path)
+            if download_ready
+            else None
+        ),
+        "zip_path": str(
+            zip_path
+        ),
+        "file_info": file_info(
+            zip_path
+        ),
         "files": files,
         "meta": {
-            "file_count": len(files),
+            "file_count": len(
+                files
+            ),
             "snapshot_only": True,
         },
     }
 
-def generate_package(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def generate_package(
+    payload: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    package_id = ""
+
     try:
-        request = normalize_package_request(payload)
-        package_id = build_package_id(request)
+        request = (
+            normalize_package_request(
+                payload
+            )
+        )
 
-        snapshot = build_package_snapshot(package_id, request, request)
-        rebuild_result = snapshot.get("sources", {}).get("rebuild", {})
+        package_id = build_package_id(
+            request
+        )
 
-        meta = build_package_meta(package_id, request, snapshot)
-        meta["rebuild"] = rebuild_result
-        meta["snapshot_id"] = snapshot.get("snapshot_id")
-        meta["package_source"] = "cache_snapshot"
-        meta["snapshot_policy"] = dict(SNAPSHOT_ONLY_PACKAGE_POLICY)
-        meta["checksum"] = snapshot.get("checksum")
-        meta["checksum_components"] = PACKAGE_CHECKSUM_COMPONENT_KEYS
+        if not _safe_package_id(
+            package_id
+        ):
+            raise ValueError(
+                (
+                    "Invalid generated "
+                    "package_id"
+                )
+            )
 
-        public_data = build_public_data(snapshot, request.get("security", {}))
-        files = write_package_files(package_id, meta, snapshot, public_data)
-        index = update_export_history(meta, files)
-        download = build_download_info(package_id)
+        snapshot = (
+            build_package_snapshot(
+                package_id,
+                request,
+                request,
+            )
+        )
+
+        meta = build_package_meta(
+            package_id,
+            request,
+            snapshot,
+        )
+
+        public_data = build_public_data(
+            snapshot,
+            request.get(
+                "security",
+                {},
+            ),
+        )
+
+        files = write_package_files(
+            package_id,
+            meta,
+            snapshot,
+            public_data,
+        )
+
+        download = build_download_info(
+            package_id
+        )
+
+        if not download.get(
+            "download_ready"
+        ):
+            raise OSError(
+                (
+                    "Package ZIP could "
+                    "not be created"
+                )
+            )
+
+        zip_info = download.get(
+            "file_info",
+            {},
+        )
+
+        files["zip"] = {
+            "written": bool(
+                download.get(
+                    "download_ready"
+                )
+            ),
+            "name": (
+                zip_info.get("name")
+            ),
+            "size": (
+                zip_info.get(
+                    "size_bytes"
+                )
+            ),
+        }
+
+        index = update_export_history(
+            meta,
+            files,
+        )
+
+        rebuild_result = (
+            snapshot.get(
+                "sources",
+                {},
+            ).get(
+                "rebuild",
+                {},
+            )
+            if isinstance(
+                snapshot.get(
+                    "sources"
+                ),
+                dict,
+            )
+            else {}
+        )
 
         degraded = bool(
-            snapshot.get("sources", {}).get("bundle_meta", {}).get("degraded", False)
-            or rebuild_result.get("status") == "degraded"
+            snapshot.get(
+                "sources",
+                {},
+            )
+            .get(
+                "bundle_meta",
+                {},
+            )
+            .get(
+                "degraded",
+                False,
+            )
+            or rebuild_result.get(
+                "status"
+            )
+            == "degraded"
         )
 
         return make_package_response(
             {
                 "generated": True,
-                "package_id": package_id,
-                "snapshot_id": snapshot.get("snapshot_id"),
-                "meta": meta,
+                "package_id": (
+                    package_id
+                ),
+                "snapshot_id": (
+                    snapshot.get(
+                        "snapshot_id"
+                    )
+                ),
+                "meta": (
+                    build_safe_public_meta(
+                        meta
+                    )
+                ),
                 "files": files,
                 "download": download,
-                "rebuild": rebuild_result,
-                "index": index,
+                "rebuild": {
+                    "rebuilt": (
+                        rebuild_result.get(
+                            "rebuilt",
+                            False,
+                        )
+                    ),
+                    "status": (
+                        rebuild_result.get(
+                            "status",
+                            "skipped",
+                        )
+                    ),
+                    "phase_count": (
+                        rebuild_result.get(
+                            "phase_count",
+                            0,
+                        )
+                    ),
+                    "failed_count": (
+                        rebuild_result.get(
+                            "failed_count",
+                            0,
+                        )
+                    ),
+                    "degraded_count": (
+                        rebuild_result.get(
+                            "degraded_count",
+                            0,
+                        )
+                    ),
+                    "finished_at": (
+                        rebuild_result.get(
+                            "finished_at"
+                        )
+                    ),
+                },
+                "index": {
+                    "total": index.get(
+                        "total",
+                        0,
+                    ),
+                    "updated_at": (
+                        index.get(
+                            "updated_at"
+                        )
+                    ),
+                },
                 "public_data": {
-                    "has_summary": bool(public_data.get("summary") or public_data.get("data", {}).get("summary")),
-                    "has_map": bool(public_data.get("map") or public_data.get("data", {}).get("map")),
-                    "prediction_count": len(public_data.get("prediction", public_data.get("data", {}).get("prediction", []))),
-                    "entity_count": len(public_data.get("entity", public_data.get("data", {}).get("entity", []))),
+                    "components": (
+                        request.get(
+                            "components",
+                            [],
+                        )
+                    ),
+                    "has_summary": (
+                        "summary"
+                        in public_data
+                    ),
+                    "has_map": (
+                        "map"
+                        in public_data
+                    ),
+                    "prediction_count": len(
+                        public_data.get(
+                            "prediction",
+                            [],
+                        )
+                        if isinstance(
+                            public_data.get(
+                                "prediction"
+                            ),
+                            list,
+                        )
+                        else []
+                    ),
+                    "entity_count": len(
+                        public_data.get(
+                            "entity",
+                            [],
+                        )
+                        if isinstance(
+                            public_data.get(
+                                "entity"
+                            ),
+                            list,
+                        )
+                        else []
+                    ),
                 },
             },
             "Package generated.",
             {
                 "degraded": degraded,
-                "package_source": "cache_snapshot",
+                "package_source": (
+                    "cache_snapshot"
+                ),
                 "snapshot_only": True,
-                "public_viewer_source": "public_data_json_only",
+                "public_viewer_source": (
+                    "public_data_json_only"
+                ),
             },
         )
 
     except Exception as exc:
-        return make_package_error(str(exc), exc.__class__.__name__)
+        if package_id:
+            folder = (
+                get_package_folder(
+                    package_id
+                )
+            )
+            zip_path = (
+                get_package_zip_path(
+                    package_id
+                )
+            )
+
+            if (
+                folder.exists()
+                and folder.is_dir()
+            ):
+                shutil.rmtree(
+                    folder,
+                    ignore_errors=True,
+                )
+
+            if (
+                zip_path.exists()
+                and zip_path.is_file()
+            ):
+                zip_path.unlink(
+                    missing_ok=True
+                )
+
+        return make_package_error(
+            message=str(exc),
+            error_type=(
+                exc.__class__.__name__
+            ),
+            status_code=500,
+        )
 
 def load_package_index() -> Dict[str, Any]:
     return read_json_file_safe(_package_root() / PACKAGE_INDEX_FILENAME, default={"packages": [], "total": 0}) or {"packages": [], "total": 0}
@@ -5382,68 +8197,268 @@ def sanitize_public_component(component: Any, policy: Optional[Dict[str, Any]] =
     return sanitize_public_payload(component, active_policy)
 
 
-def public_component_response(package_id: str, component: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    meta = get_package_meta_from_disk(package_id)
+def public_component_response(
+    package_id: str,
+    component: str,
+    context: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    meta = get_package_meta_from_disk(
+        package_id
+    )
 
     if not meta:
-        return make_package_error("Package not found.", "PackageNotFound", 404, "package_id", {"package_id": _safe_package_id(package_id)})
+        return make_package_error(
+            "Package not found.",
+            "PackageNotFound",
+            404,
+            "package_id",
+            {
+                "package_id": (
+                    _safe_package_id(
+                        package_id
+                    )
+                )
+            },
+        )
 
-    clean_component = clean_text_lower(component)
+    clean_component = (
+        clean_text_lower(
+            component
+        )
+    )
 
     component_aliases = {
         "map_layers": "map",
-        "flood_prediction": "prediction",
-        "flood_prediction_latest": "prediction",
+        "flood_prediction": (
+            "prediction"
+        ),
+        "flood_prediction_latest": (
+            "prediction"
+        ),
+        "flood_prediction_map": (
+            "prediction"
+        ),
         "uploaded_entity": "entity",
-        "uploaded_entity_latest": "entity",
+        "uploaded_entity_latest": (
+            "entity"
+        ),
     }
 
-    canonical_component = component_aliases.get(clean_component, clean_component)
+    canonical_component = (
+        component_aliases.get(
+            clean_component,
+            clean_component,
+        )
+    )
+
+    selected_components = set(
+        meta.get(
+            "components",
+            [],
+        )
+        or []
+    )
+
+    selected_canonical = {
+        component_aliases.get(
+            item,
+            item,
+        )
+        for item
+        in selected_components
+    }
+
+    if (
+        canonical_component
+        not in {
+            "meta",
+            "data",
+        }
+        and canonical_component
+        not in selected_canonical
+    ):
+        return make_package_error(
+            (
+                "Package component "
+                "was not selected."
+            ),
+            (
+                "PackageComponentNotSelected"
+            ),
+            404,
+            "component",
+            {
+                "package_id": (
+                    _safe_package_id(
+                        package_id
+                    )
+                ),
+                "component": component,
+            },
+        )
+
+    token = (
+        clean_text(
+            context.get("token")
+        )
+        if isinstance(
+            context,
+            dict,
+        )
+        else ""
+    )
 
     access_meta = dict(meta)
-    access_meta["components"] = sorted(set(access_meta.get("components", []) or []) | ALLOWED_PUBLIC_COMPONENTS)
 
-    token = clean_text((context or {}).get("token")) if isinstance(context, dict) else ""
-    access = public_access_allowed(access_meta, component=canonical_component, token=token)
+    access_meta[
+        "components"
+    ] = sorted(
+        selected_canonical
+        | {
+            "meta",
+            "data",
+        }
+    )
+
+    access = public_access_allowed(
+        access_meta,
+        component=(
+            canonical_component
+        ),
+        token=token,
+    )
 
     if not access.get("allowed"):
         return make_package_error(
-            f"Public access denied: {access.get('reason')}",
+            (
+                "Public access denied: "
+                f"{access.get('reason')}"
+            ),
             "PackageAccessDenied",
             403,
             "package_id",
-            {"package_id": _safe_package_id(package_id), "reason": access.get("reason")},
+            {
+                "package_id": (
+                    _safe_package_id(
+                        package_id
+                    )
+                ),
+                "reason": access.get(
+                    "reason"
+                ),
+            },
         )
 
-    payload = load_public_package_file(package_id, canonical_component)
+    payload = (
+        load_public_package_file(
+            package_id,
+            canonical_component,
+        )
+    )
 
     if payload is None:
-        public_data = get_public_data_from_disk(package_id)
+        public_data = (
+            get_public_data_from_disk(
+                package_id
+            )
+        )
 
-        if canonical_component == "data":
+        if (
+            canonical_component
+            == "data"
+        ):
             payload = public_data
-        elif isinstance(public_data, dict):
-            data_section = public_data.get("data", {}) if isinstance(public_data.get("data"), dict) else {}
-            payload = data_section.get(canonical_component, public_data.get(canonical_component))
+
+        elif isinstance(
+            public_data,
+            dict,
+        ):
+            data_section = (
+                public_data.get(
+                    "data",
+                    {},
+                )
+                if isinstance(
+                    public_data.get(
+                        "data"
+                    ),
+                    dict,
+                )
+                else {}
+            )
+
+            payload = (
+                data_section.get(
+                    canonical_component,
+                    public_data.get(
+                        canonical_component
+                    ),
+                )
+            )
 
     if payload is None:
         return make_package_error(
-            "Package component not found.",
-            "PackageComponentNotFound",
+            (
+                "Package component "
+                "not found."
+            ),
+            (
+                "PackageComponentNotFound"
+            ),
             404,
             "component",
-            {"package_id": _safe_package_id(package_id), "component": component},
+            {
+                "package_id": (
+                    _safe_package_id(
+                        package_id
+                    )
+                ),
+                "component": component,
+            },
         )
 
-    sanitized = sanitize_public_component(payload, meta.get("security", {}))
+    sanitized = (
+        sanitize_public_component(
+            payload,
+            meta.get(
+                "security",
+                {},
+            ),
+        )
+    )
 
     return make_package_response(
-        sanitized if isinstance(sanitized, dict) else {canonical_component: sanitized},
-        f"Public package {canonical_component} loaded.",
+        (
+            sanitized
+            if isinstance(
+                sanitized,
+                dict,
+            )
+            else {
+                canonical_component: (
+                    sanitized
+                )
+            }
+        ),
+        (
+            "Public package "
+            f"{canonical_component} "
+            "loaded."
+        ),
         {
-            "package_id": _safe_package_id(package_id),
-            "component": canonical_component,
-            "requested_component": component,
+            "package_id": (
+                _safe_package_id(
+                    package_id
+                )
+            ),
+            "component": (
+                canonical_component
+            ),
+            "requested_component": (
+                component
+            ),
             "snapshot_only": True,
         },
     )
@@ -5482,46 +8497,238 @@ def get_public_package_tables(package_id: str, context: Optional[Dict[str, Any]]
     return public_component_response(package_id, "tables", context or {"token": token})
 
 
-def get_public_package_access_log(package_id: str, context: Optional[Dict[str, Any]] = None, token: str = "") -> Dict[str, Any]:
-    meta = get_package_meta_from_disk(package_id)
-    if not meta:
-        return make_package_error("Package not found.", "PackageNotFound", 404, "package_id", {"package_id": _safe_package_id(package_id)})
-    access_meta = dict(meta)
-    access_meta["components"] = sorted(set(access_meta.get("components", []) or []) | {"admin"})
-    access = public_access_allowed(access_meta, component="admin", token=token or ((context or {}).get("token") if isinstance(context, dict) else ""))
-    if not access.get("allowed"):
-        return make_package_error(f"Public access denied: {access.get('reason')}", "PackageAccessDenied", 403, "package_id", {"package_id": _safe_package_id(package_id), "reason": access.get("reason")})
-    log_payload = load_public_package_file(package_id, "access_log") or []
-    entries = log_payload if isinstance(log_payload, list) else log_payload.get("access_log", []) if isinstance(log_payload, dict) else []
-    public_entries = [
-        {key: value for key, value in entry.items() if key not in {"remote_addr", "user_agent", "ip", "headers"}}
-        for entry in entries[-500:]
-        if isinstance(entry, dict)
-    ]
-    return make_package_response({"package_id": _safe_package_id(package_id), "access_log": public_entries, "total": len(entries), "meta": {"redacted": True}}, "Public package access log loaded.")
-
-
-def write_public_package_access_log(package_id: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    meta = get_package_meta_from_disk(package_id)
-    if not meta:
-        return make_package_error("Package not found.", "PackageNotFound", 404, "package_id", {"package_id": _safe_package_id(package_id), "logged": False})
-    request = payload if isinstance(payload, dict) else {}
-    entry = build_access_log_record(
-        package_id=_safe_package_id(package_id),
-        action=clean_text(request.get("action"), "view"),
-        allowed=to_bool(request.get("allowed"), True),
-        reason=clean_text(request.get("reason")),
-        component=clean_text(request.get("component"), "data"),
-        remote_addr=clean_text(request.get("remote_addr")),
-        user_agent=clean_text(request.get("user_agent")),
+def get_public_package_access_log(
+    package_id: str,
+    context: Optional[
+        Dict[str, Any]
+    ] = None,
+    token: str = "",
+) -> Dict[str, Any]:
+    meta = get_package_meta_from_disk(
+        package_id
     )
-    path = get_package_file(package_id, "access_log.json")
-    existing = read_json_file_safe(path, default=[])
-    entries = existing if isinstance(existing, list) else []
-    entries.append(json_safe(entry))
-    result = write_json_file_safe(path, entries[-5000:])
-    return make_package_response({"package_id": _safe_package_id(package_id), "logged": bool(result.get("written")), "entry": {key: value for key, value in entry.items() if key not in {"remote_addr", "user_agent"}}}, "Public package access logged.", {"package_id": _safe_package_id(package_id)})
 
+    if not meta:
+        return make_package_error(
+            "Package not found.",
+            "PackageNotFound",
+            404,
+            "package_id",
+            {
+                "package_id": (
+                    _safe_package_id(
+                        package_id
+                    )
+                )
+            },
+        )
+
+    access = public_access_allowed(
+        meta,
+        component="admin",
+        token=(
+            token
+            or (
+                context.get(
+                    "token",
+                    "",
+                )
+                if isinstance(
+                    context,
+                    dict,
+                )
+                else ""
+            )
+        ),
+    )
+
+    if not access.get("allowed"):
+        return make_package_error(
+            (
+                "Public access denied: "
+                f"{access.get('reason')}"
+            ),
+            "PackageAccessDenied",
+            403,
+            "package_id",
+            {
+                "package_id": (
+                    _safe_package_id(
+                        package_id
+                    )
+                ),
+                "reason": access.get(
+                    "reason"
+                ),
+            },
+        )
+
+    path = get_package_file(
+        package_id,
+        "access_log.jsonl",
+    )
+
+    entries: List[
+        Dict[str, Any]
+    ] = []
+
+    if (
+        path.exists()
+        and path.is_file()
+    ):
+        with path.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
+            for line in file:
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                try:
+                    item = json.loads(
+                        line
+                    )
+                except json.JSONDecodeError:
+                    continue
+
+                if isinstance(
+                    item,
+                    dict,
+                ):
+                    entries.append(
+                        item
+                    )
+
+    public_entries = [
+        {
+            key: value
+            for key, value
+            in entry.items()
+            if key not in {
+                "remote_addr",
+                "user_agent",
+                "ip",
+                "headers",
+            }
+        }
+        for entry in entries[-500:]
+    ]
+
+    return make_package_response(
+        {
+            "package_id": (
+                _safe_package_id(
+                    package_id
+                )
+            ),
+            "access_log": (
+                public_entries
+            ),
+            "total": len(entries),
+            "meta": {
+                "redacted": True,
+            },
+        },
+        (
+            "Public package access "
+            "log loaded."
+        ),
+    )
+
+
+def write_public_package_access_log(
+    package_id: str,
+    payload: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    meta = get_package_meta_from_disk(
+        package_id
+    )
+
+    if not meta:
+        return make_package_error(
+            "Package not found.",
+            "PackageNotFound",
+            404,
+            "package_id",
+            {
+                "package_id": (
+                    _safe_package_id(
+                        package_id
+                    )
+                ),
+                "logged": False,
+            },
+        )
+
+    request = (
+        payload
+        if isinstance(payload, dict)
+        else {}
+    )
+
+    entry = build_access_log_record(
+        package_id=(
+            _safe_package_id(
+                package_id
+            )
+        ),
+        action=clean_text(
+            request.get("action"),
+            "view",
+        ),
+        allowed=to_bool(
+            request.get("allowed"),
+            True,
+        ),
+        reason=clean_text(
+            request.get("reason")
+        ),
+        extra={
+            "component": clean_text(
+                request.get(
+                    "component"
+                ),
+                "data",
+            )
+        },
+    )
+
+    path = get_package_file(
+        package_id,
+        "access_log.jsonl",
+    )
+
+    append_jsonl(
+        path,
+        json_safe(entry),
+    )
+
+    return make_package_response(
+        {
+            "package_id": (
+                _safe_package_id(
+                    package_id
+                )
+            ),
+            "logged": True,
+            "entry": entry,
+        },
+        (
+            "Public package access "
+            "logged."
+        ),
+        {
+            "package_id": (
+                _safe_package_id(
+                    package_id
+                )
+            )
+        },
+    )
 
 def get_package_preview(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return preview_package(payload)
@@ -5538,49 +8745,187 @@ def get_package_list(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
 def download_package(package_id: str) -> Dict[str, Any]:
     return get_package_download_info(package_id)
 
-def run_rebuild_phase(phase_id: str, phase_name: str, function_ref: Any, force_refresh: bool = True) -> Dict[str, Any]:
+def run_rebuild_phase(
+    phase_id: str,
+    phase_name: str,
+    function_ref: Any,
+    force_refresh: bool = True,
+) -> Dict[str, Any]:
     started_dt = datetime.now()
-    started_at = started_dt.isoformat(timespec="seconds")
+    started_at = (
+        started_dt.isoformat(
+            timespec="seconds"
+        )
+    )
 
     if function_ref is None:
         finished_dt = datetime.now()
+
         return {
             "phase_id": phase_id,
             "phase": phase_name,
             "phase_name": phase_name,
             "status": "skipped",
             "started_at": started_at,
-            "finished_at": finished_dt.isoformat(timespec="seconds"),
-            "duration_ms": int((finished_dt - started_dt).total_seconds() * 1000),
+            "finished_at": (
+                finished_dt.isoformat(
+                    timespec="seconds"
+                )
+            ),
+            "duration_ms": int(
+                (
+                    finished_dt
+                    - started_dt
+                ).total_seconds()
+                * 1000
+            ),
+            "record_count": 0,
             "outputs": {},
             "errors": [],
             "warnings": [
                 {
-                    "code": "function_not_available",
-                    "message": "function not available",
+                    "code": (
+                        "function_not_available"
+                    ),
+                    "message": (
+                        "function not available"
+                    ),
                 }
             ],
-            "message": "function not available",
         }
 
     try:
-        try:
-            payload = function_ref(force_refresh=force_refresh)
-        except TypeError:
-            try:
-                payload = function_ref(context={"force_refresh": force_refresh})
-            except TypeError:
-                payload = function_ref()
+        signature = inspect.signature(
+            function_ref
+        )
+
+        parameters = (
+            signature.parameters
+        )
+
+        accepts_kwargs = any(
+            parameter.kind
+            == inspect.Parameter.VAR_KEYWORD
+            for parameter
+            in parameters.values()
+        )
+
+        if (
+            "force_refresh"
+            in parameters
+            or accepts_kwargs
+        ):
+            payload = function_ref(
+                force_refresh=(
+                    force_refresh
+                )
+            )
+
+        elif "context" in parameters:
+            payload = function_ref(
+                context={
+                    "force_refresh": (
+                        force_refresh
+                    )
+                }
+            )
+
+        else:
+            payload = function_ref()
 
         finished_dt = datetime.now()
         status = "success"
 
+        errors: List[Any] = []
+        warnings: List[Any] = []
+
         if isinstance(payload, dict):
-            raw_status = clean_text_lower(payload.get("status"))
-            if raw_status in {"degraded", "warning"}:
+            raw_status = (
+                clean_text_lower(
+                    payload.get(
+                        "status"
+                    )
+                )
+            )
+
+            if raw_status in {
+                "degraded",
+                "warning",
+            }:
                 status = "degraded"
-            elif raw_status in {"error", "failed", "failure"}:
+
+            elif raw_status in {
+                "error",
+                "failed",
+                "failure",
+            }:
                 status = "error"
+
+            if isinstance(
+                payload.get("errors"),
+                list,
+            ):
+                errors = payload[
+                    "errors"
+                ]
+
+            if isinstance(
+                payload.get(
+                    "warnings"
+                ),
+                list,
+            ):
+                warnings = payload[
+                    "warnings"
+                ]
+
+        output_summary = {
+            "rebuilt": (
+                payload.get("rebuilt")
+                if isinstance(
+                    payload,
+                    dict,
+                )
+                else None
+            ),
+            "status": (
+                payload.get("status")
+                if isinstance(
+                    payload,
+                    dict,
+                )
+                else None
+            ),
+            "stage": (
+                payload.get("stage")
+                if isinstance(
+                    payload,
+                    dict,
+                )
+                else None
+            ),
+            "total": (
+                payload.get("total")
+                if isinstance(
+                    payload,
+                    dict,
+                )
+                else None
+            ),
+            "record_count": (
+                safe_count(payload)
+            ),
+            "generated_at": (
+                payload.get(
+                    "generated_at"
+                )
+                if isinstance(
+                    payload,
+                    dict,
+                )
+                else None
+            ),
+        }
 
         return {
             "phase_id": phase_id,
@@ -5588,86 +8933,223 @@ def run_rebuild_phase(phase_id: str, phase_name: str, function_ref: Any, force_r
             "phase_name": phase_name,
             "status": status,
             "started_at": started_at,
-            "finished_at": finished_dt.isoformat(timespec="seconds"),
-            "duration_ms": int((finished_dt - started_dt).total_seconds() * 1000),
-            "record_count": safe_count(payload),
-            "outputs": json_safe(payload),
-            "payload": json_safe(payload),
-            "errors": payload.get("errors", []) if isinstance(payload, dict) and isinstance(payload.get("errors"), list) else [],
-            "warnings": payload.get("warnings", []) if isinstance(payload, dict) and isinstance(payload.get("warnings"), list) else [],
+            "finished_at": (
+                finished_dt.isoformat(
+                    timespec="seconds"
+                )
+            ),
+            "duration_ms": int(
+                (
+                    finished_dt
+                    - started_dt
+                ).total_seconds()
+                * 1000
+            ),
+            "record_count": (
+                safe_count(payload)
+            ),
+            "outputs": json_safe(
+                output_summary
+            ),
+            "errors": json_safe(
+                errors
+            ),
+            "warnings": json_safe(
+                warnings
+            ),
         }
 
     except Exception as exc:
         finished_dt = datetime.now()
+
+        public_message = (
+            str(exc)
+            if bool(
+                getattr(
+                    config,
+                    "DEBUG",
+                    False,
+                )
+            )
+            else (
+                "Runtime rebuild "
+                "phase failed."
+            )
+        )
+
         return {
             "phase_id": phase_id,
             "phase": phase_name,
             "phase_name": phase_name,
             "status": "error",
             "started_at": started_at,
-            "finished_at": finished_dt.isoformat(timespec="seconds"),
-            "duration_ms": int((finished_dt - started_dt).total_seconds() * 1000),
+            "finished_at": (
+                finished_dt.isoformat(
+                    timespec="seconds"
+                )
+            ),
+            "duration_ms": int(
+                (
+                    finished_dt
+                    - started_dt
+                ).total_seconds()
+                * 1000
+            ),
+            "record_count": 0,
             "outputs": {},
             "errors": [
                 {
-                    "error_type": exc.__class__.__name__,
-                    "message": str(exc),
+                    "error_type": (
+                        exc.__class__.__name__
+                    ),
+                    "message": (
+                        public_message
+                    ),
                 }
             ],
             "warnings": [],
-            "error_type": exc.__class__.__name__,
-            "message": str(exc),
         }
 
-
-def validate_runtime_inputs(force_refresh: bool = True) -> Dict[str, Any]:
+def validate_runtime_inputs(
+    force_refresh: bool = True,
+) -> Dict[str, Any]:
     package_dir = ensure_package_dir()
-    active_source = "excel" if getattr(config, "USE_EXCEL_DATA_SOURCE", True) else "mysql"
+
+    zip_dir = ensure_dir(
+        PACKAGE_ZIP_DIR
+    )
+
+    active_source = (
+        "excel"
+        if getattr(
+            config,
+            "USE_EXCEL_DATA_SOURCE",
+            True,
+        )
+        else "mysql"
+    )
 
     validations = {
-        "config_loaded": CONFIG_LOADED,
-        "utils_loaded": UTILS_LOADED,
-        "security_loaded": SECURITY_LOADED,
-        "package_dir_exists": package_dir.exists(),
-        "package_dir_writable": package_dir.exists() and package_dir.is_dir(),
-        "active_source": active_source,
-        "excel_active": bool(getattr(config, "USE_EXCEL_DATA_SOURCE", True)),
-        "mysql_placeholder": not bool(getattr(config, "USE_MYSQL_DATA_SOURCE", False)),
-        "map_service_available": get_map_layers is not None,
-        "external_viewer_map_available": get_external_viewer_map_payload is not None,
-        "prediction_latest_available": get_latest_flood_predictions is not None,
-        "prediction_map_available": get_flood_prediction_map is not None,
-        "entity_loader_available": True,
-        "snapshot_only_public_viewer": True,
+        "config_loaded": bool(
+            CONFIG_LOADED
+        ),
+        "utils_loaded": bool(
+            UTILS_LOADED
+        ),
+        "security_loaded": bool(
+            SECURITY_LOADED
+        ),
+        "pandas_loaded": bool(
+            PANDAS_LOADED
+        ),
+        "package_dir_exists": bool(
+            package_dir.exists()
+            and package_dir.is_dir()
+        ),
+        "package_dir_writable": (
+            os.access(
+                package_dir,
+                os.W_OK,
+            )
+        ),
+        "package_zip_dir_exists": bool(
+            zip_dir.exists()
+            and zip_dir.is_dir()
+        ),
+        "package_zip_dir_writable": (
+            os.access(
+                zip_dir,
+                os.W_OK,
+            )
+        ),
+        "excel_active": bool(
+            getattr(
+                config,
+                "USE_EXCEL_DATA_SOURCE",
+                True,
+            )
+        ),
+        "mysql_not_selected": not bool(
+            getattr(
+                config,
+                "USE_MYSQL_DATA_SOURCE",
+                False,
+            )
+        ),
+        "map_service_available": (
+            get_map_layers
+            is not None
+        ),
+        "prediction_latest_available": (
+            get_latest_flood_predictions
+            is not None
+        ),
+        "prediction_map_available": (
+            get_flood_prediction_map
+            is not None
+        ),
+        "snapshot_only_public_viewer": (
+            True
+        ),
     }
 
     errors = [
         {
             "code": key,
-            "message": f"{key} validation failed",
+            "message": (
+                f"{key} validation failed"
+            ),
         }
-        for key, value in validations.items()
+        for key, value
+        in validations.items()
         if value is False
     ]
 
     return {
         "valid": not errors,
-        "status": "success" if not errors else "degraded",
+        "status": (
+            "success"
+            if not errors
+            else "degraded"
+        ),
         "validations": validations,
+        "active_source": (
+            active_source
+        ),
         "errors": errors,
         "warnings": [],
         "checked_at": now_iso(),
-        "package_policy": SNAPSHOT_ONLY_PACKAGE_POLICY,
+        "package_policy": (
+            SNAPSHOT_ONLY_PACKAGE_POLICY
+        ),
     }
 
+def rebuild_company_policy_base_cache(
+    force_refresh: bool = True,
+) -> Dict[str, Any]:
+    return safe_call_service(
+        rebuild_company_policy_base_service,
+        fallback={
+            "rebuilt": False,
+            "status": "skipped",
+            "stage": "base",
+        },
+        force_refresh=force_refresh,
+    )
 
-def rebuild_company_policy_base_cache(force_refresh: bool = True) -> Dict[str, Any]:
-    return safe_call_service(rebuild_company_policy_cache, fallback={"skipped": True}, force_refresh=force_refresh)
 
-
-def rebuild_company_policy_enriched_cache(force_refresh: bool = True) -> Dict[str, Any]:
-    return safe_call_service(rebuild_company_policy_cache, fallback={"skipped": True}, force_refresh=force_refresh)
-
+def rebuild_company_policy_enriched_cache(
+    force_refresh: bool = True,
+) -> Dict[str, Any]:
+    return safe_call_service(
+        rebuild_company_policy_enriched_service,
+        fallback={
+            "rebuilt": False,
+            "status": "skipped",
+            "stage": "enriched",
+        },
+        force_refresh=force_refresh,
+    )
 
 def rebuild_dashboard_charts_cache(force_refresh: bool = True) -> Dict[str, Any]:
     summary = build_dashboard_summary({"force_refresh": force_refresh})

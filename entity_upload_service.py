@@ -136,7 +136,25 @@ def make_success(data: Any, message: str = "success", meta: Optional[Dict[str, A
         "errors": [],
     }
 
-def make_error(message: str, error: Optional[str] = None, data: Any = None) -> Dict[str, Any]:
+def make_error(
+    message: str,
+    error: Optional[str] = None,
+    data: Any = None,
+    status_code: int = 500,
+    error_code: str = "entity_upload_error",
+) -> Dict[str, Any]:
+    safe_status_code = max(
+        400,
+        min(
+            int(status_code or 500),
+            599,
+        ),
+    )
+    error_message = safe_str(
+        error,
+        message,
+    )
+
     return {
         "success": False,
         "message": message,
@@ -144,14 +162,19 @@ def make_error(message: str, error: Optional[str] = None, data: Any = None) -> D
         "meta": {
             "timestamp": now_text(),
             "service": "entity_upload_service",
+            "status_code": safe_status_code,
         },
         "errors": [
             {
-                "code": "entity_upload_error",
-                "message": error or message,
+                "code": safe_str(
+                    error_code,
+                    "entity_upload_error",
+                ),
+                "message": error_message,
+                "status_code": safe_status_code,
             }
         ],
-        "error": error or message,
+        "error": error_message,
     }
 
 
@@ -178,18 +201,52 @@ def make_hash(value: Any) -> str:
 
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-
 def safe_filename(filename: str) -> str:
-    text = safe_str(filename, "uploaded_entities.csv")
-    bad_chars = ["<", ">", ":", '"', "/", "\\", "|", "?", "*", "&", "=", ","]
+    raw_name = safe_str(
+        filename,
+        "uploaded_entities.csv",
+    ).replace("\\", "/")
 
-    for ch in bad_chars:
-        text = text.replace(ch, "_")
+    base_name = Path(raw_name).name
+    suffix = Path(base_name).suffix.lower()
+    stem = (
+        base_name[:-len(suffix)]
+        if suffix
+        else base_name
+    )
 
-    while "__" in text:
-        text = text.replace("__", "_")
+    cleaned_chars: List[str] = []
 
-    return text.strip("_") or "uploaded_entities.csv"
+    for char in stem:
+        if char.isalnum() or char in {
+            ".",
+            "_",
+            "-",
+            " ",
+            "(",
+            ")",
+        }:
+            cleaned_chars.append(char)
+        else:
+            cleaned_chars.append("_")
+
+    cleaned_stem = "".join(
+        cleaned_chars
+    ).strip(" ._")
+
+    while "__" in cleaned_stem:
+        cleaned_stem = cleaned_stem.replace(
+            "__",
+            "_",
+        )
+
+    if not cleaned_stem:
+        cleaned_stem = "uploaded_entities"
+
+    if not suffix:
+        suffix = ".csv"
+
+    return f"{cleaned_stem}{suffix}"
 
 def validate_upload_id(upload_id: str) -> Tuple[bool, str, Optional[str]]:
     safe_upload_id = safe_str(upload_id)
@@ -234,8 +291,12 @@ def get_upload_result_file(upload_id: str) -> Tuple[Optional[Path], str, Optiona
     return config.UPLOAD_ENTITY_DIR / safe_upload_id / "upload_result.json", safe_upload_id, None
 
 
-def get_upload_error_report_file(upload_id: str) -> Dict[str, Any]:
-    is_valid, safe_upload_id, error = validate_upload_id(upload_id)
+def get_upload_error_report_file(
+    upload_id: str,
+) -> Dict[str, Any]:
+    is_valid, safe_upload_id, error = validate_upload_id(
+        upload_id
+    )
 
     if not is_valid:
         return make_error(
@@ -244,45 +305,87 @@ def get_upload_error_report_file(upload_id: str) -> Dict[str, Any]:
             data={
                 "upload_id": upload_id,
             },
+            status_code=400,
+            error_code="invalid_upload_id",
         )
 
-    path = config.UPLOAD_ERROR_REPORT_DIR / f"entity_upload_error_report_{safe_upload_id}.csv"
+    path = (
+        config.UPLOAD_ERROR_REPORT_DIR
+        / f"entity_upload_error_report_{safe_upload_id}.csv"
+    )
 
     return make_success(
         {
             "upload_id": safe_upload_id,
             "file_path": str(path),
             "error_report_file": str(path),
-            "download_ready": path.exists() and path.is_file(),
-            "exists": path.exists() and path.is_file(),
+            "download_ready": (
+                path.exists()
+                and path.is_file()
+            ),
+            "exists": (
+                path.exists()
+                and path.is_file()
+            ),
         },
         message="upload error report file resolved",
         meta={
             "upload_id": safe_upload_id,
             "file_path": str(path),
-            "exists": path.exists() and path.is_file(),
+            "exists": (
+                path.exists()
+                and path.is_file()
+            ),
         },
     )
 
-def allowed_upload_file(filename: str) -> bool:
-    if hasattr(config, "allowed_upload_file"):
-        return config.allowed_upload_file(filename)
-
-    allowed_extensions = getattr(
-        config,
-        "UPLOAD_ALLOWED_EXTENSIONS",
-        getattr(config, "ALLOWED_UPLOAD_EXTENSIONS", {"csv"}),
+def allowed_upload_content_type(
+    file: UploadFile,
+) -> bool:
+    filename = safe_str(
+        getattr(file, "filename", "")
     )
+    suffix = Path(filename).suffix.lower()
 
-    suffix = safe_str(filename).lower().rsplit(".", 1)
+    content_type = safe_str(
+        getattr(
+            file,
+            "content_type",
+            "",
+        )
+    ).lower().split(
+        ";",
+        1,
+    )[0].strip()
 
-    if len(suffix) < 2:
-        return False
+    if not content_type:
+        return True
 
-    return suffix[-1] in {
-        safe_str(item).lower().replace(".", "")
-        for item in allowed_extensions
+    allowed_by_extension: Dict[
+        str,
+        set[str],
+    ] = {
+        ".csv": {
+            "text/csv",
+            "application/csv",
+            "text/plain",
+            "application/vnd.ms-excel",
+            "application/octet-stream",
+        },
+        ".xlsx": {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/octet-stream",
+        },
+        ".xls": {
+            "application/vnd.ms-excel",
+            "application/octet-stream",
+        },
     }
+
+    return content_type in allowed_by_extension.get(
+        suffix,
+        set(),
+    )
 
 def dataframe_to_records(df: pd.DataFrame, hide_empty: bool = True) -> List[Dict[str, Any]]:
     if df is None or df.empty:
@@ -309,52 +412,210 @@ def detect_csv_encoding(file_path: Path) -> str:
     return "utf-8-sig"
 
 
-def read_csv_file(file_path: Path) -> Tuple[pd.DataFrame, str, Optional[str]]:
-    encoding = detect_csv_encoding(file_path)
+def read_uploaded_table_file(
+    file_path: Path,
+) -> Tuple[pd.DataFrame, str, Optional[str]]:
+    suffix = file_path.suffix.lower()
 
-    try:
-        df = pd.read_csv(
-            file_path,
-            encoding=encoding,
-            dtype=str,
-            keep_default_na=False,
+    if suffix == ".csv":
+        return read_csv_file(
+            file_path
         )
 
-        df.columns = [normalize_column_name(col) for col in df.columns]
+    if suffix not in {
+        ".xlsx",
+        ".xls",
+    }:
+        return (
+            pd.DataFrame(),
+            "",
+            (
+                "unsupported uploaded file extension: "
+                f"{suffix}"
+            ),
+        )
 
-        return df, encoding, None
+    try:
+        with pd.ExcelFile(
+            file_path
+        ) as excel_file:
+            df = pd.read_excel(
+                excel_file,
+                sheet_name=0,
+                dtype=str,
+                keep_default_na=False,
+            )
+
+            reader_info = (
+                "excel:"
+                + safe_str(
+                    excel_file.engine,
+                    "auto",
+                )
+            )
+
+        df.columns = [
+            normalize_column_name(column)
+            for column in df.columns
+        ]
+
+        return (
+            df,
+            reader_info,
+            None,
+        )
 
     except Exception as exc:
-        return pd.DataFrame(), encoding, str(exc)
+        return (
+            pd.DataFrame(),
+            "excel",
+            str(exc),
+        )
 
 
-def save_uploaded_file(file: UploadFile) -> Dict[str, Any]:
-    original_filename = safe_filename(getattr(file, "filename", "") or "uploaded_entities.csv")
+def save_uploaded_file(
+    file: UploadFile,
+) -> Dict[str, Any]:
+    original_filename = safe_filename(
+        getattr(
+            file,
+            "filename",
+            "",
+        )
+        or "uploaded_entities.csv"
+    )
+
     upload_id = generate_upload_id()
 
-    upload_dir = config.UPLOAD_ENTITY_DIR / upload_id
-    upload_dir.mkdir(parents=True, exist_ok=True)
+    upload_dir = (
+        config.UPLOAD_ENTITY_DIR
+        / upload_id
+    )
 
-    saved_file = upload_dir / original_filename
+    upload_dir.mkdir(
+        parents=True,
+        exist_ok=False,
+    )
 
-    if hasattr(file, "file") and file.file is not None:
+    saved_file = (
+        upload_dir
+        / original_filename
+    )
+
+    max_size_mb = max(
+        1,
+        safe_int(
+            getattr(
+                config,
+                "UPLOAD_MAX_CONTENT_LENGTH_MB",
+                100,
+            ),
+            100,
+        )
+        or 100,
+    )
+
+    max_size_bytes = (
+        max_size_mb
+        * 1024
+        * 1024
+    )
+
+    chunk_size = 1024 * 1024
+    file_size_bytes = 0
+    file_hasher = hashlib.sha256()
+
+    try:
+        declared_size = safe_int(
+            getattr(
+                file,
+                "size",
+                None,
+            ),
+            None,
+        )
+
+        if (
+            declared_size is not None
+            and declared_size > max_size_bytes
+        ):
+            raise ValueError(
+                "uploaded file exceeds maximum size "
+                f"of {max_size_mb} MB"
+            )
+
+        if (
+            not hasattr(file, "file")
+            or file.file is None
+        ):
+            raise ValueError(
+                "unsupported upload file object"
+            )
+
         try:
             file.file.seek(0)
         except Exception:
             pass
 
-        content = file.file.read()
+        with saved_file.open(
+            "wb"
+        ) as output_file:
+            while True:
+                chunk = file.file.read(
+                    chunk_size
+                )
 
-        if isinstance(content, str):
-            content = content.encode("utf-8")
+                if not chunk:
+                    break
 
-        saved_file.write_bytes(content or b"")
+                if isinstance(
+                    chunk,
+                    str,
+                ):
+                    chunk = chunk.encode(
+                        "utf-8"
+                    )
 
-    elif hasattr(file, "save"):
-        file.save(str(saved_file))
+                file_size_bytes += len(
+                    chunk
+                )
 
-    else:
-        raise ValueError("unsupported upload file object")
+                if (
+                    file_size_bytes
+                    > max_size_bytes
+                ):
+                    raise ValueError(
+                        "uploaded file exceeds "
+                        "maximum size of "
+                        f"{max_size_mb} MB"
+                    )
+
+                file_hasher.update(
+                    chunk
+                )
+
+                output_file.write(
+                    chunk
+                )
+
+        if file_size_bytes <= 0:
+            raise ValueError(
+                "uploaded file is empty"
+            )
+
+    except Exception:
+        try:
+            if saved_file.exists():
+                saved_file.unlink()
+        except Exception:
+            pass
+
+        try:
+            upload_dir.rmdir()
+        except Exception:
+            pass
+
+        raise
 
     return {
         "upload_id": upload_id,
@@ -362,8 +623,16 @@ def save_uploaded_file(file: UploadFile) -> Dict[str, Any]:
         "saved_file": saved_file,
         "upload_dir": upload_dir,
         "uploaded_at": now_text(),
+        "content_type": safe_str(
+            getattr(
+                file,
+                "content_type",
+                "",
+            )
+        ),
+        "file_size_bytes": file_size_bytes,
+        "file_sha256": file_hasher.hexdigest(),
     }
-
 
 # ============================================================
 # COLUMN VALIDATION
@@ -684,9 +953,46 @@ def save_upload_outputs(
         "error_report_file": str(error_report_file),
     }
 
+def sanitize_spreadsheet_cell(
+    value: Any,
+) -> Any:
+    if value is None:
+        return ""
 
-def write_error_report_csv(path: Path, not_displayable_records: List[Dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(
+        value,
+        (
+            int,
+            float,
+        ),
+    ):
+        return value
+
+    text = str(value)
+    stripped = text.lstrip()
+
+    if stripped.startswith(
+        (
+            "=",
+            "+",
+            "-",
+            "@",
+        )
+    ):
+        return f"'{text}"
+
+    return text
+
+def write_error_report_csv(
+    path: Path,
+    not_displayable_records: List[
+        Dict[str, Any]
+    ],
+) -> None:
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     fieldnames = [
         "row_number",
@@ -699,79 +1005,257 @@ def write_error_report_csv(path: Path, not_displayable_records: List[Dict[str, A
         "longitude",
     ]
 
-    with open(path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    with open(
+        path,
+        "w",
+        encoding="utf-8-sig",
+        newline="",
+    ) as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=fieldnames,
+        )
         writer.writeheader()
 
         for item in not_displayable_records:
-            raw = item.get("raw", {}) or {}
+            raw = (
+                item.get(
+                    "raw",
+                    {},
+                )
+                or {}
+            )
 
             writer.writerow(
                 {
-                    "row_number": item.get("row_number"),
-                    "reasons": "; ".join(item.get("reasons", [])),
-                    "entity_id": raw.get("entity_id"),
-                    "entity_type": raw.get("entity_type"),
-                    "entity_name_th": raw.get("entity_name_th"),
-                    "province_name_th": raw.get("province_name_th"),
-                    "latitude": raw.get("latitude"),
-                    "longitude": raw.get("longitude"),
+                    "row_number": sanitize_spreadsheet_cell(
+                        item.get(
+                            "row_number"
+                        )
+                    ),
+                    "reasons": sanitize_spreadsheet_cell(
+                        "; ".join(
+                            item.get(
+                                "reasons",
+                                [],
+                            )
+                        )
+                    ),
+                    "entity_id": sanitize_spreadsheet_cell(
+                        raw.get(
+                            "entity_id"
+                        )
+                    ),
+                    "entity_type": sanitize_spreadsheet_cell(
+                        raw.get(
+                            "entity_type"
+                        )
+                    ),
+                    "entity_name_th": sanitize_spreadsheet_cell(
+                        raw.get(
+                            "entity_name_th"
+                        )
+                    ),
+                    "province_name_th": sanitize_spreadsheet_cell(
+                        raw.get(
+                            "province_name_th"
+                        )
+                    ),
+                    "latitude": sanitize_spreadsheet_cell(
+                        raw.get(
+                            "latitude"
+                        )
+                    ),
+                    "longitude": sanitize_spreadsheet_cell(
+                        raw.get(
+                            "longitude"
+                        )
+                    ),
                 }
             )
-
 
 # ============================================================
 # PUBLIC UPLOAD SERVICE
 # ============================================================
 
-def handle_entity_csv_upload(file: UploadFile) -> Dict[str, Any]:
+def handle_entity_csv_upload(
+    file: UploadFile,
+) -> Dict[str, Any]:
     if file is None:
-        return make_error("No file uploaded")
+        return make_error(
+            message="No file uploaded",
+            status_code=400,
+            error_code="upload_file_required",
+        )
 
-    filename = getattr(file, "filename", "") or ""
+    filename = safe_str(
+        getattr(
+            file,
+            "filename",
+            "",
+        )
+    )
 
     if not filename:
-        return make_error("No filename provided")
+        return make_error(
+            message="No filename provided",
+            status_code=400,
+            error_code="upload_filename_required",
+        )
 
-    if not allowed_upload_file(filename):
+    if not allowed_upload_file(
+        filename
+    ):
         allowed_extensions = getattr(
             config,
             "UPLOAD_ALLOWED_EXTENSIONS",
-            getattr(config, "ALLOWED_UPLOAD_EXTENSIONS", {"csv"}),
+            getattr(
+                config,
+                "ALLOWED_UPLOAD_EXTENSIONS",
+                {
+                    ".csv",
+                },
+            ),
         )
 
         return make_error(
-            "Invalid file extension",
+            message="Invalid file extension",
             data={
                 "filename": filename,
-                "allowed_extensions": list(allowed_extensions),
+                "allowed_extensions": list(
+                    allowed_extensions
+                ),
             },
+            status_code=415,
+            error_code=(
+                "unsupported_upload_extension"
+            ),
+        )
+
+    if not allowed_upload_content_type(
+        file
+    ):
+        return make_error(
+            message="Invalid file content type",
+            data={
+                "filename": filename,
+                "content_type": safe_str(
+                    getattr(
+                        file,
+                        "content_type",
+                        "",
+                    )
+                ),
+            },
+            status_code=415,
+            error_code=(
+                "unsupported_upload_content_type"
+            ),
         )
 
     try:
-        upload_meta = save_uploaded_file(file)
+        upload_meta = save_uploaded_file(
+            file
+        )
+
+    except ValueError as exc:
+        error_text = str(exc)
+
+        status_code = (
+            413
+            if (
+                "exceeds maximum size"
+                in error_text
+            )
+            else 400
+        )
+
+        return make_error(
+            message=error_text,
+            error=error_text,
+            status_code=status_code,
+            error_code=(
+                "upload_file_too_large"
+                if status_code == 413
+                else "invalid_upload_file"
+            ),
+        )
+
     except Exception as exc:
-        return make_error("Failed to save uploaded file", error=str(exc))
+        return make_error(
+            message=(
+                "Failed to save uploaded file"
+            ),
+            error=(
+                str(exc)
+                if bool(
+                    getattr(
+                        config,
+                        "DEBUG",
+                        False,
+                    )
+                )
+                else (
+                    "Uploaded file could "
+                    "not be saved."
+                )
+            ),
+            status_code=500,
+            error_code="upload_save_failed",
+        )
 
-    saved_file = Path(upload_meta["saved_file"])
+    saved_file = Path(
+        upload_meta["saved_file"]
+    )
 
-    df, encoding, read_error = read_csv_file(saved_file)
+    (
+        df,
+        reader_info,
+        read_error,
+    ) = read_uploaded_table_file(
+        saved_file
+    )
 
     if read_error:
-        upload_id = upload_meta["upload_id"]
+        upload_id = upload_meta[
+            "upload_id"
+        ]
+
+        public_read_error = (
+            read_error
+            if bool(
+                getattr(
+                    config,
+                    "DEBUG",
+                    False,
+                )
+            )
+            else (
+                "Uploaded file could "
+                "not be read."
+            )
+        )
 
         column_validation = {
             "is_valid": False,
             "columns": [],
-            "required_columns": config.ENTITY_REQUIRED_COLUMNS,
-            "supported_columns": config.ENTITY_SUPPORTED_COLUMNS,
+            "required_columns": list(
+                config.ENTITY_REQUIRED_COLUMNS
+            ),
+            "supported_columns": list(
+                config.ENTITY_SUPPORTED_COLUMNS
+            ),
             "supported_columns_in_file": [],
-            "missing_required_columns": config.ENTITY_REQUIRED_COLUMNS,
+            "missing_required_columns": list(
+                config.ENTITY_REQUIRED_COLUMNS
+            ),
             "extra_columns": [],
-            "read_error": read_error,
+            "read_error": public_read_error,
         }
 
-        status = config.UPLOAD_STATUS_INVALID_FILE
+        status = (
+            config.UPLOAD_STATUS_INVALID_FILE
+        )
 
         output_files = save_upload_outputs(
             upload_meta=upload_meta,
@@ -779,37 +1263,87 @@ def handle_entity_csv_upload(file: UploadFile) -> Dict[str, Any]:
             status=status,
             displayable_records=[],
             not_displayable_records=[],
-            encoding=encoding,
+            encoding=reader_info,
         )
 
-        return make_success(
-            {
-                "upload_id": upload_id,
-                "status": status,
-                "status_color": get_status_color(status),
-                "column_validation": column_validation,
-                "summary": {
-                    "total_rows": 0,
-                    "displayable_records": 0,
-                    "not_displayable_records": 0,
-                },
-                "displayable_records": [],
-                "not_displayable_records": [],
-                "output_files": output_files,
+        response_data = {
+            "upload_id": upload_id,
+            "status": status,
+            "status_color": get_status_color(
+                status
+            ),
+            "column_validation": (
+                column_validation
+            ),
+            "summary": {
+                "total_rows": 0,
+                "displayable_records": 0,
+                "not_displayable_records": 0,
             },
-            message="csv read failed",
+            "displayable_records": [],
+            "not_displayable_records": [],
+            "preview_limit": (
+                config.UPLOAD_PREVIEW_LIMIT
+            ),
+            "output_files": output_files,
+            "file": {
+                "filename": upload_meta.get(
+                    "original_filename"
+                ),
+                "content_type": upload_meta.get(
+                    "content_type"
+                ),
+                "file_size_bytes": upload_meta.get(
+                    "file_size_bytes"
+                ),
+                "file_sha256": upload_meta.get(
+                    "file_sha256"
+                ),
+                "reader": reader_info,
+            },
+        }
+
+        return make_error(
+            message=(
+                "Uploaded file read failed"
+            ),
+            error=public_read_error,
+            data=response_data,
+            status_code=422,
+            error_code=(
+                "upload_file_read_failed"
+            ),
         )
 
-    column_validation = validate_csv_columns(df)
+    column_validation = validate_csv_columns(
+        df
+    )
 
-    if not column_validation.get("is_valid", False):
-        status = config.UPLOAD_STATUS_INVALID_FILE
+    if not column_validation.get(
+        "is_valid",
+        False,
+    ):
+        status = (
+            config.UPLOAD_STATUS_INVALID_FILE
+        )
+
+        missing_columns = (
+            column_validation.get(
+                "missing_required_columns",
+                [],
+            )
+        )
 
         not_displayable_records = [
             {
                 "row_number": None,
                 "reasons": [
-                    f"missing required columns: {', '.join(column_validation.get('missing_required_columns', []))}"
+                    (
+                        "missing required columns: "
+                        + ", ".join(
+                            missing_columns
+                        )
+                    )
                 ],
                 "raw": {},
             }
@@ -820,38 +1354,95 @@ def handle_entity_csv_upload(file: UploadFile) -> Dict[str, Any]:
             column_validation=column_validation,
             status=status,
             displayable_records=[],
-            not_displayable_records=not_displayable_records,
-            encoding=encoding,
+            not_displayable_records=(
+                not_displayable_records
+            ),
+            encoding=reader_info,
         )
 
-        return make_success(
-            {
-                "upload_id": upload_meta["upload_id"],
-                "status": status,
-                "status_color": get_status_color(status),
-                "column_validation": column_validation,
-                "summary": {
-                    "total_rows": len(df),
-                    "displayable_records": 0,
-                    "not_displayable_records": len(df),
-                },
-                "displayable_records": [],
-                "not_displayable_records": not_displayable_records[:config.UPLOAD_PREVIEW_LIMIT],
-                "preview_limit": config.UPLOAD_PREVIEW_LIMIT,
-                "output_files": output_files,
+        response_data = {
+            "upload_id": upload_meta[
+                "upload_id"
+            ],
+            "status": status,
+            "status_color": get_status_color(
+                status
+            ),
+            "column_validation": (
+                column_validation
+            ),
+            "summary": {
+                "total_rows": len(df),
+                "displayable_records": 0,
+                "not_displayable_records": (
+                    len(df)
+                ),
             },
-            message="invalid csv columns",
+            "displayable_records": [],
+            "not_displayable_records": (
+                not_displayable_records[
+                    :config.UPLOAD_PREVIEW_LIMIT
+                ]
+            ),
+            "preview_limit": (
+                config.UPLOAD_PREVIEW_LIMIT
+            ),
+            "output_files": output_files,
+            "file": {
+                "filename": upload_meta.get(
+                    "original_filename"
+                ),
+                "content_type": upload_meta.get(
+                    "content_type"
+                ),
+                "file_size_bytes": upload_meta.get(
+                    "file_size_bytes"
+                ),
+                "file_sha256": upload_meta.get(
+                    "file_sha256"
+                ),
+                "reader": reader_info,
+            },
+        }
+
+        return make_error(
+            message=(
+                "Invalid uploaded file columns"
+            ),
+            error=(
+                "Missing required columns: "
+                + ", ".join(
+                    missing_columns
+                )
+            ),
+            data=response_data,
+            status_code=422,
+            error_code=(
+                "missing_required_columns"
+            ),
         )
 
-    split_result = split_displayable_records(df, upload_meta["upload_id"])
+    split_result = split_displayable_records(
+        df,
+        upload_meta["upload_id"],
+    )
 
-    displayable_records = split_result["displayable_records"]
-    not_displayable_records = split_result["not_displayable_records"]
+    displayable_records = split_result[
+        "displayable_records"
+    ]
+
+    not_displayable_records = split_result[
+        "not_displayable_records"
+    ]
 
     status = determine_upload_status(
         column_validation=column_validation,
-        displayable_count=len(displayable_records),
-        not_displayable_count=len(not_displayable_records),
+        displayable_count=len(
+            displayable_records
+        ),
+        not_displayable_count=len(
+            not_displayable_records
+        ),
         total_rows=len(df),
     )
 
@@ -859,28 +1450,70 @@ def handle_entity_csv_upload(file: UploadFile) -> Dict[str, Any]:
         upload_meta=upload_meta,
         column_validation=column_validation,
         status=status,
-        displayable_records=displayable_records,
-        not_displayable_records=not_displayable_records,
-        encoding=encoding,
+        displayable_records=(
+            displayable_records
+        ),
+        not_displayable_records=(
+            not_displayable_records
+        ),
+        encoding=reader_info,
     )
 
     response_data = {
-        "upload_id": upload_meta["upload_id"],
+        "upload_id": upload_meta[
+            "upload_id"
+        ],
         "status": status,
-        "status_color": get_status_color(status),
-        "column_validation": column_validation,
+        "status_color": get_status_color(
+            status
+        ),
+        "column_validation": (
+            column_validation
+        ),
         "summary": {
             "total_rows": len(df),
-            "displayable_records": len(displayable_records),
-            "not_displayable_records": len(not_displayable_records),
+            "displayable_records": len(
+                displayable_records
+            ),
+            "not_displayable_records": len(
+                not_displayable_records
+            ),
         },
-        "displayable_records": displayable_records[:config.UPLOAD_PREVIEW_LIMIT],
-        "not_displayable_records": not_displayable_records[:config.UPLOAD_PREVIEW_LIMIT],
-        "preview_limit": config.UPLOAD_PREVIEW_LIMIT,
+        "displayable_records": (
+            displayable_records[
+                :config.UPLOAD_PREVIEW_LIMIT
+            ]
+        ),
+        "not_displayable_records": (
+            not_displayable_records[
+                :config.UPLOAD_PREVIEW_LIMIT
+            ]
+        ),
+        "preview_limit": (
+            config.UPLOAD_PREVIEW_LIMIT
+        ),
         "output_files": output_files,
+        "file": {
+            "filename": upload_meta.get(
+                "original_filename"
+            ),
+            "content_type": upload_meta.get(
+                "content_type"
+            ),
+            "file_size_bytes": upload_meta.get(
+                "file_size_bytes"
+            ),
+            "file_sha256": upload_meta.get(
+                "file_sha256"
+            ),
+            "reader": reader_info,
+        },
     }
 
-    return make_success(response_data, message="entity csv uploaded")
+    return make_success(
+        response_data,
+        message="entity file uploaded",
+    )
 
 def process_uploaded_entity_file(file: UploadFile) -> Dict[str, Any]:
     return handle_entity_csv_upload(file)
@@ -1044,8 +1677,16 @@ def read_upload_logs(limit: int = 100) -> Dict[str, Any]:
         return make_error("failed to read upload logs", error=str(exc))
 
 
-def read_upload_result(upload_id: str) -> Dict[str, Any]:
-    path, safe_upload_id, error = get_upload_result_file(upload_id)
+def read_upload_result(
+    upload_id: str,
+) -> Dict[str, Any]:
+    (
+        path,
+        safe_upload_id,
+        error,
+    ) = get_upload_result_file(
+        upload_id
+    )
 
     if error:
         return make_error(
@@ -1054,26 +1695,221 @@ def read_upload_result(upload_id: str) -> Dict[str, Any]:
             data={
                 "upload_id": upload_id,
             },
+            status_code=400,
+            error_code="invalid_upload_id",
         )
 
-    if path is None or not path.exists():
+    if (
+        path is None
+        or not path.exists()
+        or not path.is_file()
+    ):
         return make_error(
-            "upload result not found",
+            message="upload result not found",
             data={
                 "upload_id": safe_upload_id,
-                "expected_file": str(path) if path else None,
+                "expected_file": (
+                    str(path)
+                    if path
+                    else None
+                ),
             },
+            status_code=404,
+            error_code=(
+                "upload_result_not_found"
+            ),
         )
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
+        with open(
+            path,
+            "r",
+            encoding="utf-8",
+        ) as file:
+            payload = json.load(
+                file
+            )
 
-        return make_success(payload, message="upload result loaded")
+        if not isinstance(
+            payload,
+            dict,
+        ):
+            return make_error(
+                message=(
+                    "invalid upload result payload"
+                ),
+                data={
+                    "upload_id": safe_upload_id,
+                },
+                status_code=500,
+                error_code=(
+                    "invalid_upload_result_payload"
+                ),
+            )
+
+        return make_success(
+            payload,
+            message="upload result loaded",
+        )
 
     except Exception as exc:
-        return make_error("failed to read upload result", error=str(exc))
+        return make_error(
+            message=(
+                "failed to read upload result"
+            ),
+            error=(
+                str(exc)
+                if bool(
+                    getattr(
+                        config,
+                        "DEBUG",
+                        False,
+                    )
+                )
+                else (
+                    "Upload result could "
+                    "not be read."
+                )
+            ),
+            data={
+                "upload_id": safe_upload_id,
+            },
+            status_code=500,
+            error_code=(
+                "upload_result_read_failed"
+            ),
+        )
 
+def read_saved_upload_records(
+    upload_id: str,
+    filename: str,
+) -> Dict[str, Any]:
+    (
+        is_valid,
+        safe_upload_id,
+        error,
+    ) = validate_upload_id(
+        upload_id
+    )
+
+    if not is_valid:
+        return make_error(
+            message="invalid upload_id",
+            error=error,
+            data={
+                "upload_id": upload_id,
+            },
+            status_code=400,
+            error_code="invalid_upload_id",
+        )
+
+    allowed_filenames = {
+        "displayable_records.json",
+        "not_displayable_records.json",
+    }
+
+    if filename not in allowed_filenames:
+        return make_error(
+            message=(
+                "invalid upload record filename"
+            ),
+            data={
+                "upload_id": safe_upload_id,
+                "filename": filename,
+            },
+            status_code=400,
+            error_code=(
+                "invalid_upload_record_filename"
+            ),
+        )
+
+    path = (
+        config.UPLOAD_ENTITY_DIR
+        / safe_upload_id
+        / filename
+    )
+
+    if (
+        not path.exists()
+        or not path.is_file()
+    ):
+        return make_error(
+            message="upload records not found",
+            data={
+                "upload_id": safe_upload_id,
+                "filename": filename,
+            },
+            status_code=404,
+            error_code=(
+                "upload_records_not_found"
+            ),
+        )
+
+    try:
+        with path.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
+            records = json.load(
+                file
+            )
+
+        if not isinstance(
+            records,
+            list,
+        ):
+            return make_error(
+                message=(
+                    "invalid upload records payload"
+                ),
+                data={
+                    "upload_id": safe_upload_id,
+                    "filename": filename,
+                },
+                status_code=500,
+                error_code=(
+                    "invalid_upload_records_payload"
+                ),
+            )
+
+        return make_success(
+            records,
+            message="upload records loaded",
+            meta={
+                "upload_id": safe_upload_id,
+                "filename": filename,
+                "total": len(records),
+            },
+        )
+
+    except Exception as exc:
+        return make_error(
+            message=(
+                "failed to read upload records"
+            ),
+            error=(
+                str(exc)
+                if bool(
+                    getattr(
+                        config,
+                        "DEBUG",
+                        False,
+                    )
+                )
+                else (
+                    "Upload records could "
+                    "not be read."
+                )
+            ),
+            data={
+                "upload_id": safe_upload_id,
+                "filename": filename,
+            },
+            status_code=500,
+            error_code=(
+                "upload_records_read_failed"
+            ),
+        )
 
 def read_displayable_records(
     upload_id: str,
@@ -1081,43 +1917,75 @@ def read_displayable_records(
     offset: int = 0,
     query: Optional[str] = None,
 ) -> Dict[str, Any]:
-    is_valid, safe_upload_id, error = validate_upload_id(upload_id)
+    result = read_saved_upload_records(
+        upload_id=upload_id,
+        filename=(
+            "displayable_records.json"
+        ),
+    )
 
-    if not is_valid:
-        return make_error(
-            message="invalid upload_id",
-            error=error,
-            data={
-                "upload_id": safe_upload_id,
-            },
-        )
-
-    result = read_upload_result(safe_upload_id)
-
-    if not result.get("success"):
+    if not result.get(
+        "success"
+    ):
         return result
 
-    records = result.get("data", {}).get("displayable_records", [])
+    records = result.get(
+        "data",
+        [],
+    )
 
-    filtered = filter_records_by_query(records, query)
+    if not isinstance(
+        records,
+        list,
+    ):
+        records = []
 
-    safe_offset = max(safe_int(offset, 0) or 0, 0)
-    safe_limit = max(1, min(safe_int(limit, config.UPLOAD_DISPLAY_PAGE_SIZE) or config.UPLOAD_DISPLAY_PAGE_SIZE, 1000))
+    filtered = filter_records_by_query(
+        records,
+        query,
+    )
 
-    page = filtered[safe_offset:safe_offset + safe_limit]
+    safe_offset = max(
+        safe_int(
+            offset,
+            0,
+        )
+        or 0,
+        0,
+    )
+
+    safe_limit = max(
+        1,
+        min(
+            safe_int(
+                limit,
+                config.UPLOAD_DISPLAY_PAGE_SIZE,
+            )
+            or config.UPLOAD_DISPLAY_PAGE_SIZE,
+            1000,
+        ),
+    )
+
+    page = filtered[
+        safe_offset:
+        safe_offset + safe_limit
+    ]
 
     return make_success(
         page,
-        message="displayable records loaded",
+        message=(
+            "displayable records loaded"
+        ),
         meta={
-            "upload_id": safe_upload_id,
+            "upload_id": safe_str(
+                upload_id
+            ),
             "total": len(filtered),
             "returned": len(page),
             "limit": safe_limit,
             "offset": safe_offset,
         },
     )
-
 
 def read_not_displayable_records(
     upload_id: str,
@@ -1125,43 +1993,75 @@ def read_not_displayable_records(
     offset: int = 0,
     query: Optional[str] = None,
 ) -> Dict[str, Any]:
-    is_valid, safe_upload_id, error = validate_upload_id(upload_id)
+    result = read_saved_upload_records(
+        upload_id=upload_id,
+        filename=(
+            "not_displayable_records.json"
+        ),
+    )
 
-    if not is_valid:
-        return make_error(
-            message="invalid upload_id",
-            error=error,
-            data={
-                "upload_id": safe_upload_id,
-            },
-        )
-
-    result = read_upload_result(safe_upload_id)
-
-    if not result.get("success"):
+    if not result.get(
+        "success"
+    ):
         return result
 
-    records = result.get("data", {}).get("not_displayable_records", [])
+    records = result.get(
+        "data",
+        [],
+    )
 
-    filtered = filter_records_by_query(records, query)
+    if not isinstance(
+        records,
+        list,
+    ):
+        records = []
 
-    safe_offset = max(safe_int(offset, 0) or 0, 0)
-    safe_limit = max(1, min(safe_int(limit, config.UPLOAD_DISPLAY_PAGE_SIZE) or config.UPLOAD_DISPLAY_PAGE_SIZE, 1000))
+    filtered = filter_records_by_query(
+        records,
+        query,
+    )
 
-    page = filtered[safe_offset:safe_offset + safe_limit]
+    safe_offset = max(
+        safe_int(
+            offset,
+            0,
+        )
+        or 0,
+        0,
+    )
+
+    safe_limit = max(
+        1,
+        min(
+            safe_int(
+                limit,
+                config.UPLOAD_DISPLAY_PAGE_SIZE,
+            )
+            or config.UPLOAD_DISPLAY_PAGE_SIZE,
+            1000,
+        ),
+    )
+
+    page = filtered[
+        safe_offset:
+        safe_offset + safe_limit
+    ]
 
     return make_success(
         page,
-        message="not displayable records loaded",
+        message=(
+            "not displayable records loaded"
+        ),
         meta={
-            "upload_id": safe_upload_id,
+            "upload_id": safe_str(
+                upload_id
+            ),
             "total": len(filtered),
             "returned": len(page),
             "limit": safe_limit,
             "offset": safe_offset,
         },
     )
-
 
 def filter_records_by_query(records: List[Dict[str, Any]], query: Optional[str]) -> List[Dict[str, Any]]:
     q = safe_str(query).lower()
@@ -1568,32 +2468,78 @@ def get_latest_entity_map_features(
     limit: Optional[int] = None,
     offset: int = 0,
     query: Optional[str] = None,
-    context: Optional[Dict[str, Any]] = None,
+    context: Optional[
+        Dict[str, Any]
+    ] = None,
 ) -> Dict[str, Any]:
+    record_context = dict(
+        context
+        or {}
+    )
+
+    record_context.pop(
+        "limit",
+        None,
+    )
+    record_context.pop(
+        "page_size",
+        None,
+    )
+    record_context.pop(
+        "offset",
+        None,
+    )
+    record_context.pop(
+        "page",
+        None,
+    )
+
     records_result = get_latest_entity_records(
         province=province,
         risk_level=risk_level,
         limit=None,
         offset=0,
         query=query,
+        context=record_context,
     )
 
-    if not records_result.get("success"):
+    if not records_result.get(
+        "success"
+    ):
         return records_result
 
-    records = records_result.get("data", []) or []
-    records_meta = records_result.get("meta", {}) or {}
+    records = (
+        records_result.get(
+            "data",
+            [],
+        )
+        or []
+    )
+
+    records_meta = (
+        records_result.get(
+            "meta",
+            {},
+        )
+        or {}
+    )
 
     features = [
         feature
-        for feature in [
-            entity_record_to_map_feature(row)
+        for feature in (
+            entity_record_to_map_feature(
+                row
+            )
             for row in records
-        ]
+        )
         if feature is not None
     ]
 
-    page, safe_offset, safe_limit = paginate_records(
+    (
+        page,
+        safe_offset,
+        safe_limit,
+    ) = paginate_records(
         features,
         limit=limit,
         offset=offset,
@@ -1612,22 +2558,58 @@ def get_latest_entity_map_features(
 
     return make_success(
         feature_collection,
-        message="latest entity map features loaded",
+        message=(
+            "latest entity map "
+            "features loaded"
+        ),
         meta={
-            "upload_id": records_meta.get("upload_id"),
-            "updated_at": records_meta.get("updated_at"),
-            "total_raw_records": records_meta.get("total_raw_records", 0),
-            "total_displayable_records": records_meta.get("total_displayable_records", 0),
-            "total_after_filter": records_meta.get("total_after_filter", len(records)),
-            "map_features": len(features),
+            "upload_id": records_meta.get(
+                "upload_id"
+            ),
+            "updated_at": records_meta.get(
+                "updated_at"
+            ),
+            "total_raw_records": (
+                records_meta.get(
+                    "total_raw_records",
+                    0,
+                )
+            ),
+            "total_displayable_records": (
+                records_meta.get(
+                    "total_displayable_records",
+                    0,
+                )
+            ),
+            "total_after_filter": (
+                records_meta.get(
+                    "total_after_filter",
+                    len(records),
+                )
+            ),
+            "map_features": len(
+                features
+            ),
             "total": len(features),
             "returned": len(page),
             "offset": safe_offset,
             "limit": safe_limit,
-            "province": province or "All",
-            "risk_level": risk_level or "All",
-            "query": query,
-            "policy": records_meta.get("policy", {}),
+            "province": records_meta.get(
+                "province",
+                province or "All",
+            ),
+            "risk_level": records_meta.get(
+                "risk_level",
+                risk_level or "All",
+            ),
+            "query": records_meta.get(
+                "query",
+                query,
+            ),
+            "policy": records_meta.get(
+                "policy",
+                {},
+            ),
         },
     )
 
